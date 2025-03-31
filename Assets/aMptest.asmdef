@@ -1,0 +1,8 @@
+{
+	"name": "aMptest",
+	"references": [
+		"UnityEngine.UI",
+		"Unity.TextMeshPro",
+		"Unity.Mathematics"
+	]
+}
