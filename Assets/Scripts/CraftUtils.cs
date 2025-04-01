@@ -241,6 +241,8 @@ namespace Assets.Scripts
 		//使用Vector3d.Lerp进行线性插值		
 		//使用Quaternion.Slerp进行球面插值（保持旋转姿态的自然过渡）
 		//percentage控制插值程度
+		//2025 4 2 从vs code切换至rider
+		//没别的我就是瞎几把写
 		public static void InterpolatedTransform(CraftNode craft, Vector3d initialSurfacePosition, Vector3d targetSurfacePosition, Vector3d initialSurfaceVelocity, Vector3d targetSurfaceVelocity, Quaterniond initialGroundedTransform, Quaterniond targetGroundedTransform, double percentage)
 		{
 
