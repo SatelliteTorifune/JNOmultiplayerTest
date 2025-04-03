@@ -99,6 +99,7 @@ namespace Assets.Scripts
 
 		public void StartRecord()
 		{
+			
 			if (!string.IsNullOrWhiteSpace(Game.Instance.GameState.GetTagQuicksave()))
 			{
  
@@ -395,6 +396,7 @@ namespace Assets.Scripts
 			{
 				try
 				{
+					DataProcess DP = new DataProcess();
 					if (!FlightSceneScript.Instance.TimeManager.Paused)
 					{
 						if (FlightSceneScript.Instance.TimeManager.CurrentMode.TimeMultiplier > 1)
@@ -460,7 +462,11 @@ namespace Assets.Scripts
 					);
 
 							Instance.RecordData.Add(newData);
+							DP.DPupdate(newData);
+							Debug.LogError("DP已实例化");
 							DataProcess.LogRecordData(newData);
+							
+							
 							if(ModSettings.Instance.RecordBodiesTransform)
 							{
 								List<bodyrecdata> d = new List<bodyrecdata>();
