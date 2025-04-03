@@ -27,10 +27,11 @@ namespace Assets.Scripts
 	{
 		private Mod()
 		{
+			
 		}
 		public static Mod Instance { get; } = GameModBase.GetModInstance<Mod>();
 		public GameObject ReplayController = null;
-		float MaxUpdateIntervalMs = 83f;
+		float MaxUpdateIntervalMs = 10f;
 		bool replayOnSceneLoaded = false;
 
 		public bool goToStartPosOnStart = true;
@@ -237,7 +238,7 @@ namespace Assets.Scripts
 			FlightSceneScript.Instance.FlightSceneUI.ShowMessage("No quick save available", false, 5f);
 		}
 
-		struct recdata 
+		public struct recdata 
 		{
 			public Vector3d Position;
 			public Vector3d Velocity;
@@ -347,7 +348,7 @@ namespace Assets.Scripts
 
 		}
 
-		struct bodyrecdata
+		public struct bodyrecdata
 		{
 			public int Id;
 			public Vector3 Position;
@@ -436,36 +437,30 @@ namespace Assets.Scripts
 								cp.CurrentStage
 							));
 
-							// ... 其他代码 ...
 
-var newData = new recdata(
-    craft.Parent.PlanetVectorToSurfaceVector(craft.Position),
-    craft.Parent.PlanetVectorToSurfaceVector(craft.Velocity),
-    craft.Heading,
+							var newData = new recdata(
+   							craft.Parent.PlanetVectorToSurfaceVector(craft.Position),
+   							craft.Parent.PlanetVectorToSurfaceVector(craft.Velocity),
+   							craft.Heading,
 
-    cp.Controls.Pitch,
-    cp.Controls.Yaw,
-    cp.Controls.Roll,
-    cp.Controls.Throttle,
-    cp.Controls.Brake,
-    cp.Controls.Slider1,
-    cp.Controls.Slider2,
-    cp.Controls.Slider3,
-    cp.Controls.Slider4,
-    cp.Controls.TranslateForward,
-    cp.Controls.TranslateRight,
-    cp.Controls.TranslateUp,
-    activationGroupStates,
-    cp.CurrentStage
-);
+   							cp.Controls.Pitch,
+   							cp.Controls.Yaw,
+   							cp.Controls.Roll,
+   							cp.Controls.Throttle,
+   							cp.Controls.Brake,
+   							cp.Controls.Slider1,
+   							cp.Controls.Slider2,
+   							cp.Controls.Slider3,
+   							cp.Controls.Slider4,
+   							cp.Controls.TranslateForward,
+   							cp.Controls.TranslateRight,
+   							cp.Controls.TranslateUp,
+   							activationGroupStates,
+   							cp.CurrentStage
+					);
 
-Instance.RecordData.Add(newData);
-// 新增日志输出 Pitch 和 Position
-UnityEngine.Debug.LogFormat("Recorded Frame - Velocity: {0}\nPosition: {1}\n Heading:{2}", 
-    newData.Velocity, 
-    newData.Position.ToString(),
-	newData.Heading.ToString()
-	); 
+							Instance.RecordData.Add(newData);
+							DataProcess.LogRecordData(newData);
 							if(ModSettings.Instance.RecordBodiesTransform)
 							{
 								List<bodyrecdata> d = new List<bodyrecdata>();
