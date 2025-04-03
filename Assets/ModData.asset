@@ -18,7 +18,9 @@ MonoBehaviour:
   _description: 
   _loadPriority: 10009
   _name: aMptest
-  _otherAssets: []
+  _otherAssets:
+  - {fileID: 21300000, guid: 1bc2b87736fd5814db2ef1d9c869605f, type: 3}
+  - {fileID: 21300000, guid: 5172585969a3acb4cb8d364d13244729, type: 3}
   _prefabs: []
   _steamDescription: 
   _steamLanguage: English
@@ -33,4 +35,5 @@ MonoBehaviour:
   _partStyleExtensions: []
   _partTextureStyles: []
   _persistentObjects: []
-  _uiResourceDatabases: []
+  _uiResourceDatabases:
+  - {fileID: 11400000, guid: f7d862c4ba189be47a14b51559d3fa7a, type: 2}

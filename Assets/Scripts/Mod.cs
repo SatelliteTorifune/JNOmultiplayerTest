@@ -82,7 +82,8 @@ namespace Assets.Scripts
 				});
 
 				ReplayUI.Initialize();
-
+				//开始replay
+				//replayOnSceneLoaded bool值,决定是否开始replay
 				Game.Instance.SceneManager.SceneLoaded += (sender, e) => {
 					if (replayOnSceneLoaded && Game.Instance.SceneManager.InFlightScene)
 					{
@@ -99,22 +100,23 @@ namespace Assets.Scripts
 
 		public void StartRecord()
 		{
-			
+
 			if (!string.IsNullOrWhiteSpace(Game.Instance.GameState.GetTagQuicksave()))
 			{
- 
+
 				if (FlightSceneScript.Instance != null)
 				{
 					if (Instance.ReplayController == null)
 					{
-						FlightSceneScript.Instance.QuickSave();
+						//FlightSceneScript.Instance.QuickSave();
 						Instance.ReplayController = new GameObject();
 						Instance.ReplayController.AddComponent<RecordSystem>();
 						UnityEngine.Debug.Log("Recording...");
-						FlightSceneScript.Instance.FlightSceneUI.ShowMessage("Quick Save Complete\nRecording...", false, 5f);
+						FlightSceneScript.Instance.FlightSceneUI.ShowMessage("Quick Save Complete\nRecording...", false,
+							5f);
 						Instance.ReplayController.SetActive(true);
 						DevConsoleApi.UnregisterCommand("Replay");
-						
+
 					}
 					else if (Instance.ReplayController.GetComponent<RecordSystem>())
 					{
@@ -127,8 +129,14 @@ namespace Assets.Scripts
 
 				}
 			}
-			else FlightSceneScript.Instance.FlightSceneUI.ShowMessage("Unable to start record because Quick Save is disabled", false, 5f);
+			else
+			{
+				FlightSceneScript.Instance.FlightSceneUI.ShowMessage(
+					"Unable to start record because Quick Save is disabled", false, 5f);
+			}
+				
 		}
+
 		public void StopRecord()
 		{
 			if (Instance.ReplayController != null)
@@ -156,6 +164,8 @@ namespace Assets.Scripts
 					if (Instance.ReplayController == null)
 					{
 						UnityEngine.Debug.Log("Replaying...");
+						//搜索玩家craft的craftID的craftNodeId
+						//你妈的我在写什么东西
 						if (Instance.CraftNodeID != -2147483647 && !new List<CraftNode>(FlightSceneScript.Instance.FlightState.CraftNodes).Exists(x => x.NodeId == Instance.CraftNodeID))
 						{
 							UnityEngine.Debug.Log("Unable to find craft with NodeID: " + Instance.CraftNodeID.ToString() + ", using Player Craft instead");
@@ -203,6 +213,7 @@ namespace Assets.Scripts
 					return;
 				}
 			}
+			
 			if (Instance.RecordData == null || Instance.RecordData.Count < 3)
 			{
 				UnityEngine.Debug.Log("No record data");
@@ -216,6 +227,7 @@ namespace Assets.Scripts
 				FlightSceneScript.Instance.FlightSceneUI.ShowMessage("Quick Load is currently disabled", false, 5f);
 				return;
 			}
+			//这里是根据quick save读取的你看看
 			if (Game.Instance.GameStateManager.CheckGameStateTagExists(gameState.Id, quicksaveTag))
 			{
 				FlightSceneScript.Instance.TimeManager.RequestPauseChange(true, false);
@@ -385,12 +397,7 @@ namespace Assets.Scripts
 					UnityEngine.Debug.Log("Record Activation Failed: " + e.ToString());
 				}
 			}
-
-			void Update() 
-			{
-				//Record();
-			}
-
+			
 			float updateTimer = Instance.MaxUpdateIntervalMs;
 			public void Record()
 			{
