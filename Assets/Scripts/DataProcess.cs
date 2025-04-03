@@ -4,6 +4,7 @@ using UnityEngine;
 
 namespace Assets.Scripts
 {
+    
     public class DataProcess
     {
          Vector3d _Position;
@@ -25,7 +26,7 @@ namespace Assets.Scripts
          public float TranslateRight;
          public float TranslateUp;
 
-         public List<bool> ActivationGroupStates;
+         public List<bool> _ActivationGroupStates;
 
          public int Stage;
 
@@ -54,7 +55,7 @@ namespace Assets.Scripts
                     data.Velocity,
                     data.Position.ToString(),
                     data.Heading.ToString(),
-                    data.Pitch.ToString()
+                    data.Pitch
                     
             );
         }

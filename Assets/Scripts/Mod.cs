@@ -397,6 +397,7 @@ namespace Assets.Scripts
 				try
 				{
 					DataProcess DP = new DataProcess();
+					Debug.LogError("DP已实例化");
 					if (!FlightSceneScript.Instance.TimeManager.Paused)
 					{
 						if (FlightSceneScript.Instance.TimeManager.CurrentMode.TimeMultiplier > 1)
@@ -463,7 +464,7 @@ namespace Assets.Scripts
 
 							Instance.RecordData.Add(newData);
 							DP.DPupdate(newData);
-							Debug.LogError("DP已实例化");
+							
 							DataProcess.LogRecordData(newData);
 							
 							
