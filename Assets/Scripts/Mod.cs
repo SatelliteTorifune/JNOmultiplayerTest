@@ -161,11 +161,11 @@ namespace Assets.Scripts
 			{
 				if (FlightSceneScript.Instance != null)
 				{
-					if (Instance.ReplayController == null)
+					/*if (Instance.ReplayController == null)
 					{
 						UnityEngine.Debug.Log("Replaying...");
 						//搜索玩家craft的craftID的craftNodeId
-						//你妈的我在写什么东西
+						//你妈的我在写什么东西 
 						if (Instance.CraftNodeID != -2147483647 && !new List<CraftNode>(FlightSceneScript.Instance.FlightState.CraftNodes).Exists(x => x.NodeId == Instance.CraftNodeID))
 						{
 							UnityEngine.Debug.Log("Unable to find craft with NodeID: " + Instance.CraftNodeID.ToString() + ", using Player Craft instead");
@@ -182,7 +182,7 @@ namespace Assets.Scripts
 					else
 					{
 						StopRecord();
-					}
+					}*/
 				}
 			}
 			else FlightSceneScript.Instance.FlightSceneUI.ShowMessage("Unable to start replay because Quick Load is disabled", false, 5f);
@@ -191,11 +191,12 @@ namespace Assets.Scripts
 		{
 			if (Instance.ReplayController != null)
 			{
-				FlightSceneScript.Instance.FlightSceneUI.ShowMessage("Replay Stopped", false, 5f);
+				/*FlightSceneScript.Instance.FlightSceneUI.ShowMessage("Replay Stopped", false, 5f);
 				UnityEngine.Debug.Log("Replay Stopped");
 				Instance.ReplayController.SetActive(false);
 				GameObject.Destroy(Instance.ReplayController);
 				Instance.ReplayController = null;
+				*/
 			}
 		}
 		public void ReplayQuickLoad()
@@ -220,8 +221,10 @@ namespace Assets.Scripts
 				FlightSceneScript.Instance.FlightSceneUI.ShowMessage("No record data", false, 5f);
 				return;
 			}
+			
 			GameState gameState = Game.Instance.GameState;
-			string quicksaveTag = gameState.GetTagQuicksave();
+			//此处进行了将GetStatesActive()变为GetGetTagActive()的更改
+			string quicksaveTag = gameState.GetTagActive();
 			if (string.IsNullOrWhiteSpace(quicksaveTag))
 			{
 				FlightSceneScript.Instance.FlightSceneUI.ShowMessage("Quick Load is currently disabled", false, 5f);
@@ -237,9 +240,10 @@ namespace Assets.Scripts
 				messageDialogScript.UseDangerButtonStyle = true;
 				messageDialogScript.OkayClicked += delegate (MessageDialogScript d)
 				{
-					Game.Instance.GameStateManager.RestoreGameStateTag(gameState.Id, quicksaveTag, gameState.GetTagActive());
+					/*Game.Instance.GameStateManager.RestoreGameStateTag(gameState.Id, quicksaveTag, gameState.GetTagActive());
 					replayOnSceneLoaded = true;
 					FlightSceneScript.Instance.ReloadFlightScene(false, FlightSceneLoadParameters.ResumeCraft(null, null), FlightSceneExitReason.QuickLoad);
+					*/
 				};
 				messageDialogScript.CancelClicked += delegate (MessageDialogScript d)
 				{
@@ -247,6 +251,7 @@ namespace Assets.Scripts
 					d.Close();
 				};
 				return;
+				
 			}
 			FlightSceneScript.Instance.FlightSceneUI.ShowMessage("No quick save available", false, 5f);
 		}
@@ -550,14 +555,7 @@ namespace Assets.Scripts
 					UnityEngine.Debug.Log("Replay Activation Failed: " + e.ToString());
 				}
 			}
-			void Start()
-			{
-
-			}
-			void Update()
-			{
-				//Replay();
-			}
+			
 
 			public void Replay()
 			{
