@@ -20,6 +20,7 @@ using Jundroo.ModTools;
 using UnityEngine;
 
 using HarmonyLib;
+using ModApi.Scenes.Events;
 
 namespace Assets.Scripts
 {
@@ -43,6 +44,7 @@ namespace Assets.Scripts
 		{
 			try
 			{
+				
 				base.OnModInitialized();
 				new Harmony("replaytools").PatchAll();
 
@@ -96,8 +98,18 @@ namespace Assets.Scripts
 			{
 				UnityEngine.Debug.Log("Init failed: " + e.ToString());
 			}
+			Game.Instance.SceneManager.SceneLoaded += OnSceneLoaded;
 		}
 
+		public void OnSceneLoaded(object sender, SceneEventArgs e)
+		{
+			if (Game.Instance.SceneManager.InFlightScene)
+			{
+				
+             
+				Debug.LogErrorFormat("You R entering a scene");
+			}
+		}
 		public void StartRecord()
 		{
 
@@ -382,6 +394,7 @@ namespace Assets.Scripts
 		}
 
 		//[DefaultExecutionOrder(1000)]
+		//record 系统你就别管了,以后记录数据要用的
 		public class RecordSystem : MonoBehaviour
 		{
 			CraftNode craft;
@@ -573,7 +586,7 @@ namespace Assets.Scripts
 							FlightSceneScript.Instance.TimeManager.SetNormalSpeedMode();
 						}
 						if (frame < Instance.RecordData.Count - 1)
-						{
+						{//回放的核心就在这里
 							float lerp = updateTimer / Instance.MaxUpdateIntervalMs;
 							if (ModSettings.Instance.ReplayMode == ModSettings.replayModes.Precise)
 							{
@@ -599,7 +612,7 @@ namespace Assets.Scripts
 									lerp
 								);
 							}
-
+							//复刻记录的输入
 							if (ModSettings.Instance.ReplayCraftControls)
 							{
 								cp.Controls.Pitch = Mathf.Lerp(Instance.RecordData[frame].Pitch, Instance.RecordData[frame + 1].Pitch, lerp);
@@ -649,15 +662,7 @@ namespace Assets.Scripts
 							Instance.ReplayController = null;
 						}
 
-						updateTimer += Time.deltaTime * 1000;
-						if (updateTimer >= Instance.MaxUpdateIntervalMs)
-						{
-							for (int i = cp.CurrentStage; i < Instance.RecordData[frame].Stage; i++)
-								cp.ActivateStage();
-							
-							updateTimer = 0;
-							frame++;
-						}
+						
 
 					}
 
