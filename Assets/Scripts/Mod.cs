@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-
+using System.Threading;
 using ModApi;
 using ModApi.Craft;
 using ModApi.Craft.Parts;
@@ -107,7 +107,9 @@ namespace Assets.Scripts
 			{
 				
              
-				Debug.LogErrorFormat("You R entering a scene");
+				Debug.LogErrorFormat("你进入飞行界面了");
+				Game.Instance.FlightScene.FlightSceneUI.ShowMessage("乐",true,100f);
+				
 			}
 		}
 		public void StartRecord()

@@ -5,8 +5,6 @@ using System.Text;
 using ModApi;
 using ModApi.Common;
 using ModApi.Mods;
-using ModApi.Craft.Parts;
-using ModApi.Craft.Parts.Editor;
 using ModApi.Design;
 using ModApi.Design.Events;
 using ModApi.Scenes.Events;
@@ -15,6 +13,9 @@ using ModApi.GameLoop;
 using ModApi.GameLoop.Interfaces;
 using ModApi.Craft.Parts.Input;   
 using UnityEngine;
+using Assets.Scripts.Flight;
+using ModApi.Settings.Core;
+using ModApi.Settings.Core.Events;
 using UnityEngine.EventSystems;
 using ModApi.Craft.Parts.Events;
 using Assets.Scripts.Craft;
@@ -23,12 +24,16 @@ using System.Net.Sockets;
 
 namespace Assets.Scripts
 {
-    
-    
+
+    public partial class Mod
+    {
+        
+    }
     
     
     public class DataProcess
     {
+         
          Vector3d _Position;
          Vector3d _Velocity;
          Quaterniond _Rotation;
@@ -81,5 +86,6 @@ namespace Assets.Scripts
                     
             );
         }
+        
     }
 }
