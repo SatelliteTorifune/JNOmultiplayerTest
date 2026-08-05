@@ -111,14 +111,16 @@ namespace Assets.Scripts
 			}
 		}
 		//通过地面位置与地面速度设置位置
+		//注意：groundedTransform 是"表面坐标朝向"（GroundedSurfaceRotation），
+		//需要先乘行星自转转成行星空间朝向，再经参考系转成帧空间朝向（Transform.rotation 使用帧空间）。
 		public static bool SetCraftTransform(CraftNode craft, Vector3d surfacePosition, Vector3d surfaceVelocity, Quaterniond groundedTransform, IPlanetNode planet)
 		{
 			try
 			{
-				var orientation = groundedTransform;
 				var position = surfacePosition == Vector3d.zero ? craft.Position : planet.SurfaceVectorToPlanetVector(surfacePosition);
 				var velocity = planet.SurfaceVectorToPlanetVector(surfaceVelocity);
-				SetCraftTransform(craft, position, velocity, new Quaternion((float)orientation.x, (float)orientation.y, (float)orientation.z, (float)orientation.w));
+				Quaterniond planetHeading = planet.Rotation * groundedTransform;
+				SetCraftTransform(craft, position, velocity, GetFrameRotation(craft, planetHeading));
 				return true;
 			}
 			catch (Exception e)
@@ -132,10 +134,11 @@ namespace Assets.Scripts
 		{
 			try
 			{
-				var rotation = groundedTransform;
 				var position = surfacePosition == Vector3d.zero ? craft.Position : planet.SurfaceVectorToPlanetVector(surfacePosition);
 				var velocity = planet.SurfaceVectorToPlanetVector(surfaceVelocity);
-				SetCraftTransform(craft, position, velocity, rotation);
+				Quaterniond grounded = new Quaterniond(groundedTransform.x, groundedTransform.y, groundedTransform.z, groundedTransform.w);
+				Quaterniond planetHeading = planet.Rotation * grounded;
+				SetCraftTransform(craft, position, velocity, GetFrameRotation(craft, planetHeading));
 				return true;
 			}
 			catch (Exception e)
@@ -149,10 +152,11 @@ namespace Assets.Scripts
 		{
 			try
 			{
-				var rotation = new Quaternion((float)planet.Rotation.x, (float)planet.Rotation.y, (float)planet.Rotation.z, (float)planet.Rotation.w) * groundedTransform;
+				Quaterniond grounded = new Quaterniond(groundedTransform.x, groundedTransform.y, groundedTransform.z, groundedTransform.w);
+				Quaterniond planetHeading = planet.Rotation * grounded;
 				var position = planet.GetSurfacePosition(latitude, longtitude, AltitudeType.AboveSeaLevel, asl);
 				var velocity = planet.SurfaceVectorToPlanetVector(surfaceVelocity);
-				SetCraftTransform(craft, position, velocity, rotation);
+				SetCraftTransform(craft, position, velocity, GetFrameRotation(craft, planetHeading));
 				return true;
 			}
 			catch (Exception e)
@@ -160,6 +164,20 @@ namespace Assets.Scripts
 				FlightSceneScript.Instance.FlightSceneUI.ShowMessage(e.ToString(), false, 10f);
 				return false;
 			}
+		}
+
+		/// <summary>
+		/// 把"行星空间朝向"转换为"帧空间朝向"（Transform.rotation 使用帧空间）。
+		/// GameView/参考系未就绪时回退为直接使用行星空间朝向（保持向后兼容，不抛异常）。
+		/// </summary>
+		private static Quaternion GetFrameRotation(CraftNode craft, Quaterniond planetHeading)
+		{
+			IReferenceFrame frame = craft.GameView != null ? craft.GameView.ReferenceFrame : null;
+			if (frame != null)
+			{
+				return frame.PlanetToFrameRotation(planetHeading);
+			}
+			return new Quaternion((float)planetHeading.x, (float)planetHeading.y, (float)planetHeading.z, (float)planetHeading.w);
 		}
 		//禁用craft1的物理计算更新
 		public static bool DisableCraftPhysicCalculation(ref CraftNode craft)
@@ -198,7 +216,7 @@ namespace Assets.Scripts
 					}
 
 				}
-				UnityEngine.Debug.Log("Calculations Disabled");
+				Mod.Log("Calculations Disabled");
 				return true;
 			}
 			catch (Exception e)

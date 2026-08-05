@@ -14,7 +14,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _assemblies:
   - aMptest.dll
-  _author: sdafafad
+  _author: Torifune
   _description: 
   _loadPriority: 10009
   _name: aMptest
