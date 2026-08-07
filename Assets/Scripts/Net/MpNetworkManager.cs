@@ -23,7 +23,7 @@ namespace Assets.Scripts.Net
 	{
 		public static MpNetworkManager Instance { get; private set; }
 
-		[NonSerialized] public UdpTransport Transport = new UdpTransport();
+		[NonSerialized] public TcpTransport Transport = new TcpTransport();
 
 		public bool IsServer { get; private set; }
 		public bool IsConnected { get; private set; }
@@ -33,8 +33,11 @@ namespace Assets.Scripts.Net
 
 		[Tooltip("状态包发送间隔(ms)，默认 50ms = 20Hz")]
 		public float SendIntervalMs = 50f;
-		[Tooltip("对端超时判定(ms)")]
-		public long TimeoutMs = 3000;
+		[Tooltip("对端超时判定(ms)。TCP 下连接断开由 read loop 检测，此值仅用于半开连接兜底，应设得较大以容忍主线程卡顿/GC/场景加载")]
+		public long TimeoutMs = 15000;
+
+		/// <summary>客户端未收到房主 CraftDataAck 时，CraftData 重发间隔（秒）。</summary>
+		private const float CraftResendIntervalSec = 1.5f;
 
 		private readonly Dictionary<int, MpPeer> _playersByPlayerId = new Dictionary<int, MpPeer>();
 		private readonly Dictionary<int, RemoteCraft> _remoteCrafts = new Dictionary<int, RemoteCraft>();
@@ -43,8 +46,13 @@ namespace Assets.Scripts.Net
 		private float _sendTimer;
 		private float _keepAliveTimer;
 		private float _selfStateLogTimer;
+		private float _craftResendTimer; // 客户端重发 CraftData 节流计时
+		private float _hostCraftResendTimer; // 房主重发 host craft（PlayerJoin）节流计时
+		private float _remoteVisualTimer; // 远程飞船视觉强制恢复节流计时（游戏可能原生隐藏非活动幽灵飞船的 Renderer）
 		private long _lastPingTick;
-		private bool _craftReported;
+		private bool _craftReported;      // 本机飞船已上报且被房主确认（客户端收到 CraftDataAck 才置 true）
+		// 房主：记录"已发给客户端、但尚未收到 PlayerJoinAck 确认"的 host craft（key=peer.EndPoint）。
+		private readonly Dictionary<string, float> _hostCraftResend = new Dictionary<string, float>();
 		private string _localCraftXml = string.Empty;
 		private static float _headingDiagTimer; // 朝向诊断日志节流计时器
 
@@ -82,10 +90,10 @@ namespace Assets.Scripts.Net
 		public bool Host(int port)
 		{
 			Stop();
-			Mod.LogLobby("MP.Host(): attempting to bind UDP on port " + port + " ...");
+			Mod.LogLobby("MP.Host(): attempting to bind TCP on port " + port + " ...");
 			if (!Transport.Start(port))
 			{
-				Mod.LogError("MP.Host FAILED: UdpTransport.Start(" + port + ") returned false (port may be in use)");
+				Mod.LogError("MP.Host FAILED: TcpTransport.Start(" + port + ") returned false (port may be in use)");
 				return false;
 			}
 			IsServer = true;
@@ -111,7 +119,7 @@ namespace Assets.Scripts.Net
 			Mod.LogLobby("MP.Join(): connecting to " + host + ":" + port + " as '" + PlayerName + "' ...");
 			if (!Transport.StartClient(host, port, hello))
 			{
-				Mod.LogError("MP.Join FAILED: UdpTransport.StartClient(" + host + ":" + port + ") returned false");
+				Mod.LogError("MP.Join FAILED: TcpTransport.StartClient(" + host + ":" + port + ") returned false");
 				return false;
 			}
 			IsServer = false;
@@ -135,6 +143,9 @@ namespace Assets.Scripts.Net
 			PlayerId = -1;
 			LocalNodeId = -1;
 			_craftReported = false;
+			_craftResendTimer = 0f;
+			_hostCraftResendTimer = 0f;
+			_hostCraftResend.Clear();
 			_spawnMissLogged.Clear();
 			_spawnAttemptTime.Clear();
 			lock (_playersByPlayerId) _playersByPlayerId.Clear();
@@ -158,28 +169,44 @@ namespace Assets.Scripts.Net
 			bool changed = nodeId != LocalNodeId || !string.Equals(_localCraftXml, craftXml);
 			LocalNodeId = nodeId;
 			_localCraftXml = craftXml;
-			if (!changed && _craftReported) return;
 
 			if (IsServer)
 			{
+				// 房主：广播自己的飞船给所有客户端；已广播过且未变化则跳过。
+				if (_craftReported && !changed) return;
 				Transport.Broadcast(MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, craftXml));
+				_craftReported = true; // 房主无需确认（新加入者由 OnHello 补发）
+				// 对所有已连接 peer 登记待确认：客户端回 PlayerJoinAck 前周期性重发（防公网大分片丢失）。
+				foreach (MpPeer p in Transport.GetPeers())
+				{
+					_hostCraftResend[p.EndPoint.ToString()] = Time.unscaledTime;
+				}
 				Mod.LogLobby("MP.RefreshLocalCraft (host): broadcast PlayerJoin playerId=" + PlayerId + ", nodeId=" + LocalNodeId +
-					", xmlLen=" + (craftXml == null ? 0 : craftXml.Length));
+					", xmlLen=" + (craftXml == null ? 0 : craftXml.Length) +
+					", pendingAck=" + _hostCraftResend.Count);
 			}
 			else
 			{
+				// 客户端：发给房主。发出去后不置 _craftReported，
+				// 必须等房主 CraftDataAck 确认（防大分片公网丢包：确认前每 1.5s 重发）。
+				bool sent = false;
 				foreach (MpPeer peer in Transport.GetPeers())
 				{
 					if (peer.IsServer)
 					{
 						Transport.SendTo(peer, MpMessages.EncodeCraftData(LocalNodeId, craftXml));
 						Mod.LogLobby("MP.RefreshLocalCraft (client): sent CraftData nodeId=" + LocalNodeId + " to host " + peer.EndPoint +
-							", xmlLen=" + (craftXml == null ? 0 : craftXml.Length));
+							", xmlLen=" + (craftXml == null ? 0 : craftXml.Length) +
+							", acked=" + _craftReported);
+						sent = true;
 						break;
 					}
 				}
+				if (!sent)
+				{
+					Mod.LogLobby("MP.RefreshLocalCraft (client): no server peer found yet, will retry (nodeId=" + LocalNodeId + ")");
+				}
 			}
-			_craftReported = true;
 			Mod.Log("MP: local craft NodeId=" + LocalNodeId + ", xmlLen=" + (craftXml == null ? 0 : craftXml.Length));
 		}
 
@@ -189,9 +216,40 @@ namespace Assets.Scripts.Net
 		{
 			if (!IsConnected) return;
 			Transport.DrainIncoming();
-			if (!_craftReported) RefreshLocalCraft();
+			if (!_craftReported)
+			{
+				// 本机飞船未上报/未确认：周期性重试（CraftData 分片在公网可能丢包，
+				// 只发一次遇到丢片会导致房主永远收不齐，故确认前持续重发）。
+				_craftResendTimer -= Time.unscaledDeltaTime;
+				if (_craftResendTimer <= 0f)
+				{
+					_craftResendTimer = CraftResendIntervalSec;
+					RefreshLocalCraft();
+				}
+			}
+			// 房主：已发 host craft 但客户端尚未回 PlayerJoinAck 的 peer，周期性重发
+			// （房主飞船 XML 可能达 500KB+，公网 UDP 大分片会丢，必须确认前持续重发）。
+			if (IsServer && _hostCraftResend.Count > 0 && LocalNodeId >= 0 && !string.IsNullOrEmpty(_localCraftXml))
+			{
+				_hostCraftResendTimer -= Time.unscaledDeltaTime;
+				if (_hostCraftResendTimer <= 0f)
+				{
+					_hostCraftResendTimer = CraftResendIntervalSec;
+					byte[] hostJoin = MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, _localCraftXml);
+					foreach (MpPeer peer in Transport.GetPeers())
+					{
+						if (_hostCraftResend.ContainsKey(peer.EndPoint.ToString()))
+						{
+							Transport.SendTo(peer, hostJoin);
+							Mod.LogLobby("MP.Update (host): resend host craft PlayerJoin (nodeId=" + LocalNodeId + ") to " +
+								peer.EndPoint + " (unacked)");
+						}
+					}
+				}
+			}
 			ProcessOutgoing();
 			UpdateRemoteCrafts();
+			EnforceRemoteCraftVisuals();
 			SendKeepAlive();
 			Transport.CheckTimeouts(TimeoutMs);
 		}
@@ -206,6 +264,9 @@ namespace Assets.Scripts.Net
 
 			Mod.recdata data;
 			if (!TrySampleLocalCraft(out data)) return;
+			// 客户端在收到 Welcome（拿到 PlayerId）前不发状态包：
+			// 否则会以 PlayerId=-1 发包，房主无法关联到已登记玩家（"state for player -1"）。
+			if (PlayerId < 0) return;
 
 			// 周期性本机状态日志（每 10 秒一次，便于与接收端目标状态核对）
 			_selfStateLogTimer -= Time.unscaledDeltaTime;
@@ -229,7 +290,7 @@ namespace Assets.Scripts.Net
 					? selfNode.GameView.ReferenceFrame.FrameToPlanetRotation(data.Heading.ToQuaternion()) : Quaterniond.identity;
 				Vector3 fwd = (selfNode != null && selfNode.CraftScript != null) ? selfNode.CraftScript.Transform.forward : Vector3.zero;
 				Vector3 up = (selfNode != null && selfNode.CraftScript != null) ? selfNode.CraftScript.Transform.up : Vector3.zero;
-				Mod.Log("[朝向诊断|本机P" + PlayerId + "] 发送heading(帧)=" + Q(data.Heading) +
+				/*Mod.Log("[朝向诊断|本机P" + PlayerId + "] 发送heading(帧)=" + Q(data.Heading) +
 					" | 行星空间=" + Q(headingToPlanet) +
 					" | 根Transform=" + Q(tr) +
 					" | comRot=" + Q(comRot) +
@@ -238,7 +299,7 @@ namespace Assets.Scripts.Net
 					" | fwd=(" + fwd.x.ToString("F2") + "," + fwd.y.ToString("F2") + "," + fwd.z.ToString("F2") + ")" +
 					" up=(" + up.x.ToString("F2") + "," + up.y.ToString("F2") + "," + up.z.ToString("F2") + ")" +
 					" | planetAngle=" + planetAngle.ToString("F2") + " frameAngle=" + frameAngle.ToString("F4") +
-					" | body:" + BuildBodyPoseSummary(selfNode != null ? selfNode.CraftScript : null));
+					" | body:" + BuildBodyPoseSummary(selfNode != null ? selfNode.CraftScript : null));*/
 			}
 
 			double time = FlightSceneScript.Instance.FlightState.Time;
@@ -315,6 +376,48 @@ namespace Assets.Scripts.Net
 				case MpMessageType.Pong:
 					_lastPingTick = DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;
 					break;
+				case MpMessageType.CraftDataAck:
+					OnCraftDataAck(packet);
+					break;
+				case MpMessageType.PlayerJoinAck:
+					OnPlayerJoinAck(peer, packet);
+					break;
+			}
+		}
+
+		/// <summary>
+		/// 客户端收到房主的 CraftDataAck：确认房主已完整收到本机飞船（nodeId 匹配），
+		/// 此后停止周期性重发 CraftData。
+		/// </summary>
+		private void OnCraftDataAck(byte[] packet)
+		{
+			if (IsServer) return;
+			int nodeId;
+			if (!MpMessages.TryDecodeCraftDataAck(packet, out nodeId)) return;
+			if (nodeId < 0) return;
+			if (nodeId == LocalNodeId)
+			{
+				_craftReported = true;
+				Mod.LogLobby("MP.OnCraftDataAck (client): host confirmed craft NodeId=" + nodeId + ", stop resending");
+			}
+		}
+
+		/// <summary>
+		/// 房主收到客户端的 PlayerJoinAck：该客户端已收到指定玩家的飞船 XML。
+		/// 若确认的是房主自己的飞船（playerId == PlayerId），停止对该 peer 重发 host craft。
+		/// </summary>
+		private void OnPlayerJoinAck(MpPeer peer, byte[] packet)
+		{
+			if (!IsServer) return;
+			int playerId;
+			if (!MpMessages.TryDecodePlayerJoinAck(packet, out playerId)) return;
+			if (peer == null || peer.EndPoint == null) return;
+			if (playerId == PlayerId)
+			{
+				if (_hostCraftResend.Remove(peer.EndPoint.ToString()))
+				{
+					Mod.LogLobby("MP.OnPlayerJoinAck (host): peer " + peer.EndPoint + " confirmed host craft, stop resending");
+				}
 			}
 		}
 
@@ -330,6 +433,10 @@ namespace Assets.Scripts.Net
 			// 注意：此时还不知道加入者飞船的 NodeId，
 			// 需要等加入者进入飞行场景后通过 CraftData 消息上报（见 OnCraftData）。
 			peer.PlayerId = NextPlayerId();
+			// 立即登记：让房主玩家表在 CraftData 到达前就有该玩家，
+			// 否则收到其 State 包时找不到玩家/飞船（"state for player x but no craft info to spawn"）。
+			// NodeId/CraftXml 仍为 -1/空，后续由 OnCraftData 更新。
+			RegisterPlayer(peer);
 
 			// 回复 Welcome
 			Transport.SendTo(peer, MpMessages.EncodeWelcome(peer.PlayerId, -1, DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond));
@@ -349,6 +456,8 @@ namespace Assets.Scripts.Net
 			{
 				Transport.SendTo(peer, MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, _localCraftXml));
 				Mod.LogLobby("MP.OnHello (host): sent host craft PlayerJoin (nodeId=" + LocalNodeId + ") to new client " + peer.EndPoint);
+				// 登记待确认：客户端回 PlayerJoinAck 前，每 1.5s 重发 host craft（防公网大分片丢失）。
+				_hostCraftResend[peer.EndPoint.ToString()] = Time.unscaledTime;
 			}
 		}
 
@@ -367,11 +476,14 @@ namespace Assets.Scripts.Net
 			peer.CraftXml = craftXml;
 			RegisterPlayer(peer);
 
+			// 回 Ack 给上报者：告知已完整收到其飞船，客户端据此停止周期性重发。
+			Transport.SendTo(peer, MpMessages.EncodeCraftDataAck(nodeId));
+
 			// 广播给所有客户端（含新玩家本人，用于互相生成对方飞船）
 			Transport.Broadcast(MpMessages.EncodePlayerJoin(peer.PlayerId, peer.NodeId, craftXml));
 			Mod.LogLobby("MP.OnCraftData (host): '" + peer.PlayerName + "' craft registered NodeId=" + nodeId +
 				", xmlLen=" + (craftXml == null ? 0 : craftXml.Length) +
-				", broadcast PlayerJoin to " + Transport.GetPeersCount() + " peer(s)");
+				", sent CraftDataAck, broadcast PlayerJoin to " + Transport.GetPeersCount() + " peer(s)");
 			OnPlayerJoined?.Invoke(peer);
 		}
 
@@ -381,6 +493,7 @@ namespace Assets.Scripts.Net
 			int playerId, nodeId; long serverTick;
 			if (!MpMessages.TryDecodeWelcome(packet, out playerId, out nodeId, out serverTick)) return;
 			PlayerId = playerId;
+			peer.PlayerId = playerId;
 			peer.IsServer = true;
 			Mod.LogLobby("MP.OnWelcome (client): received Welcome, PlayerId=" + playerId +
 				", nodeId=" + nodeId + ", serverTick=" + serverTick + ", peer=" + peer.EndPoint);
@@ -394,6 +507,11 @@ namespace Assets.Scripts.Net
 			RegisterPlayer(p);
 			Mod.LogLobby("MP.OnPlayerJoin: playerId=" + playerId + ", nodeId=" + nodeId +
 				", craftXmlLen=" + (craftXml == null ? 0 : craftXml.Length) + ", peer=" + peer.EndPoint);
+			// 客户端回 PlayerJoinAck：告知房主已收到该玩家飞船，房主据此停止重发（防公网大分片丢失）。
+			if (!IsServer && peer != null && peer.EndPoint != null)
+			{
+				Transport.SendTo(peer, MpMessages.EncodePlayerJoinAck(playerId));
+			}
 			OnPlayerJoined?.Invoke(p);
 			// M2：根据 craftXml 生成远程飞船
 		}
@@ -475,6 +593,7 @@ namespace Assets.Scripts.Net
 		private void HandlePeerTimeout(MpPeer peer)
 		{
 			Mod.LogLobby("MP peer timeout: " + peer.EndPoint + " (PlayerId=" + peer.PlayerId + ", NodeId=" + peer.NodeId + ")");
+			if (peer != null && peer.EndPoint != null) _hostCraftResend.Remove(peer.EndPoint.ToString());
 			MpPeer removed = null;
 			lock (_playersByPlayerId)
 			{
@@ -570,8 +689,8 @@ namespace Assets.Scripts.Net
 				}
 
 				// [朝向诊断|远端P{pid}飞船] 生成时：Heading(行星字段) 应≈ 传入的 spawnHeading(行星空间)。
-				Mod.Log("[朝向诊断|远端P" + peer.PlayerId + "飞船] 生成: Heading(行星)=" + Q(remote.Heading) +
-					" | 传入spawnHeading(行星)=" + Q(spawnHeading));
+				//Mod.Log("[朝向诊断|远端P" + peer.PlayerId + "飞船] 生成: Heading(行星)=" + Q(remote.Heading) +
+					//" | 传入spawnHeading(行星)=" + Q(spawnHeading));
 
 				// 先登记（无论 CraftScript 是否已构建），避免状态包反复触发重新生成
 				RemoteCraft rc = new RemoteCraft { PlayerId = peer.PlayerId, Node = remote, Target = new Mod.recdata() };
@@ -622,6 +741,45 @@ namespace Assets.Scripts.Net
 			{
 				rc.Node.GameObject.SetActive(false); // MVP：隐藏而非销毁
 				Mod.LogLobby("MP: removed (hidden) remote craft for player " + playerId);
+			}
+		}
+
+		/// <summary>
+		/// 强制恢复远程飞船的视觉：游戏原生机制可能对"非活动/幽灵"飞船禁用 Renderer 或
+		/// 停用 GameObject（实测靠近本机飞船时视觉模型消失但 CraftNode 仍在）。
+		/// 节流恢复，避免每帧遍历 Renderer 的开销。
+		/// </summary>
+		private void EnforceRemoteCraftVisuals()
+		{
+			if (_remoteCrafts.Count == 0) return;
+			_remoteVisualTimer -= Time.unscaledDeltaTime;
+			if (_remoteVisualTimer > 0f) return;
+			_remoteVisualTimer = 0.5f;
+
+			foreach (RemoteCraft rc in _remoteCrafts.Values)
+			{
+				if (rc.Node == null || rc.Node.GameObject == null) continue;
+				GameObject go = rc.Node.GameObject;
+				try
+				{
+					if (!go.activeSelf)
+					{
+						go.SetActive(true);
+						Mod.Log("MP: re-activated remote craft GameObject for player " + rc.PlayerId);
+					}
+					foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true))
+					{
+						if (!r.enabled)
+						{
+							r.enabled = true;
+							Mod.Log("MP: re-enabled renderer on remote craft for player " + rc.PlayerId);
+						}
+					}
+				}
+				catch (Exception e)
+				{
+					Mod.LogError("EnforceRemoteCraftVisuals error (player " + rc.PlayerId + "): " + e.Message);
+				}
 			}
 		}
 
@@ -705,7 +863,7 @@ namespace Assets.Scripts.Net
 				// SetPhysicsEnabled(false) 为 no-op，EnablePhysics(false)/RecenterTransformOnCoM 不会执行，
 				// 部件本就被 CraftBuilder 按 XML 正确摆放，无需恢复。
 				// body 的动态局部姿态改由状态包 BodyRotations 同步（见 ApplyRemoteState）。
-				Mod.Log("[朝向诊断|远端P" + rc.PlayerId + "飞船] 已跳过部件恢复循环(部件保持XML设计姿态)");
+				//Mod.Log("[朝向诊断|远端P" + rc.PlayerId + "飞船] 已跳过部件恢复循环(部件保持XML设计姿态)");
 
 				if (rc.HasState)
 				{
@@ -915,6 +1073,7 @@ namespace Assets.Scripts.Net
 			}
 			Vector3 outFwd = rc.Node.CraftScript.Transform.forward;
 			Vector3 outUp = rc.Node.CraftScript.Transform.up;
+			/*
 			Mod.Log("[朝向诊断|远端P" + rc.PlayerId + "飞船] 收到heading(帧)=" + Q(data.Heading) +
 				" | 根Transform=" + Q(outRot) +
 				" | rootPartRot=" + Q(rootPartRot) +
@@ -924,7 +1083,7 @@ namespace Assets.Scripts.Net
 				" | fwd=(" + outFwd.x.ToString("F2") + "," + outFwd.y.ToString("F2") + "," + outFwd.z.ToString("F2") + ")" +
 				" up=(" + outUp.x.ToString("F2") + "," + outUp.y.ToString("F2") + "," + outUp.z.ToString("F2") + ")" +
 				" | planetAngle=" + planetAngle.ToString("F2") +
-				" | body:" + BuildBodyPoseSummary(rc.Node.CraftScript));
+				" | body:" + BuildBodyPoseSummary(rc.Node.CraftScript));*/
 		}
 
 		// ---------------- 本机状态采样 ----------------

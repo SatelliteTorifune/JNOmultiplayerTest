@@ -126,7 +126,7 @@ namespace Assets.Scripts
 				", Transport.IsRunning=" + mgr.Transport.IsRunning +
 				", LocalPort=" + mgr.Transport.LocalPort +
 				", peerCount=" + mgr.Transport.GetPeersCount());
-			if (!ok) LogLobby("HostLobby FAILED: see above for UdpTransport start error (port " + port + " may already be in use)");
+			if (!ok) LogLobby("HostLobby FAILED: see above for TcpTransport start error (port " + port + " may already be in use)");
 			return ok;
 		}
 

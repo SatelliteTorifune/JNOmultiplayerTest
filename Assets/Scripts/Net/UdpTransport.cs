@@ -43,9 +43,18 @@ namespace Assets.Scripts.Net
 
 		private const byte FragmentMarker = 0x7F;                       // 分片包头标记（与原消息类型字节区分）
 		private const int FragmentHeaderSize = 1 + 4 + 4 + 4;           // marker + fragId(int) + total(int) + index(int)
-		private const int MaxDatagramSize = 60000;                      // 单个 UDP 数据报安全负载上限
+		// 单个 UDP 数据报负载上限。必须远小于 MTU(1500) 以避免 IP 层分片：
+		// 实测经 frp 内网穿透时，>MTU 的大数据报会触发 IP 分片，而公网 NAT/frp 会丢弃分片，
+		// 导致 58KB 分片全部丢失（小包却能通）。
+		// 进一步实测：1400 字节分片在"公网客户端 -> frps"方向仍被丢弃（frpc->frps 方向却通），
+		// 说明 frps 对公网入站 UDP 包大小限制更低。降到 1000 字节更安全（覆盖常见 1024 限制）。
+		private const int MaxDatagramSize = 1000;
 		private const int MaxFragmentPayload = MaxDatagramSize - FragmentHeaderSize;
 		private const long FragmentTimeoutMs = 15000;                   // 分片重组超时（丢弃不完整分片）
+
+		// 分片接收诊断（节流打印，用于确认大分片是否穿越公网到达本端）
+		private long _fragDiagLastLogTick;
+		private int _fragDiagCount;
 
 		private UdpClient _client;
 		private Thread _recvThread;
@@ -227,6 +236,17 @@ namespace Assets.Scripts.Net
 			int index = ReadInt32(fragData, 9);
 			int payloadLen = fragData.Length - FragmentHeaderSize;
 			if (total <= 0 || index < 0 || index >= total || payloadLen <= 0) return;
+
+			// 诊断：统计分片接收（节流打印），确认大分片是否穿越公网到达本端。
+			_fragDiagCount++;
+			long nowDiag = NowMs;
+			if (nowDiag - _fragDiagLastLogTick > 2000)
+			{
+				Mod.Log("UdpTransport: received " + _fragDiagCount + " fragments in last 2s (sample id=" + fragId +
+					" idx=" + index + "/" + total + " from " + source + ")");
+				_fragDiagLastLogTick = nowDiag;
+				_fragDiagCount = 0;
+			}
 
 			string key = source.ToString();
 			Dictionary<int, FragmentBuffer> byId;

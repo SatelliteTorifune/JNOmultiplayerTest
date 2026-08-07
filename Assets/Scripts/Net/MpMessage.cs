@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.IO.Compression;
+using System.Text;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -19,6 +21,8 @@ namespace Assets.Scripts.Net
 		CraftData = 7,   // craft XML 交换（加入者把自己的飞船发给房主）
 		Ping = 8,        // RTT 探测
 		Pong = 9,
+		CraftDataAck = 10, // 房主 -> 加入者：确认已收到其飞船（nodeId），客户端据此停止重发
+		PlayerJoinAck = 11, // 加入者 -> 房主：确认已收到指定玩家（playerId）的飞船 XML，房主据此停止重发 PlayerJoin
 	}
 
 	/// <summary>
@@ -45,6 +49,41 @@ namespace Assets.Scripts.Net
 		{
 			if (buffer == null || buffer.Length < 1) return 0;
 			return (MpMessageType)buffer[0];
+		}
+
+		// ---------------- craft XML 压缩 ----------------
+		// 借鉴 SP2（Utility.CompressCraftXml）：飞船 XML 体积大（数百 KB），
+		// 跨公网/UDP 传输前必须先压缩，可缩小 5~10 倍、大幅减少分片数量。
+
+		/// <summary>压缩飞船 XML（UTF-8 + GZip）。空串也返回非空字节，保证可逆。</summary>
+		public static byte[] CompressXml(string xml)
+		{
+			byte[] raw = Encoding.UTF8.GetBytes(xml ?? string.Empty);
+			using (MemoryStream ms = new MemoryStream())
+			{
+				using (GZipStream gz = new GZipStream(ms, CompressionMode.Compress, true))
+				{
+					gz.Write(raw, 0, raw.Length);
+				}
+				return ms.ToArray();
+			}
+		}
+
+		/// <summary>解压飞船 XML。损坏/空输入返回空字符串（由调用方容错）。</summary>
+		public static string DecompressXml(byte[] compressed)
+		{
+			if (compressed == null || compressed.Length == 0) return string.Empty;
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(compressed))
+				using (GZipStream gz = new GZipStream(ms, CompressionMode.Decompress))
+				using (MemoryStream outMs = new MemoryStream())
+				{
+					gz.CopyTo(outMs);
+					return Encoding.UTF8.GetString(outMs.ToArray());
+				}
+			}
+			catch { return string.Empty; }
 		}
 
 		// ---------------- Hello / Welcome ----------------
@@ -107,7 +146,9 @@ namespace Assets.Scripts.Net
 			{
 				w.Write(playerId);
 				w.Write(nodeId);
-				w.Write(craftXml ?? string.Empty);
+				byte[] xmlBytes = CompressXml(craftXml ?? string.Empty);
+				w.Write(xmlBytes.Length);
+				w.Write(xmlBytes);
 			});
 		}
 
@@ -122,7 +163,8 @@ namespace Assets.Scripts.Net
 					if (r.ReadByte() != (byte)MpMessageType.PlayerJoin) return false;
 					playerId = r.ReadInt32();
 					nodeId = r.ReadInt32();
-					craftXml = r.ReadString();
+					int len = r.ReadInt32();
+					craftXml = DecompressXml(r.ReadBytes(len));
 					return true;
 				}
 			}
@@ -193,7 +235,9 @@ namespace Assets.Scripts.Net
 			return Pack(MpMessageType.CraftData, w =>
 			{
 				w.Write(nodeId);
-				w.Write(craftXml ?? string.Empty);
+				byte[] xmlBytes = CompressXml(craftXml ?? string.Empty);
+				w.Write(xmlBytes.Length);
+				w.Write(xmlBytes);
 			});
 		}
 
@@ -207,7 +251,54 @@ namespace Assets.Scripts.Net
 				{
 					if (r.ReadByte() != (byte)MpMessageType.CraftData) return false;
 					nodeId = r.ReadInt32();
-					craftXml = r.ReadString();
+					int len = r.ReadInt32();
+					craftXml = DecompressXml(r.ReadBytes(len));
+					return true;
+				}
+			}
+			catch { return false; }
+		}
+
+		// ---------------- CraftDataAck（房主确认收到加入者飞船） ----------------
+
+		public static byte[] EncodeCraftDataAck(int nodeId)
+		{
+			return Pack(MpMessageType.CraftDataAck, w => w.Write(nodeId));
+		}
+
+		public static bool TryDecodeCraftDataAck(byte[] buffer, out int nodeId)
+		{
+			nodeId = -1;
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					if (r.ReadByte() != (byte)MpMessageType.CraftDataAck) return false;
+					nodeId = r.ReadInt32();
+					return true;
+				}
+			}
+			catch { return false; }
+		}
+
+		// ---------------- PlayerJoinAck（加入者确认收到指定玩家飞船 XML） ----------------
+
+		public static byte[] EncodePlayerJoinAck(int playerId)
+		{
+			return Pack(MpMessageType.PlayerJoinAck, w => w.Write(playerId));
+		}
+
+		public static bool TryDecodePlayerJoinAck(byte[] buffer, out int playerId)
+		{
+			playerId = -1;
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					if (r.ReadByte() != (byte)MpMessageType.PlayerJoinAck) return false;
+					playerId = r.ReadInt32();
 					return true;
 				}
 			}
