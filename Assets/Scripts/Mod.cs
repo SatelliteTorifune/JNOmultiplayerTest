@@ -24,7 +24,6 @@ namespace Assets.Scripts
 		public static Mod Instance { get; } = GameModBase.GetModInstance<Mod>();
 
 		public GameObject MPGameObject = null;
-		private bool _mpCommandsRegistered;
 
 		public static void Log(object message)
 		{
@@ -82,30 +81,13 @@ namespace Assets.Scripts
 		}
 
 		/// <summary>注册联机控制台命令（HostLobby / JoinLobby / StopLobby）。</summary>
+		
+
 		private void RegisterMpCommands()
 		{
-			try
-			{
-				RegisterMpCommandsNow();
-			}
-			catch (Exception e)
-			{
-				Log("RegisterMpCommands failed: " + e.ToString());
-			}
-		}
-
-		private void RegisterMpCommandsNow()
-		{
-			if (_mpCommandsRegistered) return;
-
-			DevConsoleApi.RegisterCommand("HostLobby", new Action(() => HostLobby()));
 			DevConsoleApi.RegisterCommand<int>("HostLobbyPort", new Action<int>(port => HostLobby(port)));
-			DevConsoleApi.RegisterCommand<string>("JoinLobby", new Action<string>(host => JoinLobby(host)));
 			DevConsoleApi.RegisterCommand<string, int>("JoinLobbyPort", new Action<string, int>((host, port) => JoinLobby(host, port)));
 			DevConsoleApi.RegisterCommand("StopLobby", new Action(() => StopLobby()));
-
-			_mpCommandsRegistered = true;
-			Log("MP console commands registered");
 		}
 
 		/// <summary>作为房主开启联机房间。</summary>
@@ -131,8 +113,15 @@ namespace Assets.Scripts
 		}
 
 		/// <summary>作为客户端加入房主。</summary>
-		public bool JoinLobby(string host, int port = 25555, string playerName = "Player")
+		public bool JoinLobby(string host, int port = 25555, string playerName = null)
 		{
+			// 未显式传名时读取 ModSettings 配置的玩家名,避免硬编码 "Player" 覆盖设置值
+			if (string.IsNullOrWhiteSpace(playerName))
+			{
+				try { playerName = ModSettings.Instance.PlayerName.Value; }
+				catch { playerName = "Player"; }
+				if (string.IsNullOrWhiteSpace(playerName)) playerName = "Player";
+			}
 			LogLobby("JoinLobby() called: host=" + host + ":" + port + ", playerName='" + playerName + "'");
 			MpNetworkManager mgr = EnsureMpManager();
 			if (mgr == null)
@@ -188,6 +177,21 @@ namespace Assets.Scripts
 			public Vector3d Velocity;
 			public Quaterniond Heading;
 
+			/// <summary>
+			/// 发送端"行星空间径向"单位向量(= 本机 PositionNormalized)。
+			/// 用于接收端覆盖对方飞船 FlightData.PositionNormalized：
+			/// 双端时间不同导致行星自转角度不同步时,双方"行星空间径向"不同,
+			/// 若不传输此值,接收端用本行星径向算 Pitch/Bank 会错(俯仰/滚转偏差)。
+			/// </summary>
+			public Vector3d PosNorm;
+
+			/// <summary>
+			/// 发送端行星自转角度(RotationAngle,弧度)。
+			/// 双端时间不同步导致行星自转角度不同(同一表面点的行星空间坐标/径向不同)。
+			/// 接收端用它覆盖本端行星 RotationAngle,使双端自转同步。
+			/// </summary>
+			public double PlanetRotationAngle;
+
 			public float Pitch;
 			public float Yaw;
 			public float Roll;
@@ -220,6 +224,8 @@ namespace Assets.Scripts
 				Position = position;
 				Velocity = velocity;
 				Heading = heading;
+				PosNorm = Vector3d.zero;
+				PlanetRotationAngle = 0;
 
 				Pitch = 0;
 				Yaw = 0;
@@ -270,6 +276,8 @@ namespace Assets.Scripts
 				Position = position;
 				Velocity = velocity;
 				Heading = heading;
+				PosNorm = Vector3d.zero;
+				PlanetRotationAngle = 0;
 
 				Pitch = pitch;
 				Yaw = yaw;

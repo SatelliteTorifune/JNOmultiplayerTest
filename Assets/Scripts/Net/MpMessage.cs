@@ -140,21 +140,22 @@ namespace Assets.Scripts.Net
 
 		// ---------------- PlayerJoin / PlayerLeave ----------------
 
-		public static byte[] EncodePlayerJoin(int playerId, int nodeId, string craftXml)
+		public static byte[] EncodePlayerJoin(int playerId, int nodeId, string playerName, string craftXml)
 		{
 			return Pack(MpMessageType.PlayerJoin, w =>
 			{
 				w.Write(playerId);
 				w.Write(nodeId);
+				w.Write(playerName ?? string.Empty);
 				byte[] xmlBytes = CompressXml(craftXml ?? string.Empty);
 				w.Write(xmlBytes.Length);
 				w.Write(xmlBytes);
 			});
 		}
 
-		public static bool TryDecodePlayerJoin(byte[] buffer, out int playerId, out int nodeId, out string craftXml)
+		public static bool TryDecodePlayerJoin(byte[] buffer, out int playerId, out int nodeId, out string playerName, out string craftXml)
 		{
-			playerId = -1; nodeId = -1; craftXml = null;
+			playerId = -1; nodeId = -1; playerName = null; craftXml = null;
 			try
 			{
 				using (MemoryStream ms = new MemoryStream(buffer))
@@ -163,6 +164,7 @@ namespace Assets.Scripts.Net
 					if (r.ReadByte() != (byte)MpMessageType.PlayerJoin) return false;
 					playerId = r.ReadInt32();
 					nodeId = r.ReadInt32();
+					playerName = r.ReadString();
 					int len = r.ReadInt32();
 					craftXml = DecompressXml(r.ReadBytes(len));
 					return true;
@@ -362,6 +364,8 @@ namespace Assets.Scripts.Net
 			w.Write(d.Position.x); w.Write(d.Position.y); w.Write(d.Position.z);
 			w.Write(d.Velocity.x); w.Write(d.Velocity.y); w.Write(d.Velocity.z);
 			w.Write(d.Heading.x); w.Write(d.Heading.y); w.Write(d.Heading.z); w.Write(d.Heading.w);
+			w.Write(d.PosNorm.x); w.Write(d.PosNorm.y); w.Write(d.PosNorm.z);
+			w.Write(d.PlanetRotationAngle);
 
 			w.Write(d.Pitch); w.Write(d.Yaw); w.Write(d.Roll);
 			w.Write(d.Throttle); w.Write(d.Brake);
@@ -393,6 +397,8 @@ namespace Assets.Scripts.Net
 				new Vector3d(r.ReadDouble(), r.ReadDouble(), r.ReadDouble()),
 				new Quaterniond(r.ReadDouble(), r.ReadDouble(), r.ReadDouble(), r.ReadDouble())
 			);
+			d.PosNorm = new Vector3d(r.ReadDouble(), r.ReadDouble(), r.ReadDouble());
+			d.PlanetRotationAngle = r.ReadDouble();
 			d.Pitch = r.ReadSingle();
 			d.Yaw = r.ReadSingle();
 			d.Roll = r.ReadSingle();

@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Xml.Linq;
+using Assets.Scripts.Craft.FlightData;
 using Assets.Scripts.Flight;
 using Assets.Scripts.Flight.Sim;
+using HarmonyLib;
 using ModApi.Craft;
 using ModApi.Craft.Parts;
 using ModApi.Flight.GameView;
@@ -46,6 +48,7 @@ namespace Assets.Scripts.Net
 		private float _sendTimer;
 		private float _keepAliveTimer;
 		private float _selfStateLogTimer;
+		private float _timeSyncTimer; // C 方案:Client 同步 Host 时间/行星自转的节流计时器
 		private float _craftResendTimer; // 客户端重发 CraftData 节流计时
 		private float _hostCraftResendTimer; // 房主重发 host craft（PlayerJoin）节流计时
 		private float _remoteVisualTimer; // 远程飞船视觉强制恢复节流计时（游戏可能原生隐藏非活动幽灵飞船的 Renderer）
@@ -90,6 +93,10 @@ namespace Assets.Scripts.Net
 		public bool Host(int port)
 		{
 			Stop();
+			// 房主名字也取 ModSettings 配置(否则默认 "Player" 覆盖设置值)
+			try { PlayerName = ModSettings.Instance.PlayerName.Value; }
+			catch { PlayerName = "Player"; }
+			if (string.IsNullOrWhiteSpace(PlayerName)) PlayerName = "Player";
 			Mod.LogLobby("MP.Host(): attempting to bind TCP on port " + port + " ...");
 			if (!Transport.Start(port))
 			{
@@ -112,7 +119,14 @@ namespace Assets.Scripts.Net
 		public bool Join(string host, int port, string playerName)
 		{
 			Stop();
-			PlayerName = string.IsNullOrWhiteSpace(playerName) ? "Player" : playerName;
+			// 未显式传名时回退到 ModSettings 配置的玩家名(避免默认 "Player" 覆盖设置值)
+			if (string.IsNullOrWhiteSpace(playerName))
+			{
+				try { playerName = ModSettings.Instance.PlayerName.Value; }
+				catch { playerName = "Player"; }
+				if (string.IsNullOrWhiteSpace(playerName)) playerName = "Player";
+			}
+			PlayerName = playerName;
 			LocalNodeId = GetLocalCraftNodeId();
 			_craftReported = false;
 			byte[] hello = MpMessages.EncodeHello(PlayerName);
@@ -174,7 +188,7 @@ namespace Assets.Scripts.Net
 			{
 				// 房主：广播自己的飞船给所有客户端；已广播过且未变化则跳过。
 				if (_craftReported && !changed) return;
-				Transport.Broadcast(MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, craftXml));
+				Transport.Broadcast(MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, PlayerName, craftXml));
 				_craftReported = true; // 房主无需确认（新加入者由 OnHello 补发）
 				// 对所有已连接 peer 登记待确认：客户端回 PlayerJoinAck 前周期性重发（防公网大分片丢失）。
 				foreach (MpPeer p in Transport.GetPeers())
@@ -235,7 +249,7 @@ namespace Assets.Scripts.Net
 				if (_hostCraftResendTimer <= 0f)
 				{
 					_hostCraftResendTimer = CraftResendIntervalSec;
-					byte[] hostJoin = MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, _localCraftXml);
+					byte[] hostJoin = MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, PlayerName, _localCraftXml);
 					foreach (MpPeer peer in Transport.GetPeers())
 					{
 						if (_hostCraftResend.ContainsKey(peer.EndPoint.ToString()))
@@ -249,9 +263,68 @@ namespace Assets.Scripts.Net
 			}
 			ProcessOutgoing();
 			UpdateRemoteCrafts();
+			SyncHostTime();
 			EnforceRemoteCraftVisuals();
 			SendKeepAlive();
 			Transport.CheckTimeouts(TimeoutMs);
+		}
+
+		/// <summary>
+		/// C 方案(最终):Client 端强制同步 Host 的飞行时间与行星自转。
+		/// 状态包携带发送端 time(rc.LastStateTime)与 PlanetRotationAngle;
+		/// Client 用它覆盖本端 FlightState.Time 与本端行星 RotationAngle,使双端时间/自转一致,
+		/// 从而根因(双端自转角差 = AngularVelocity × ΔTime)消除,不再需要视觉补偿,画面不再 yaw 漂移。
+		/// 注意:会改变本端时间与行星坐标系(可能引起飞船位置/视角跳变),属预期副作用。
+		/// </summary>
+		private void SyncHostTime()
+		{
+			if (IsServer) return; // 只有 Client 同步 Host
+			_timeSyncTimer -= Time.unscaledDeltaTime;
+			if (_timeSyncTimer > 0f) return;
+			_timeSyncTimer = 0.5f;
+			if (FlightSceneScript.Instance == null) return;
+			RemoteCraft hostRc = null;
+			foreach (RemoteCraft rc in _remoteCrafts.Values)
+			{
+				if (rc.HasState && rc.Target.PlanetRotationAngle != 0)
+				{
+					hostRc = rc;
+					break;
+				}
+			}
+			if (hostRc == null) return;
+			try
+			{
+				if (hostRc.Node != null && hostRc.Node.Parent != null)
+				{
+					hostRc.Node.Parent.RotationAngle = hostRc.Target.PlanetRotationAngle;
+				}
+				if (hostRc.LastStateTime > 0)
+				{
+					FlightSceneScript.Instance.FlightState.Time = hostRc.LastStateTime;
+				}
+			}
+			catch (Exception e) { Mod.LogError("SyncHostTime error: " + e.Message); }
+		}
+
+		/// <summary>
+		/// 游戏更新后、渲染前,刷新远程飞船 FlightData(方案 C 下朝向已由 ApplyRemoteState
+		/// 在 Update 阶段设置且物理禁用不会被覆盖,无需再强制写回):
+		/// RefreshRemoteFlightData:防止游戏 IFlightUpdate 每帧把 PositionNormalized 覆盖为
+		/// "接收端径向",导致 Pitch/Bank 错。
+		/// </summary>
+		private void LateUpdate()
+		{
+			if (!IsConnected || _remoteCrafts.Count == 0) return;
+			foreach (RemoteCraft rc in _remoteCrafts.Values)
+			{
+				if (rc.Node == null || rc.Node.CraftScript == null || !rc.HasState) continue;
+				try
+				{
+					RefreshRemoteFlightData(rc, rc.Target);
+				}
+				catch (Exception e) { Mod.LogError("LateUpdate refresh error (P" + rc.PlayerId + "): " + e.Message); }
+			}
 		}
 
 		private void ProcessOutgoing()
@@ -268,38 +341,33 @@ namespace Assets.Scripts.Net
 			// 否则会以 PlayerId=-1 发包，房主无法关联到已登记玩家（"state for player -1"）。
 			if (PlayerId < 0) return;
 
-			// 周期性本机状态日志（每 10 秒一次，便于与接收端目标状态核对）
+			// 周期性本机状态日志（每 5 秒一次，与接收端目标朝向跨端对比）。
+			// 关键：对比【本机朝向】的 Pitch/Bank 与对端【远程飞船】的 对方Pitch/Bank，
+			// 若不一致即为传输/转换或采样基准问题。
 			_selfStateLogTimer -= Time.unscaledDeltaTime;
 			if (_selfStateLogTimer <= 0f)
 			{
-				_selfStateLogTimer = 10f;
+				_selfStateLogTimer = 5f;
 				CraftNode selfNode = FlightSceneScript.Instance.CraftNode as CraftNode;
-				Quaternion tr = (selfNode != null && selfNode.CraftScript != null) ? selfNode.CraftScript.Transform.rotation : Quaternion.identity;
-				Quaterniond craftHeading = selfNode != null ? selfNode.Heading : Quaterniond.identity;
-				double planetAngle = (selfNode != null && selfNode.Parent != null) ? selfNode.Parent.RotationAngle : double.NaN;
-				double frameAngle = (selfNode != null && selfNode.GameView != null) ? selfNode.GameView.ReferenceFrame.RotationAngle : double.NaN;
-				Quaternion rootPartRot = (selfNode != null && selfNode.CraftScript != null && selfNode.CraftScript.RootPart != null && selfNode.CraftScript.RootPart.Transform != null)
-					? selfNode.CraftScript.RootPart.Transform.rotation : Quaternion.identity;
-				Quaternion comRot = (selfNode != null && selfNode.CraftScript != null && selfNode.CraftScript.CenterOfMass != null)
-					? selfNode.CraftScript.CenterOfMass.rotation : Quaternion.identity;
-				// [朝向诊断|本机P{pid}] 发送端朝向快照（每10秒）。
-				// 发送heading=帧空间CoM旋转(即将发出)；行星空间=FrameToPlanet(发送heading)；
-				// 根Transform=本机根(帧空间)；rootPart=命令舱世界旋转；游戏Heading=行星字段。
-				// fwd/up=飞船视觉"前方/上方"方向；body摘要=首/次/末body局部欧拉角(供与接收端对比)。
-				Quaterniond headingToPlanet = (selfNode != null && selfNode.GameView != null)
-					? selfNode.GameView.ReferenceFrame.FrameToPlanetRotation(data.Heading.ToQuaternion()) : Quaterniond.identity;
-				Vector3 fwd = (selfNode != null && selfNode.CraftScript != null) ? selfNode.CraftScript.Transform.forward : Vector3.zero;
-				Vector3 up = (selfNode != null && selfNode.CraftScript != null) ? selfNode.CraftScript.Transform.up : Vector3.zero;
-				/*Mod.Log("[朝向诊断|本机P" + PlayerId + "] 发送heading(帧)=" + Q(data.Heading) +
-					" | 行星空间=" + Q(headingToPlanet) +
-					" | 根Transform=" + Q(tr) +
-					" | comRot=" + Q(comRot) +
-					" | rootPartRot=" + Q(rootPartRot) +
-					" | 游戏Heading(行星)=" + Q(craftHeading) +
-					" | fwd=(" + fwd.x.ToString("F2") + "," + fwd.y.ToString("F2") + "," + fwd.z.ToString("F2") + ")" +
-					" up=(" + up.x.ToString("F2") + "," + up.y.ToString("F2") + "," + up.z.ToString("F2") + ")" +
-					" | planetAngle=" + planetAngle.ToString("F2") + " frameAngle=" + frameAngle.ToString("F4") +
-					" | body:" + BuildBodyPoseSummary(selfNode != null ? selfNode.CraftScript : null));*/
+				if (selfNode != null && selfNode.CraftScript != null)
+				{
+					Quaternion selfCom = selfNode.CraftScript.CenterOfMass != null
+						? selfNode.CraftScript.CenterOfMass.rotation : selfNode.CraftScript.Transform.rotation;
+					ICraftFlightData sfd = selfNode.CraftScript.FlightData;
+					double sPitch = sfd != null ? sfd.Pitch : double.NaN;
+					double sBank = sfd != null ? sfd.BankAngle : double.NaN;
+					Vector3d sPosNorm = sfd != null ? sfd.PositionNormalized : Vector3d.zero;
+					string sPlanet = selfNode.Parent != null ? selfNode.Parent.PlanetData.Name : "?";
+					Mod.Log("【本机朝向|" + PlayerName + "(P" + PlayerId + ")】" +
+						" 行星=" + sPlanet +
+						" 自转角=" + (selfNode.Parent != null ? selfNode.Parent.RotationAngle.ToString("F3") : "?") +
+						" 时间=" + (FlightSceneScript.Instance != null ? FlightSceneScript.Instance.FlightState.Time.ToString("F1") : "?") +
+						" | 本机Pitch=" + sPitch.ToString("F2") +
+						" Bank=" + sBank.ToString("F2") +
+						" | 质心朝向=" + Q(selfCom) +
+						" 发送朝向(行星)=" + Q(data.Heading) +
+						" PosNorm=(" + sPosNorm.x.ToString("F3") + "," + sPosNorm.y.ToString("F3") + "," + sPosNorm.z.ToString("F3") + ")");
+				}
 			}
 
 			double time = FlightSceneScript.Instance.FlightState.Time;
@@ -448,13 +516,13 @@ namespace Assets.Scripts.Net
 			{
 				if (p.NodeId >= 0 && !string.IsNullOrEmpty(p.CraftXml))
 				{
-					Transport.SendTo(peer, MpMessages.EncodePlayerJoin(p.PlayerId, p.NodeId, p.CraftXml));
+					Transport.SendTo(peer, MpMessages.EncodePlayerJoin(p.PlayerId, p.NodeId, p.PlayerName, p.CraftXml));
 					Mod.LogLobby("MP.OnHello (host): sent existing player " + p.PlayerId + " craft to new client");
 				}
 			}
 			if (LocalNodeId >= 0 && !string.IsNullOrEmpty(_localCraftXml))
 			{
-				Transport.SendTo(peer, MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, _localCraftXml));
+				Transport.SendTo(peer, MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, PlayerName, _localCraftXml));
 				Mod.LogLobby("MP.OnHello (host): sent host craft PlayerJoin (nodeId=" + LocalNodeId + ") to new client " + peer.EndPoint);
 				// 登记待确认：客户端回 PlayerJoinAck 前，每 1.5s 重发 host craft（防公网大分片丢失）。
 				_hostCraftResend[peer.EndPoint.ToString()] = Time.unscaledTime;
@@ -480,7 +548,7 @@ namespace Assets.Scripts.Net
 			Transport.SendTo(peer, MpMessages.EncodeCraftDataAck(nodeId));
 
 			// 广播给所有客户端（含新玩家本人，用于互相生成对方飞船）
-			Transport.Broadcast(MpMessages.EncodePlayerJoin(peer.PlayerId, peer.NodeId, craftXml));
+			Transport.Broadcast(MpMessages.EncodePlayerJoin(peer.PlayerId, peer.NodeId, peer.PlayerName, craftXml));
 			Mod.LogLobby("MP.OnCraftData (host): '" + peer.PlayerName + "' craft registered NodeId=" + nodeId +
 				", xmlLen=" + (craftXml == null ? 0 : craftXml.Length) +
 				", sent CraftDataAck, broadcast PlayerJoin to " + Transport.GetPeersCount() + " peer(s)");
@@ -501,9 +569,9 @@ namespace Assets.Scripts.Net
 
 		private void OnPlayerJoin(MpPeer peer, byte[] packet)
 		{
-			int playerId, nodeId; string craftXml;
-			if (!MpMessages.TryDecodePlayerJoin(packet, out playerId, out nodeId, out craftXml)) return;
-			MpPeer p = new MpPeer { EndPoint = peer.EndPoint, PlayerId = playerId, NodeId = nodeId, CraftXml = craftXml };
+			int playerId, nodeId; string playerName, craftXml;
+			if (!MpMessages.TryDecodePlayerJoin(packet, out playerId, out nodeId, out playerName, out craftXml)) return;
+			MpPeer p = new MpPeer { EndPoint = peer.EndPoint, PlayerId = playerId, NodeId = nodeId, PlayerName = playerName, CraftXml = craftXml };
 			RegisterPlayer(p);
 			Mod.LogLobby("MP.OnPlayerJoin: playerId=" + playerId + ", nodeId=" + nodeId +
 				", craftXmlLen=" + (craftXml == null ? 0 : craftXml.Length) + ", peer=" + peer.EndPoint);
@@ -629,6 +697,7 @@ namespace Assets.Scripts.Net
 		private class RemoteCraft
 		{
 			public int PlayerId;
+			public string PlayerName;   // 玩家名(诊断日志区分用)
 			public CraftNode Node;
 			public Mod.recdata Prev;
 			public Mod.recdata Target;
@@ -637,6 +706,8 @@ namespace Assets.Scripts.Net
 			public bool IsInitialized; // 幻影模式是否已应用（CraftScript 延迟构建后置 true）
 			public float InterpStartTime;
 			public float LastStateLogTime; // 周期性状态日志计时
+			public double LastStateTime;   // 最近一次状态包的发送端 FlightState.Time(用于 C 方案同步时间)
+			public Quaternion LastAppliedHeading; // ApplyRemoteState 最近一次写入的帧空间朝向(诊断用)
 		}
 
 		private void HandlePlayerLeft(MpPeer peer)
@@ -667,14 +738,10 @@ namespace Assets.Scripts.Net
 				// 发射点：状态包是地面坐标，用本端行星自转转成惯性坐标生成
 				Vector3d planetPos = planet.SurfaceVectorToPlanetVector(data.Position);
 				Vector3d planetVel = planet.SurfaceVectorToPlanetVector(data.Velocity);
-				// data.Heading 是帧空间旋转，而 CreateLaunchLocation 内部会做 heading=RotationInverse*heading
-				// （把入参当行星空间），再被 SpawnCraft 乘回 planet.Rotation → 最终 Heading=入参。
-				// 因此这里必须传入"行星空间"朝向，否则初始 CraftNode.Heading 会存帧空间值。
+				// data.Heading 已是"行星空间"朝向(发送端采样时已 FrameToPlanet)。
+				// CreateLaunchLocation 内部会做 heading=RotationInverse*heading(把入参当行星空间)，
+				// 再被 SpawnCraft 乘回 planet.Rotation → 最终 Heading=入参(行星空间)，故直接传入即可。
 				Quaterniond spawnHeading = data.Heading;
-				if (localNode.GameView != null && localNode.GameView.ReferenceFrame != null)
-				{
-					spawnHeading = localNode.GameView.ReferenceFrame.FrameToPlanetRotation(data.Heading.ToQuaternion());
-				}
 				LaunchLocation location = LaunchLocation.CreateLaunchLocation(
 					"MP_Remote_" + peer.PlayerId,
 					planet, planetPos, planetVel, spawnHeading,
@@ -693,7 +760,7 @@ namespace Assets.Scripts.Net
 					//" | 传入spawnHeading(行星)=" + Q(spawnHeading));
 
 				// 先登记（无论 CraftScript 是否已构建），避免状态包反复触发重新生成
-				RemoteCraft rc = new RemoteCraft { PlayerId = peer.PlayerId, Node = remote, Target = new Mod.recdata() };
+				RemoteCraft rc = new RemoteCraft { PlayerId = peer.PlayerId, PlayerName = peer.PlayerName, Node = remote, Target = new Mod.recdata() };
 				_remoteCrafts[peer.PlayerId] = rc;
 
 				// 立即进入"表面锁定"分支（防止游戏推进轨道导致坠落），并预置 GroundedSurface* 避免空引用
@@ -739,6 +806,10 @@ namespace Assets.Scripts.Net
 			_remoteCrafts.Remove(playerId);
 			if (rc.Node != null && rc.Node.CraftScript != null)
 			{
+				lock (_remoteHeadingMap)
+				{
+					_remoteHeadingMap.Remove(rc.Node.CraftScript.FlightData as CraftFlightData);
+				}
 				rc.Node.GameObject.SetActive(false); // MVP：隐藏而非销毁
 				Mod.LogLobby("MP: removed (hidden) remote craft for player " + playerId);
 			}
@@ -823,6 +894,7 @@ namespace Assets.Scripts.Net
 				rc.Prev = data;
 			}
 			rc.Target = data;
+			rc.LastStateTime = time;
 			rc.HasState = true;
 			rc.InterpStartTime = Time.unscaledTime;
 		}
@@ -933,16 +1005,33 @@ namespace Assets.Scripts.Net
 					if (Time.unscaledTime - rc.LastStateLogTime > 5f)
 					{
 						rc.LastStateLogTime = Time.unscaledTime;
-						Quaternion tr = rc.Node.CraftScript != null ? rc.Node.CraftScript.Transform.rotation : Quaternion.identity;
-						Vector3d remoteSurface = rc.Node.Parent != null ? rc.Node.Parent.PlanetVectorToSurfaceVector(rc.Node.Position) : Vector3d.zero;
-						Mod.Log("MP state player " + rc.PlayerId + ": target surfacePos=(" +
-							rc.Target.Position.x.ToString("F1") + "," + rc.Target.Position.y.ToString("F1") + "," + rc.Target.Position.z.ToString("F1") + ")" +
-							", heading=(" + rc.Target.Heading.x.ToString("F3") + "," + rc.Target.Heading.y.ToString("F3") + "," + rc.Target.Heading.z.ToString("F3") + "," + rc.Target.Heading.w.ToString("F3") + ")" +
-							", remotePos=(" + rc.Node.Position.x.ToString("F1") + "," + rc.Node.Position.y.ToString("F1") + "," + rc.Node.Position.z.ToString("F1") + ")" +
-							", remoteSurface=(" + remoteSurface.x.ToString("F1") + "," + remoteSurface.y.ToString("F1") + "," + remoteSurface.z.ToString("F1") + ")" +
-							", alt=" + rc.Node.Altitude.ToString("F1") +
-							", altAgl=" + rc.Node.AltitudeAgl.ToString("F1") +
-							", transformRot=(" + tr.x.ToString("F3") + "," + tr.y.ToString("F3") + "," + tr.z.ToString("F3") + "," + tr.w.ToString("F3") + ")");
+						Quaternion comR = rc.Node.CraftScript != null && rc.Node.CraftScript.CenterOfMass != null
+							? rc.Node.CraftScript.CenterOfMass.rotation : Quaternion.identity;
+						ICraftFlightData rfd = rc.Node.CraftScript != null ? rc.Node.CraftScript.FlightData : null;
+						double rPitch = rfd != null ? rfd.Pitch : double.NaN;
+						double rBank = rfd != null ? rfd.BankAngle : double.NaN;
+						Vector3d rPosNorm = rfd != null ? rfd.PositionNormalized : Vector3d.zero;
+						string rPlanet = rc.Node.Parent != null ? rc.Node.Parent.PlanetData.Name : "?";
+						Vector3d expFwd = Vector3d.zero;
+						{
+							Quaternion hq = rc.Target.Heading.ToQuaternion();
+							Vector3 fwd3 = hq * Vector3.forward;
+							expFwd = new Vector3d(fwd3.x, fwd3.y, fwd3.z).normalized;
+						}
+						double localRot = rc.Node.Parent != null ? rc.Node.Parent.RotationAngle : 0;
+						double sendRot = rc.Target.PlanetRotationAngle;
+						double rotDelta = sendRot - localRot;
+						Mod.Log("【远程飞船|" + (string.IsNullOrEmpty(rc.PlayerName) ? "?" : rc.PlayerName) + "(P" + rc.PlayerId + ")】" +
+							" 行星=" + rPlanet +
+							" 本地自转角=" + localRot.ToString("F3") +
+							" 发送自转角=" + sendRot.ToString("F3") +
+							" Δ=" + rotDelta.ToString("F3") +
+							" 时间=" + (FlightSceneScript.Instance != null ? FlightSceneScript.Instance.FlightState.Time.ToString("F1") : "?") +
+							" | 对方Pitch=" + rPitch.ToString("F2") +
+							" Bank=" + rBank.ToString("F2") +
+							" | 质心朝向=" + Q(comR) +
+							" 期望前向=(" + expFwd.x.ToString("F3") + "," + expFwd.y.ToString("F3") + "," + expFwd.z.ToString("F3") + ")" +
+							" PosNorm=(" + rPosNorm.x.ToString("F3") + "," + rPosNorm.y.ToString("F3") + "," + rPosNorm.z.ToString("F3") + ")");
 					}
 
 					// 朝向诊断日志（低频，姿态应用已由 ApplyRemoteState 完成，此处仅核对）
@@ -969,6 +1058,13 @@ namespace Assets.Scripts.Net
 		private static void ApplyRemoteState(RemoteCraft rc, Mod.recdata data)
 		{
 			if (rc.Node == null || rc.Node.CraftScript == null) return;
+			// 防御:确保远程飞船保持"物理禁用"。游戏可能在 GameView 加载/切换或初始化阶段
+			// 重新启用物理;一旦物理启用,朝向会被物理与 RecenterTransformOnCoM 覆盖,
+			// 导致 transformRot/comRot 偏离状态包(表现为接收端飞船朝向突变/错误)。
+			if (rc.Node.CraftScript.IsPhysicsEnabled)
+			{
+				rc.Node.SetPhysicsEnabled(false, PhysicsChangeReason.UnloadPhysics);
+			}
 			IPlanetNode planet = rc.Node.Parent;
 			if (planet == null) return;
 
@@ -978,8 +1074,24 @@ namespace Assets.Scripts.Net
 			Vector3d planetVel = planet.SurfaceVectorToPlanetVector(data.Velocity);
 			CraftUtils.SetStateVectorsAtDefaultTime(planetPos, planetVel, rc.Node);
 
-			// ③ 视觉朝向：根=质心旋转；body=相对质心的局部旋转
-			rc.Node.CraftScript.Transform.rotation = data.Heading.ToQuaternion();
+			// ③ 视觉朝向(方案 C)：双端时间/行星自转已由 SyncHostTime 强制同步(Δ→0),
+			// 无需自转差补偿。发送端 heading 是"行星空间"朝向,转回本端帧空间即得世界旋转;
+			// 若 frame 获取失败则直接回退(自转同步后行星空间≈帧空间,误差极小)。
+			IReferenceFrame frame = rc.Node.GameView != null ? rc.Node.GameView.ReferenceFrame : null;
+			if (frame == null && FlightSceneScript.Instance != null && FlightSceneScript.Instance.ViewManager != null &&
+				FlightSceneScript.Instance.ViewManager.GameView != null)
+			{
+				frame = FlightSceneScript.Instance.ViewManager.GameView.ReferenceFrame;
+			}
+			Quaternion headingFrame = frame != null
+				? frame.PlanetToFrameRotation(data.Heading)
+				: data.Heading.ToQuaternion();
+			rc.Node.CraftScript.Transform.rotation = headingFrame;
+			if (rc.Node.CraftScript.CenterOfMass != null)
+			{
+				rc.Node.CraftScript.CenterOfMass.rotation = headingFrame;
+			}
+			rc.LastAppliedHeading = headingFrame; // 记录本次写入值(诊断:对比 transformRot 判断是否被覆盖)
 			if (data.BodyRotations != null && data.BodyRotations.Count > 0)
 			{
 				IReadOnlyList<BodyData> bodies = rc.Node.CraftScript.Data.Assembly.Bodies;
@@ -994,17 +1106,56 @@ namespace Assets.Scripts.Net
 			}
 
 			// ④ 刷新帧状态（Transform.position 跟随逻辑位置）
-			IReferenceFrame frame = rc.Node.GameView != null ? rc.Node.GameView.ReferenceFrame : null;
-			if (frame == null && FlightSceneScript.Instance != null &&
-				FlightSceneScript.Instance.ViewManager != null &&
-				FlightSceneScript.Instance.ViewManager.GameView != null)
-			{
-				frame = FlightSceneScript.Instance.ViewManager.GameView.ReferenceFrame;
-			}
 			if (frame != null)
 			{
 				CraftUtils.RecalculateFrameState(frame, rc.Node);
 			}
+
+			// ⑤ 手动刷新对方飞船 FlightData(PositionNormalized/CraftForward),使
+			// FlightData.Pitch/BankAngle(游戏 UI/Vizzy 读取)与发送端本机一致。
+			// 用发送端传输的 PosNorm(行星空间径向)覆盖 PositionNormalized,避免双端
+			// 行星自转角度不同步导致径向不同;并在 LateUpdate 再刷一次防游戏覆盖。
+			RefreshRemoteFlightData(rc, data);
+		}
+
+		/// <summary>
+		/// 刷新远程飞船 FlightData 的缓存字段(PositionNormalized/CraftForward)。
+		/// 反编译确认:幽灵飞船若不参与 IFlightUpdate 则 FlightData 停旧值;若参与则每帧
+		/// 被 FlightData.Update 用"接收端径向"覆盖。两种情况都必须用"发送端径向(PosNorm)"
+		/// 刷新,并在游戏更新后(渲染前)的 LateUpdate 再刷一次。
+		/// </summary>
+		private static void RefreshRemoteFlightData(RemoteCraft rc, Mod.recdata data)
+		{
+			if (rc.Node == null || rc.Node.CraftScript == null) return;
+			try
+			{
+				ICraftFlightData rfd = rc.Node.CraftScript.FlightData;
+				if (rfd != null)
+				{
+					// Harmony 补 CraftRight 用:记录该远程飞船 FlightData 对应的发送端 heading(行星空间)。
+					if (rfd is CraftFlightData cfd)
+					{
+						lock (_remoteHeadingMap) { _remoteHeadingMap[cfd] = data.Heading; }
+					}
+					// FlightData 用"发送端行星空间"口径,不受双端自转差影响:
+					// PositionNormalized = 发送端径向(PosNorm);CraftForward = 发送端行星空间朝向(heading)的 forward。
+					// 这样 FlightData.Pitch/Bank 与发送端本机在同一坐标系计算。
+					Vector3d sendPosNorm = data.PosNorm != Vector3d.zero ? data.PosNorm : rc.Node.Position.normalized;
+					_flightPositionNormalizedProp?.SetValue(rfd, sendPosNorm);
+					Quaternion hq = data.Heading.ToQuaternion();
+					Vector3 fwd3 = hq * Vector3.forward;
+					Vector3d expCraftFwd = new Vector3d(fwd3.x, fwd3.y, fwd3.z).normalized;
+					_flightCraftForwardProp?.SetValue(rfd, expCraftFwd);
+					// 诊断:确认反射属性是否取到(仅首次输出)
+					if (!_flightDiagLogged)
+					{
+						_flightDiagLogged = true;
+						Mod.Log("MP FlightData 刷新诊断: posNormProp=" + (_flightPositionNormalizedProp != null) +
+							" fwdProp=" + (_flightCraftForwardProp != null));
+					}
+				}
+			}
+			catch (Exception e) { Mod.LogError("Refresh remote FlightData error (P" + rc.PlayerId + "): " + e.Message); }
 		}
 
 		private static readonly PropertyInfo _groundedSurfacePositionProp =
@@ -1013,6 +1164,26 @@ namespace Assets.Scripts.Net
 			typeof(CraftNode).GetProperty("GroundedSurfaceVelocity", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 		private static readonly PropertyInfo _groundedSurfaceRotationProp =
 			typeof(CraftNode).GetProperty("GroundedSurfaceRotation", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		// 幽灵飞船不参与 IFlightUpdate, FlightData 的 PositionNormalized/CraftForward 停旧值,
+		// 需手动刷新(用反射写 private set),使 FlightData.Pitch/BankAngle 跟随同步后的 CenterOfMass。
+		private static readonly PropertyInfo _flightPositionNormalizedProp =
+			typeof(CraftFlightData).GetProperty("PositionNormalized", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		private static readonly PropertyInfo _flightCraftForwardProp =
+			typeof(CraftFlightData).GetProperty("CraftForward", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		private static bool _flightDiagLogged; // FlightData 反射刷新诊断(仅首次输出)
+		// Harmony 补 CraftRight 用:记录每个远程飞船 FlightData 对应的发送端 heading(行星空间)。
+		private static readonly Dictionary<CraftFlightData, Quaterniond> _remoteHeadingMap = new Dictionary<CraftFlightData, Quaterniond>();
+
+		/// <summary>Harmony 补丁用:查询某 FlightData 是否远程飞船、并取发送端 heading(行星空间)。</summary>
+		public static bool TryGetRemoteHeading(CraftFlightData cfd, out Quaterniond heading)
+		{
+			lock (_remoteHeadingMap)
+			{
+				if (cfd != null && _remoteHeadingMap.TryGetValue(cfd, out heading)) return true;
+			}
+			heading = Quaterniond.identity;
+			return false;
+		}
 
 		/// <summary>
 		/// 更新幽灵飞船的 GroundedSurface*（private set，用反射写入）。
@@ -1026,14 +1197,9 @@ namespace Assets.Scripts.Net
 				// 与游戏 UpdateSurfaceParameters 的公式一致：
 				//   GroundedSurfaceRotation = Parent.RotationInverse * Heading
 				//   GroundedSurfacePosition/Velocity = 地面坐标
-				// data.Heading 是"帧空间"旋转，而游戏要求 Heading 为"行星空间"。
-				// 先经参考系转成行星空间，否则 CraftNode.Heading(行星字段) 会存帧空间值，
-				// 导致游戏导航/相机/地图等逻辑朝向错误。
+				// data.Heading 已是"行星空间"朝向(发送端采样时已 FrameToPlanet)，直接使用，
+				// 否则 CraftNode.Heading(行星字段) 会存帧空间值，导致游戏导航/相机/地图等逻辑朝向错误。
 				Quaterniond planetHeading = data.Heading;
-				if (rc.Node.GameView != null && rc.Node.GameView.ReferenceFrame != null)
-				{
-					planetHeading = rc.Node.GameView.ReferenceFrame.FrameToPlanetRotation(data.Heading.ToQuaternion());
-				}
 				if (_groundedSurfacePositionProp != null) _groundedSurfacePositionProp.SetValue(rc.Node, (Vector3d?)data.Position);
 				if (_groundedSurfaceVelocityProp != null) _groundedSurfaceVelocityProp.SetValue(rc.Node, (Vector3d?)data.Velocity);
 				if (_groundedSurfaceRotationProp != null) _groundedSurfaceRotationProp.SetValue(rc.Node, (Quaterniond?)(planet.RotationInverse * planetHeading));
@@ -1150,10 +1316,28 @@ namespace Assets.Scripts.Net
 				// （实测用 comRot 时 rootPart 两端一致）。因此 heading 用 comRot 而非根 Transform。
 				// 注意：CenterOfMass.rotation = commandPod.PilotSeatOrientation.rotation（座椅朝向），
 				// 与根朝向可能差一个角度（实测约 17°）——这个偏差由 BodyRotations"相对质心"来消除。
-				Quaterniond heading = craft.CraftScript.CenterOfMass != null
+				Quaterniond comRotFrame = craft.CraftScript.CenterOfMass != null
 					? Quaterniond.FromQuaternion(craft.CraftScript.CenterOfMass.rotation)
 					: Quaterniond.FromQuaternion(craft.CraftScript.Transform.rotation);
+				Quaterniond heading = comRotFrame;
+				// 朝向以"行星空间"传输(全局一致,不受两端 GameView 帧空间差异影响)：
+				// 用本机飞船"逻辑参考系 craft.ReferenceFrame"做 帧→行星 转换。
+				IReferenceFrame sendFrame = craft.ReferenceFrame;
+				if (sendFrame == null && FlightSceneScript.Instance != null && FlightSceneScript.Instance.ViewManager != null &&
+					FlightSceneScript.Instance.ViewManager.GameView != null)
+				{
+					sendFrame = FlightSceneScript.Instance.ViewManager.GameView.ReferenceFrame;
+				}
+				if (sendFrame != null)
+				{
+					heading = sendFrame.FrameToPlanetRotation(heading.ToQuaternion());
+				}
 				data = new Mod.recdata(pos, vel, heading);
+				// 传输"本机行星空间径向"：接收端用它覆盖对方飞船 FlightData.PositionNormalized,
+				// 避免双端行星自转角度不同步导致 FlightData.Pitch/Bank 用错径向。
+				data.PosNorm = craft.Position.normalized;
+				// 传输发送端行星自转角度(方案 C:client 端同步 host 行星自转用)。
+				if (craft.Parent != null) data.PlanetRotationAngle = craft.Parent.RotationAngle;
 
 				// 同步每个 body 的局部姿态。关键：BodyRotations 必须存"相对质心(comRot)"的旋转，
 				// 因为接收端根=comRot（发送的 heading），且 XML 的 body/part 是质心坐标系。
@@ -1237,6 +1421,29 @@ namespace Assets.Scripts.Net
 					.Append("=(").Append(e.x.ToString("F0")).Append(",").Append(e.y.ToString("F0")).Append(",").Append(e.z.ToString("F0")).Append(")");
 			}
 			return sb.ToString();
+		}
+	}
+
+	/// <summary>
+	/// Harmony 补丁:替换远程飞船 CraftFlightData.CraftRight getter。
+	/// 远程飞船 BankAngle 用 CraftRight = FrameToPlanetVector(CenterOfMass.right),而接收端
+	/// CenterOfMass 用发送端朝向(行星空间转回帧空间),与发送端行星 right 可能有微小数值差。
+	/// 补丁直接返回发送端 heading(行星空间)的 right 向量,使 Bank 精确。
+	/// </summary>
+	[HarmonyPatch(typeof(CraftFlightData), "get_CraftRight")]
+	public static class PatchCraftRight
+	{
+		static bool Prefix(CraftFlightData __instance, ref Vector3d __result)
+		{
+			Quaterniond h;
+			if (MpNetworkManager.TryGetRemoteHeading(__instance, out h))
+			{
+				Quaternion q = h.ToQuaternion();
+				Vector3 r = q * Vector3.right;
+				__result = new Vector3d(r.x, r.y, r.z).normalized;
+				return false; // 跳过原方法
+			}
+			return true; // 非远程飞船,走原逻辑
 		}
 	}
 }
