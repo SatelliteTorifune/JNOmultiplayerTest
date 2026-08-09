@@ -681,7 +681,7 @@ namespace Assets.Scripts.Net
 					localNode.ReferenceFrame,
 					LaunchLocationType.SurfaceLockedGround);
 
-				CraftNode remote = FlightSceneScript.Instance.SpawnCraft(peer.PlayerName + " (MP)", craftData, location, xml);
+				CraftNode remote = FlightSceneScript.Instance.SpawnCraft(peer.PlayerName+"|"+craftData.Name, craftData, location, xml);
 				if (remote == null)
 				{
 					Mod.LogError("SpawnRemoteCraftAtPosition: SpawnCraft returned null for player " + peer.PlayerId);

@@ -15,7 +15,13 @@ namespace Assets.Scripts.Net
 		public IPEndPoint EndPoint;
 		public int PlayerId = -1;      // 由房主分配
 		public int NodeId = -1;        // 该玩家飞船的 NodeId
-		public string PlayerName = "Player";
+
+		public string PlayerName
+		{
+			get => ModSettings.Instance.PlayerName;
+			set => PlayerName = value;
+		}
+
 		public string CraftXml = string.Empty; // 该玩家飞船的 craft XML（联机交换用）
 		public long LastReceiveTick;   // 最近收到数据的时间（环境时间戳 ms）
 		public bool IsServer;
