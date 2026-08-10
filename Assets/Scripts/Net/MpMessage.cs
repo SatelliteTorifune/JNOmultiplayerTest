@@ -364,6 +364,7 @@ namespace Assets.Scripts.Net
 			w.Write(d.Position.x); w.Write(d.Position.y); w.Write(d.Position.z);
 			w.Write(d.Velocity.x); w.Write(d.Velocity.y); w.Write(d.Velocity.z);
 			w.Write(d.Heading.x); w.Write(d.Heading.y); w.Write(d.Heading.z); w.Write(d.Heading.w);
+			w.Write(d.SrfRel.x); w.Write(d.SrfRel.y); w.Write(d.SrfRel.z); w.Write(d.SrfRel.w);
 
 			w.Write(d.Pitch); w.Write(d.Yaw); w.Write(d.Roll);
 			w.Write(d.Throttle); w.Write(d.Brake);
@@ -395,6 +396,7 @@ namespace Assets.Scripts.Net
 				new Vector3d(r.ReadDouble(), r.ReadDouble(), r.ReadDouble()),
 				new Quaterniond(r.ReadDouble(), r.ReadDouble(), r.ReadDouble(), r.ReadDouble())
 			);
+			d.SrfRel = new Quaterniond(r.ReadDouble(), r.ReadDouble(), r.ReadDouble(), r.ReadDouble());
 			d.Pitch = r.ReadSingle();
 			d.Yaw = r.ReadSingle();
 			d.Roll = r.ReadSingle();

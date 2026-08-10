@@ -22,7 +22,6 @@ namespace Assets.Scripts
 		}
 
 		public static Mod Instance { get; } = GameModBase.GetModInstance<Mod>();
-
 		public GameObject MPGameObject = null;
 
 		public static void Log(object message)
@@ -177,6 +176,14 @@ namespace Assets.Scripts
 			public Vector3d Velocity;
 			public Quaterniond Heading;
 
+			/// <summary>
+			/// 发送端飞船"相对行星地表"的朝向(surface-relative rotation,仿 KSP LunaMultiplayer 的 srfRelRotation):
+			/// = RotateY(θ_frame - θ_send_planet) * comRot(comRot 是帧空间;表面锁定帧 θ_frame-θ_planet 为常量)。
+			/// 接收端用 frame.PlanetToFrameRotation(行星自转 × SrfRel) 渲染回帧空间,
+			/// 因双端同行星 θ_frame-θ_planet 相同 → 两端帧空间朝向一致,不依赖双端自转/时间同步、无 warp 漂移。
+			/// </summary>
+			public Quaterniond SrfRel;
+
 			public float Pitch;
 			public float Yaw;
 			public float Roll;
@@ -209,6 +216,7 @@ namespace Assets.Scripts
 				Position = position;
 				Velocity = velocity;
 				Heading = heading;
+				SrfRel = Quaterniond.identity;
 
 				Pitch = 0;
 				Yaw = 0;
@@ -259,6 +267,7 @@ namespace Assets.Scripts
 				Position = position;
 				Velocity = velocity;
 				Heading = heading;
+				SrfRel = Quaterniond.identity;
 
 				Pitch = pitch;
 				Yaw = yaw;

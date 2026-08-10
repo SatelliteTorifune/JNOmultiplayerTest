@@ -20,6 +20,7 @@ namespace Assets.Scripts.Net
 	/// - 房主负责房间管理（Hello/Welcome/PlayerJoin/PlayerLeave）。
 	/// 由 Mod 在飞行场景挂载到独立 GameObject 上。
 	/// </summary>
+	[DefaultExecutionOrder(1000)]
 	public class MpNetworkManager : MonoBehaviour
 	{
 		public static MpNetworkManager Instance { get; private set; }
@@ -266,6 +267,65 @@ namespace Assets.Scripts.Net
 			Transport.CheckTimeouts(TimeoutMs);
 		}
 
+		/// <summary>
+		/// 游戏更新后、渲染前,强制应用远程飞船朝向(LunaMultiplayer 方案:RotateY(θ_recv_planet)×SrfRel)+ body,
+		/// 防止游戏 Update 阶段覆盖 transform/CenterOfMass 朝向(如 RecalculateCenterOfMass 把质心朝向
+		/// 覆盖为命令舱逻辑朝向)。
+		/// </summary>
+		private void LateUpdate()
+		{
+			if (!IsConnected || _remoteCrafts.Count == 0) return;
+			foreach (RemoteCraft rc in _remoteCrafts.Values)
+			{
+				if (rc.Node == null || rc.Node.CraftScript == null || !rc.HasState) continue;
+				try
+				{
+					ForceRemoteHeading(rc, rc.Target);
+				}
+				catch (Exception e) { Mod.LogError("LateUpdate refresh error (P" + rc.PlayerId + "): " + e.Message); }
+			}
+		}
+
+		private static void ForceRemoteHeading(RemoteCraft rc, Mod.recdata data)
+		{
+			if (rc.Node == null || rc.Node.CraftScript == null || rc.Node.Parent == null) return;
+			// 与 ApplyRemoteState 一致:Transform.rotation 是帧空间,
+			// 用 frame.PlanetToFrameRotation(行星自转 × SrfRel) 转回帧空间。
+			IReferenceFrame frame = rc.Node.GameView != null ? rc.Node.GameView.ReferenceFrame : null;
+			if (frame == null && FlightSceneScript.Instance != null && FlightSceneScript.Instance.ViewManager != null &&
+				FlightSceneScript.Instance.ViewManager.GameView != null)
+			{
+				frame = FlightSceneScript.Instance.ViewManager.GameView.ReferenceFrame;
+			}
+			Quaternion headingFrame;
+			if (frame != null)
+			{
+				headingFrame = frame.PlanetToFrameRotation(rc.Node.Parent.Rotation * data.SrfRel);
+			}
+			else
+			{
+				double aRecv = rc.Node.Parent.RotationAngle;
+				headingFrame = Quaternion.AngleAxis((float)(aRecv * Mathf.Rad2Deg), Vector3.up) * data.SrfRel.ToQuaternion();
+			}
+			rc.Node.CraftScript.Transform.rotation = headingFrame;
+			if (rc.Node.CraftScript.CenterOfMass != null)
+			{
+				rc.Node.CraftScript.CenterOfMass.rotation = headingFrame;
+			}
+			if (data.BodyRotations != null)
+			{
+				IReadOnlyList<BodyData> bodies = rc.Node.CraftScript.Data.Assembly.Bodies;
+				int n = Mathf.Min(bodies.Count, data.BodyRotations.Count);
+				for (int i = 0; i < n; i++)
+				{
+					if (bodies[i].BodyScript != null && bodies[i].BodyScript.Transform != null)
+					{
+						bodies[i].BodyScript.Transform.localRotation = Quaternion.Euler(data.BodyRotations[i]);
+					}
+				}
+			}
+		}
+
 		private void ProcessOutgoing()
 		{
 			// 使用 unscaledDeltaTime：游戏暂停（Time.deltaTime==0）时状态包也照常发送，
@@ -297,11 +357,23 @@ namespace Assets.Scripts.Net
 					double sBank = sfd != null ? sfd.BankAngle : double.NaN;
 					Vector3d sPosNorm = sfd != null ? sfd.PositionNormalized : Vector3d.zero;
 				string sPlanet = selfNode.Parent != null ? selfNode.Parent.PlanetData.Name : "?";
+					IReferenceFrame selfFrame = selfNode.ReferenceFrame;
+					if (selfFrame == null && FlightSceneScript.Instance != null && FlightSceneScript.Instance.ViewManager != null &&
+						FlightSceneScript.Instance.ViewManager.GameView != null)
+					{
+						selfFrame = FlightSceneScript.Instance.ViewManager.GameView.ReferenceFrame;
+					}
+					double selfPlanetRot = selfNode.Parent != null ? selfNode.Parent.RotationAngle : double.NaN;
+					double selfFrameRot = selfFrame != null ? selfFrame.RotationAngle : double.NaN;
 					Mod.Log("【本机朝向|" + PlayerName + "(P" + PlayerId + ")】" +
 						" 质心朝向=" + Q(selfCom) +
 						" 根朝向=" + Q(selfNode.CraftScript.Transform.rotation) +
 						" 发送朝向(行星)=" + Q(data.Heading) +
+						" SrfRel=" + Q(data.SrfRel) +
 						" | 行星=" + sPlanet +
+						" 行星角=" + selfPlanetRot.ToString("F3") +
+						" 帧角=" + selfFrameRot.ToString("F3") +
+						" 帧-行星=" + (selfFrameRot - selfPlanetRot).ToString("F3") +
 						" 行星pos=(" + selfNode.Position.x.ToString("F0") + "," + selfNode.Position.y.ToString("F0") + "," + selfNode.Position.z.ToString("F0") + ")" +
 						" PosNorm=(" + sPosNorm.x.ToString("F3") + "," + sPosNorm.y.ToString("F3") + "," + sPosNorm.z.ToString("F3") + ")" +
 						" | 本机Pitch=" + sPitch.ToString("F2") +
@@ -961,18 +1033,23 @@ namespace Assets.Scripts.Net
 						{
 							expFwd = shipFrame.FrameToPlanetVector(rc.Node.CraftScript.CenterOfMass.forward).normalized;
 						}
+						double rPlanetRot = rc.Node.Parent != null ? rc.Node.Parent.RotationAngle : double.NaN;
+						double rFrameRot = shipFrame != null ? shipFrame.RotationAngle : double.NaN;
 						Mod.Log("【远程飞船|" + (string.IsNullOrEmpty(rc.PlayerName) ? "?" : rc.PlayerName) + "(P" + rc.PlayerId + ")】" +
 							" 目标位置=(" + rc.Target.Position.x.ToString("F1") + "," + rc.Target.Position.y.ToString("F1") + "," + rc.Target.Position.z.ToString("F1") + ")" +
 							" 实际位置=(" + remoteSurface.x.ToString("F1") + "," + remoteSurface.y.ToString("F1") + "," + remoteSurface.z.ToString("F1") + ")" +
-							" | 目标朝向=" + Q(rc.Target.Heading) +
+							" | 目标朝向(行星)=" + Q(rc.Target.Heading) +
+							" SrfRel=" + Q(rc.Target.SrfRel) +
 							" 实际朝向=" + Q(tr) +
 							" 写入朝向=" + Q(rc.LastAppliedHeading) +
 							" 质心朝向=" + Q(comR) +
 							" | 高度=" + rc.Node.Altitude.ToString("F1") +
 							" 离地=" + rc.Node.AltitudeAgl.ToString("F1") +
 							" 物理=" + logIsPhys +
-							" | 飞船帧角=" + (shipFrame != null ? shipFrame.RotationAngle.ToString("F3") : "null") +
+							" | 行星角=" + rPlanetRot.ToString("F3") +
+							" 飞船帧角=" + (shipFrame != null ? shipFrame.RotationAngle.ToString("F3") : "null") +
 							" 场景帧角=" + (sceneFrame != null ? sceneFrame.RotationAngle.ToString("F3") : "null") +
+							" 帧-行星=" + (rFrameRot - rPlanetRot).ToString("F3") +
 							" | FlightData前向=(" + rFwd.x.ToString("F3") + "," + rFwd.y.ToString("F3") + "," + rFwd.z.ToString("F3") + ")" +
 							" 期望前向=(" + expFwd.x.ToString("F3") + "," + expFwd.y.ToString("F3") + "," + expFwd.z.ToString("F3") + ")" +
 							" | 行星=" + rPlanet +
@@ -1022,26 +1099,33 @@ namespace Assets.Scripts.Net
 			Vector3d planetVel = planet.SurfaceVectorToPlanetVector(data.Velocity);
 			CraftUtils.SetStateVectorsAtDefaultTime(planetPos, planetVel, rc.Node);
 
-			// ③ 视觉朝向：根=质心旋转；body=相对质心的局部旋转
-			// data.Heading 是"行星空间"朝向(发送端已 FrameToPlanet)，需先转回本端帧空间，
-			// 再同时写入根 Transform.rotation 与 CenterOfMass.rotation。
-			// 关键：游戏朝向权威来源是 CraftScript.FrameHeading = CenterOfMass.rotation
-			// （CraftFlightData.Pitch/BankAngle、导航、相机等都读它）。之前只写根 Transform，
-			// 而接收端物理禁用后 CenterOfMass 不再被 RecalculateCenterOfMass 更新、停在生成初值，
-			// 导致对方 FlightData 朝向错误(表现为 pitch/bank 偏差)。故必须同步 CenterOfMass.rotation。
-			// 必须用"飞船逻辑参考系 rc.Node.GameView.ReferenceFrame"(== CraftNode.ReferenceFrame)：
-			// 反编译确认 CraftFlightData.Update 用 craftNode.ReferenceFrame 把 CenterOfMass.forward 转行星
-			// (FlightData.Pitch/Bank 依赖它)。若用玩家场景帧(其 RotationAngle 可能不同),FlightData.CraftForward
-			// 会偏 → 对方 Pitch/Bank 错误。生成瞬间 GameView 未就绪时回退玩家场景帧。
+			// ③ 视觉朝向(LunaMultiplayer 方案)：根=质心旋转；body=相对质心的局部旋转。
+			// 发送端传 SrfRel(相对行星地表朝向)；接收端世界旋转 = 接收端行星当前自转 × SrfRel,
+			// 保证"相对各自行星地表"朝向一致,不依赖双端自转/时间同步、无 warp 漂移。
+			// 关键:游戏朝向权威来源是 CraftScript.FrameHeading = CenterOfMass.rotation
+			// (CraftFlightData.Pitch/BankAngle、导航、相机等都读它),故必须同步 CenterOfMass.rotation。
+			// frame 仅用于 ④ RecalculateFrameState(位置)与 ⑤ FlightData 刷新。
 			IReferenceFrame frame = rc.Node.GameView != null ? rc.Node.GameView.ReferenceFrame : null;
 			if (frame == null && FlightSceneScript.Instance != null && FlightSceneScript.Instance.ViewManager != null &&
 				FlightSceneScript.Instance.ViewManager.GameView != null)
 			{
 				frame = FlightSceneScript.Instance.ViewManager.GameView.ReferenceFrame;
 			}
-			Quaternion headingFrame = frame != null
-				? frame.PlanetToFrameRotation(data.Heading)
-				: data.Heading.ToQuaternion();
+			// 视觉朝向(LunaMultiplayer 方案):世界旋转 = 接收端行星当前自转 × 发送端相对地表朝向(SrfRel)。
+			// 保证"相对各自行星地表"朝向一致,不依赖双端自转/时间同步,无 warp 漂移、无全局副作用。
+			// 关键:Transform.rotation 是帧空间,须用 frame.PlanetToFrameRotation 把
+			// "行星空间 = 行星当前自转 × SrfRel" 转回帧空间(即 RotateY(θ_planet - θ_frame) * SrfRel)。
+			// 因双端表面锁定帧 θ_frame - θ_planet 为同一常量,两端帧空间朝向一致。
+			Quaternion headingFrame;
+			if (frame != null)
+			{
+				headingFrame = frame.PlanetToFrameRotation(planet.Rotation * data.SrfRel);
+			}
+			else
+			{
+				// 帧未就绪回退:直接乘行星自转(近似,帧角≈行星角时成立)
+				headingFrame = Quaternion.AngleAxis((float)(planet.RotationAngle * Mathf.Rad2Deg), Vector3.up) * data.SrfRel.ToQuaternion();
+			}
 			rc.Node.CraftScript.Transform.rotation = headingFrame;
 			if (rc.Node.CraftScript.CenterOfMass != null)
 			{
@@ -1153,28 +1237,33 @@ namespace Assets.Scripts.Net
 
 			Quaterniond craftHeading = rc.Node.Heading;
 			Quaternion outRot = rc.Node.CraftScript.Transform.rotation;
-			Quaternion rootPartRot = (rc.Node.CraftScript.RootPart != null && rc.Node.CraftScript.RootPart.Transform != null)
-				? rc.Node.CraftScript.RootPart.Transform.rotation : Quaternion.identity;
 			Quaternion comRot = rc.Node.CraftScript.CenterOfMass != null ? rc.Node.CraftScript.CenterOfMass.rotation : Quaternion.identity;
 			double planetAngle = rc.Node.Parent != null ? rc.Node.Parent.RotationAngle : double.NaN;
 			Quaterniond headingToPlanet = Quaterniond.identity;
-			if (rc.Node.GameView != null)
+			IReferenceFrame frame = rc.Node.GameView != null ? rc.Node.GameView.ReferenceFrame : null;
+			if (frame != null)
 			{
-				headingToPlanet = rc.Node.GameView.ReferenceFrame.FrameToPlanetRotation(data.Heading.ToQuaternion());
+				headingToPlanet = frame.FrameToPlanetRotation(data.Heading.ToQuaternion());
+			}
+			// 修正后验证:期望帧空间朝向 = frame.PlanetToFrameRotation(行星自转 × SrfRel)。
+			// 若与 comRot/outRot 一致 → srfRel 方案生效;若差一个 yaw = 双端自转角差 → 仍有问题。
+			Quaternion expectedFrame = Quaternion.identity;
+			if (frame != null && rc.Node.Parent != null)
+			{
+				expectedFrame = frame.PlanetToFrameRotation(rc.Node.Parent.Rotation * data.SrfRel);
 			}
 			Vector3 outFwd = rc.Node.CraftScript.Transform.forward;
 			Vector3 outUp = rc.Node.CraftScript.Transform.up;
-			/*
-			Mod.Log("[朝向诊断|远端P" + rc.PlayerId + "飞船] 收到heading(帧)=" + Q(data.Heading) +
+			Mod.Log("[朝向诊断|远端P" + rc.PlayerId + "飞船] SrfRel=" + Q(data.SrfRel) +
+				" | 期望帧朝向=" + Q(expectedFrame) +
 				" | 根Transform=" + Q(outRot) +
-				" | rootPartRot=" + Q(rootPartRot) +
 				" | comRot=" + Q(comRot) +
 				" | 游戏Heading(行星)=" + Q(craftHeading) +
-				" | 应=FrameToPlanet(收到)=" + Q(headingToPlanet) +
+				" | 应=FrameToPlanet(收到heading)=" + Q(headingToPlanet) +
 				" | fwd=(" + outFwd.x.ToString("F2") + "," + outFwd.y.ToString("F2") + "," + outFwd.z.ToString("F2") + ")" +
 				" up=(" + outUp.x.ToString("F2") + "," + outUp.y.ToString("F2") + "," + outUp.z.ToString("F2") + ")" +
 				" | planetAngle=" + planetAngle.ToString("F2") +
-				" | body:" + BuildBodyPoseSummary(rc.Node.CraftScript));*/
+				" | body:" + BuildBodyPoseSummary(rc.Node.CraftScript));
 		}
 
 		// ---------------- 本机状态采样 ----------------
@@ -1265,6 +1354,15 @@ namespace Assets.Scripts.Net
 				// 接收端按 comRot 摆放 body 时会整体转错 → "分裂/散架 + 朝向不一致"。
 				Quaternion comRotUnity = craft.CraftScript.CenterOfMass != null
 					? craft.CraftScript.CenterOfMass.rotation : craft.CraftScript.Transform.rotation;
+				// LunaMultiplayer 方案:传输"相对行星地表"朝向 SrfRel。
+				// comRot 是帧空间;表面锁定帧 θ_frame = θ_planet + const(常量)。
+				// 相对地表朝向 = RotateY(θ_frame - θ_planet) * comRot(与行星自转无关)。
+				// 接收端用 RotateY(θ_planet_recv - θ_frame_recv) * SrfRel 渲染回帧空间,
+				// 因双端同行星 const 相同 → 两端帧空间朝向一致,不依赖双端自转/时间同步、无 warp 漂移。
+				double sendPlanetRot = craft.Parent.RotationAngle;
+				double sendFrameRot = sendFrame != null ? sendFrame.RotationAngle : sendPlanetRot;
+				Quaternion srfRelQ = Quaternion.AngleAxis((float)((sendFrameRot - sendPlanetRot) * Mathf.Rad2Deg), Vector3.up) * comRotUnity;
+				data.SrfRel = Quaterniond.FromQuaternion(srfRelQ);
 				IReadOnlyList<BodyData> bodyList = craft.CraftScript.Data.Assembly.Bodies;
 				if (bodyList != null)
 				{
