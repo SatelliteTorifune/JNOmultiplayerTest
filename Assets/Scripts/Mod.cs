@@ -177,21 +177,6 @@ namespace Assets.Scripts
 			public Vector3d Velocity;
 			public Quaterniond Heading;
 
-			/// <summary>
-			/// 发送端"行星空间径向"单位向量(= 本机 PositionNormalized)。
-			/// 用于接收端覆盖对方飞船 FlightData.PositionNormalized：
-			/// 双端时间不同导致行星自转角度不同步时,双方"行星空间径向"不同,
-			/// 若不传输此值,接收端用本行星径向算 Pitch/Bank 会错(俯仰/滚转偏差)。
-			/// </summary>
-			public Vector3d PosNorm;
-
-			/// <summary>
-			/// 发送端行星自转角度(RotationAngle,弧度)。
-			/// 双端时间不同步导致行星自转角度不同(同一表面点的行星空间坐标/径向不同)。
-			/// 接收端用它覆盖本端行星 RotationAngle,使双端自转同步。
-			/// </summary>
-			public double PlanetRotationAngle;
-
 			public float Pitch;
 			public float Yaw;
 			public float Roll;
@@ -224,8 +209,6 @@ namespace Assets.Scripts
 				Position = position;
 				Velocity = velocity;
 				Heading = heading;
-				PosNorm = Vector3d.zero;
-				PlanetRotationAngle = 0;
 
 				Pitch = 0;
 				Yaw = 0;
@@ -276,8 +259,6 @@ namespace Assets.Scripts
 				Position = position;
 				Velocity = velocity;
 				Heading = heading;
-				PosNorm = Vector3d.zero;
-				PlanetRotationAngle = 0;
 
 				Pitch = pitch;
 				Yaw = yaw;
