@@ -343,8 +343,9 @@ namespace Assets.Scripts.Net
 			// 周期性本机状态日志（每 5 秒一次，与接收端目标朝向跨端对比）。
 			// 关键：对比【本机朝向】的 Pitch/Bank 与对端【远程飞船】的 对方Pitch/Bank，
 			// 若不一致即为传输/转换或采样基准问题。
+			// 位置诊断日志已暂时禁用（连接卡顿排查期间）
 			_selfStateLogTimer -= Time.unscaledDeltaTime;
-			if (_selfStateLogTimer <= 0f)
+			if (false && _selfStateLogTimer <= 0f)
 			{
 				_selfStateLogTimer = 5f;
 				CraftNode selfNode = FlightSceneScript.Instance.CraftNode as CraftNode;
@@ -572,10 +573,13 @@ namespace Assets.Scripts.Net
 			int playerId, nodeId; long serverTick;
 			if (!MpMessages.TryDecodeWelcome(packet, out playerId, out nodeId, out serverTick)) return;
 			PlayerId = playerId;
-			peer.PlayerId = playerId;
+			// 修复：不要把 peer(房主连接) 的 PlayerId 设成客户端自己的 ID。
+			// 房主 peer 的 PlayerId 应保持 0（房主身份），否则超时日志/寻址会错乱
+			// （此前把 host peer 的 PlayerId 覆盖成客户端 ID，导致超时日志显示 PlayerId=1 等错乱）。
 			peer.IsServer = true;
 			Mod.LogLobby("MP.OnWelcome (client): received Welcome, PlayerId=" + playerId +
-				", nodeId=" + nodeId + ", serverTick=" + serverTick + ", peer=" + peer.EndPoint);
+				", nodeId=" + nodeId + ", serverTick=" + serverTick + ", peer=" + peer.EndPoint +
+				", peer.PlayerId=" + peer.PlayerId + " (host peer, kept as-is)");
 		}
 
 		private void OnPlayerJoin(MpPeer peer, byte[] packet)
@@ -585,7 +589,15 @@ namespace Assets.Scripts.Net
 			MpPeer p = new MpPeer { EndPoint = peer.EndPoint, PlayerId = playerId, NodeId = nodeId, PlayerName = playerName, CraftXml = craftXml };
 			RegisterPlayer(p);
 			Mod.LogLobby("MP.OnPlayerJoin: playerId=" + playerId + ", nodeId=" + nodeId +
-				", craftXmlLen=" + (craftXml == null ? 0 : craftXml.Length) + ", peer=" + peer.EndPoint);
+				", craftXmlLen=" + (craftXml == null ? 0 : craftXml.Length) + ", peer=" + peer.EndPoint +
+				", isServer=" + IsServer + ", inFlightScene=" + (FlightSceneScript.Instance != null) +
+				", craftXmlEmpty=" + string.IsNullOrEmpty(craftXml));
+			// 诊断：记录该玩家飞船是否已登记到 _playersByPlayerId（供 ApplyRemoteState 生成远程飞船用）
+			MpPeer registered;
+			lock (_playersByPlayerId) { _playersByPlayerId.TryGetValue(playerId, out registered); }
+			Mod.LogLobby("MP.OnPlayerJoin: registered lookup playerId=" + playerId +
+				", found=" + (registered != null) +
+				", registeredCraftXmlLen=" + (registered != null && registered.CraftXml != null ? registered.CraftXml.Length : -1));
 			// 客户端回 PlayerJoinAck：告知房主已收到该玩家飞船，房主据此停止重发（防公网大分片丢失）。
 			if (!IsServer && peer != null && peer.EndPoint != null)
 			{
@@ -717,6 +729,7 @@ namespace Assets.Scripts.Net
 			public bool IsInitialized; // 幻影模式是否已应用（CraftScript 延迟构建后置 true）
 			public float InterpStartTime;
 			public float LastStateLogTime; // 周期性状态日志计时
+			public float LastVisualLogTime; // 可见性诊断日志计时
 			public Quaternion LastAppliedHeading; // ApplyRemoteState 最近一次写入的帧空间朝向(诊断用)
 		}
 
@@ -787,19 +800,38 @@ namespace Assets.Scripts.Net
 				ApplyRemoteState(rc, data);
 
 				// 朝向诊断：核对 数据包heading / SpawnCraft 后 Heading / 视觉 Transform.rotation
-				if (remote.CraftScript != null)
-				{
-					Quaternion spawnRot = remote.CraftScript.Transform.rotation;
-					Mod.Log("MP headingDiag spawn p" + peer.PlayerId + ": dataHeading=(" +
-						data.Heading.x.ToString("F3") + "," + data.Heading.y.ToString("F3") + "," + data.Heading.z.ToString("F3") + "," + data.Heading.w.ToString("F3") + ")" +
-						", spawnHeading=(" + remote.Heading.x.ToString("F3") + "," + remote.Heading.y.ToString("F3") + "," + remote.Heading.z.ToString("F3") + "," + remote.Heading.w.ToString("F3") + ")" +
-						", spawnRot=(" + spawnRot.x.ToString("F3") + "," + spawnRot.y.ToString("F3") + "," + spawnRot.z.ToString("F3") + "," + spawnRot.w.ToString("F3") + ")");
-				}
+				// 朝向诊断日志已暂时禁用（朝向已修复）
+				//if (remote.CraftScript != null)
+				//{
+				//	Quaternion spawnRot = remote.CraftScript.Transform.rotation;
+				//	Mod.Log("MP headingDiag spawn p" + peer.PlayerId + ": dataHeading=(" +
+				//		data.Heading.x.ToString("F3") + "," + data.Heading.y.ToString("F3") + "," + data.Heading.z.ToString("F3") + "," + data.Heading.w.ToString("F3") + ")" +
+				//		", spawnHeading=(" + remote.Heading.x.ToString("F3") + "," + remote.Heading.y.ToString("F3") + "," + remote.Heading.z.ToString("F3") + "," + remote.Heading.w.ToString("F3") + ")" +
+				//		", spawnRot=(" + spawnRot.x.ToString("F3") + "," + spawnRot.y.ToString("F3") + "," + spawnRot.z.ToString("F3") + "," + spawnRot.w.ToString("F3") + ")");
+				//}
 
 				// 幻影模式 + 初始朝向：CraftScript 可能延迟构建，在 UpdateRemoteCrafts 里懒初始化（见 InitializeRemoteCraft）
 				Mod.LogLobby("MP: spawned remote craft for player " + peer.PlayerId + " at remote position (nodeId=" + peer.NodeId + ", localNode=" + remote.NodeId + ")" +
 					", surfacePos=(" + data.Position.x.ToString("F1") + "," + data.Position.y.ToString("F1") + "," + data.Position.z.ToString("F1") + ")" +
 					", heading=(" + data.Heading.x.ToString("F3") + "," + data.Heading.y.ToString("F3") + "," + data.Heading.z.ToString("F3") + "," + data.Heading.w.ToString("F3") + ")");
+
+				// 诊断：生成后立即记录远程飞船的可见性/渲染状态，用于定位"无法显示对方 craft"
+				try
+				{
+					GameObject rgo = remote.GameObject;
+					int rendererCount = 0, enabledCount = 0;
+					if (rgo != null)
+					{
+						foreach (Renderer r in rgo.GetComponentsInChildren<Renderer>(true)) { rendererCount++; if (r.enabled) enabledCount++; }
+					}
+					Mod.LogLobby("MP spawnDiag p" + peer.PlayerId + ": goActive=" + (rgo != null ? rgo.activeSelf.ToString() : "null") +
+						", craftScript=" + (remote.CraftScript != null ? "built" : "notBuilt") +
+						", renderers=" + rendererCount + "/enabled=" + enabledCount +
+						", inFlightState=" + IsNodeInFlightState(remote) +
+						", isPlayer=" + remote.IsPlayer +
+						", isLoadedInGameView=" + remote.IsLoadedInGameView);
+				}
+				catch (Exception e) { Mod.LogError("MP spawnDiag error: " + e.Message); }
 			}
 			catch (Exception e)
 			{
@@ -812,27 +844,51 @@ namespace Assets.Scripts.Net
 			_spawnMissLogged.Remove(playerId);
 			_spawnAttemptTime.Remove(playerId);
 			RemoteCraft rc;
-			if (!_remoteCrafts.TryGetValue(playerId, out rc)) return;
+			if (!_remoteCrafts.TryGetValue(playerId, out rc))
+			{
+				Mod.LogLobby("MP.RemoveRemoteCraft: player " + playerId + " not in _remoteCrafts (nothing to remove)");
+				return;
+			}
 			_remoteCrafts.Remove(playerId);
 			if (rc.Node != null && rc.Node.CraftScript != null)
 			{
+				// 诊断：记录移除前飞船节点状态，用于定位 MapView NRE（MapCraft.transform 为 null 但仍在 registry）
+				bool inFlightState = false;
+				try
+				{
+					if (FlightSceneScript.Instance != null && FlightSceneScript.Instance.FlightState != null)
+					{
+						foreach (CraftNode cn in FlightSceneScript.Instance.FlightState.CraftNodes)
+						{
+							if (cn == rc.Node) { inFlightState = true; break; }
+						}
+					}
+				}
+				catch (Exception e) { Mod.LogError("RemoveRemoteCraft: check FlightState error: " + e.Message); }
+				Mod.LogLobby("MP: removed (hidden) remote craft for player " + playerId +
+					", nodeId=" + rc.Node.NodeId +
+					", inFlightState=" + inFlightState +
+					", goActive=" + rc.Node.GameObject.activeSelf +
+					", craftScriptNull=" + (rc.Node.CraftScript == null) +
+					", isDestroyed=" + rc.Node.IsDestroyed);
 				rc.Node.GameObject.SetActive(false); // MVP：隐藏而非销毁
-				Mod.LogLobby("MP: removed (hidden) remote craft for player " + playerId);
+			}
+			else
+			{
+				Mod.LogLobby("MP.RemoveRemoteCraft: player " + playerId + " rc.Node=" + (rc.Node == null ? "null" : "craftScriptNull=" + (rc.Node.CraftScript == null)));
 			}
 		}
 
 		/// <summary>
 		/// 强制恢复远程飞船的视觉：游戏原生机制可能对"非活动/幽灵"飞船禁用 Renderer 或
 		/// 停用 GameObject（实测靠近本机飞船时视觉模型消失但 CraftNode 仍在）。
-		/// 节流恢复，避免每帧遍历 Renderer 的开销。
+		/// 每帧强制执行（不再节流），因为游戏可能在每帧都禁用幽灵飞船的 Renderer/GameObject，
+		/// 尤其在真实远程联机（高延迟）场景下更为激进。
 		/// </summary>
 		private void EnforceRemoteCraftVisuals()
 		{
 			if (_remoteCrafts.Count == 0) return;
-			_remoteVisualTimer -= Time.unscaledDeltaTime;
-			if (_remoteVisualTimer > 0f) return;
-			_remoteVisualTimer = 0.5f;
-
+			// 每帧强制执行（不再节流 0.5s），防止游戏在帧间禁用幽灵飞船视觉
 			foreach (RemoteCraft rc in _remoteCrafts.Values)
 			{
 				if (rc.Node == null || rc.Node.GameObject == null) continue;
@@ -842,14 +898,13 @@ namespace Assets.Scripts.Net
 					if (!go.activeSelf)
 					{
 						go.SetActive(true);
-						Mod.Log("MP: re-activated remote craft GameObject for player " + rc.PlayerId);
+						Mod.LogLobby("MP: re-activated remote craft GameObject for player " + rc.PlayerId);
 					}
 					foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true))
 					{
 						if (!r.enabled)
 						{
 							r.enabled = true;
-							Mod.Log("MP: re-enabled renderer on remote craft for player " + rc.PlayerId);
 						}
 					}
 				}
@@ -917,7 +972,12 @@ namespace Assets.Scripts.Net
 
 				// 真正关闭物理（停止重力/碰撞/物理对 Transform 的覆盖）。
 				// 只靠 DisableCraftPhysicCalculation 清碰撞箱仍会被重力拉进地下、朝向被物理覆盖。
-				rc.Node.SetPhysicsEnabled(false, PhysicsChangeReason.UnloadPhysics);
+				// 注意：必须用 PhysicsChangeReason.Warp（而非 UnloadPhysics）！
+				// 原因：MapCraft.OnCraftNodePhysicsDisabled 对 UnloadPhysics 会执行
+				// MapItem.SwitchType<MapStaticOrbitItem>(this)，销毁 MapCraft GameObject 但 item 仍留在
+				// registry，导致 MapView.UpdateMapItems 遍历时对已销毁的 MapCraft 调 transform.position → NRE。
+				// Warp 被 IgnorePhysicsChange 视为"忽略"（不切换类型），可避免该 NRE。
+				rc.Node.SetPhysicsEnabled(false, PhysicsChangeReason.Warp);
 				CraftUtils.DisableCraftPhysicCalculation(ref rc.Node);
 
 				// 强制进入"表面锁定 + 物理禁用"分支：
@@ -1006,8 +1066,31 @@ namespace Assets.Scripts.Net
 						}
 					}
 
-					// 周期性状态日志（每 5 秒一次，便于核对位置/朝向同步）
-					if (Time.unscaledTime - rc.LastStateLogTime > 5f)
+					// 诊断：周期性记录远程飞船可见性（每 3 秒），用于定位"无法显示对方 craft"。
+					// 若 goActive 变 false 或 renderer 被禁用，说明游戏原生机制在隐藏幽灵飞船。
+					if (Time.unscaledTime - rc.LastVisualLogTime > 3f)
+					{
+						rc.LastVisualLogTime = Time.unscaledTime;
+						try
+						{
+							GameObject rgo = rc.Node.GameObject;
+							int rendererCount = 0, enabledCount = 0;
+							if (rgo != null)
+							{
+								foreach (Renderer r in rgo.GetComponentsInChildren<Renderer>(true)) { rendererCount++; if (r.enabled) enabledCount++; }
+							}
+							Mod.LogLobby("MP visualDiag p" + rc.PlayerId + ": goActive=" + (rgo != null ? rgo.activeSelf.ToString() : "null") +
+								", craftScript=" + (rc.Node.CraftScript != null ? "built" : "notBuilt") +
+								", renderers=" + rendererCount + "/enabled=" + enabledCount +
+								", inFlightState=" + IsNodeInFlightState(rc.Node) +
+								", isDestroyed=" + rc.Node.IsDestroyed +
+								", isLoadedInGameView=" + rc.Node.IsLoadedInGameView);
+						}
+						catch (Exception e) { Mod.LogError("MP visualDiag error (p" + rc.PlayerId + "): " + e.Message); }
+					}
+
+					// 周期性状态日志（每 5 秒一次，便于核对位置/朝向同步）——已暂时禁用
+					if (false && Time.unscaledTime - rc.LastStateLogTime > 5f)
 					{
 						rc.LastStateLogTime = Time.unscaledTime;
 						Quaternion tr = rc.Node.CraftScript != null ? rc.Node.CraftScript.Transform.rotation : Quaternion.identity;
@@ -1059,8 +1142,8 @@ namespace Assets.Scripts.Net
 							" Bank=" + rBank.ToString("F2"));
 					}
 
-					// 朝向诊断日志（低频，姿态应用已由 ApplyRemoteState 完成，此处仅核对）
-					LogRemoteHeadingDiag(rc, rc.Target);
+					// 朝向诊断日志已暂时禁用（朝向已修复）
+					//LogRemoteHeadingDiag(rc, rc.Target);
 				}
 				catch (Exception e) { Mod.LogError("UpdateRemoteCrafts error: " + e.Message); }
 			}
@@ -1086,9 +1169,10 @@ namespace Assets.Scripts.Net
 			// 防御:确保远程飞船保持"物理禁用"。游戏可能在 GameView 加载/切换或初始化阶段
 			// 重新启用物理;一旦物理启用,朝向会被物理与 RecenterTransformOnCoM 覆盖,
 			// 导致 transformRot/comRot 偏离状态包(表现为接收端飞船朝向突变/错误)。
+			// 用 Warp 原因禁用物理,避免触发 MapCraft→MapStaticOrbitItem 切换导致的 MapView NRE(见 InitializeRemoteCraft)。
 			if (rc.Node.CraftScript.IsPhysicsEnabled)
 			{
-				rc.Node.SetPhysicsEnabled(false, PhysicsChangeReason.UnloadPhysics);
+				rc.Node.SetPhysicsEnabled(false, PhysicsChangeReason.Warp);
 			}
 			IPlanetNode planet = rc.Node.Parent;
 			if (planet == null) return;
@@ -1228,42 +1312,15 @@ namespace Assets.Scripts.Net
 		/// fwd/up=对方飞船在本机的视觉"前方/上方"方向(应与发送端本机一致)；
 		/// body摘要=首/次/末body相对质心的欧拉角(判断分裂)。
 		/// </summary>
+		/// <summary>朝向诊断日志（已暂时禁用，朝向已修复）。</summary>
 		private static void LogRemoteHeadingDiag(RemoteCraft rc, Mod.recdata data)
 		{
-			if (rc.Node == null || rc.Node.CraftScript == null) return;
-			_headingDiagTimer -= Time.unscaledDeltaTime;
-			if (_headingDiagTimer > 0f) return;
-			_headingDiagTimer = 10f;
-
-			Quaterniond craftHeading = rc.Node.Heading;
-			Quaternion outRot = rc.Node.CraftScript.Transform.rotation;
-			Quaternion comRot = rc.Node.CraftScript.CenterOfMass != null ? rc.Node.CraftScript.CenterOfMass.rotation : Quaternion.identity;
-			double planetAngle = rc.Node.Parent != null ? rc.Node.Parent.RotationAngle : double.NaN;
-			Quaterniond headingToPlanet = Quaterniond.identity;
-			IReferenceFrame frame = rc.Node.GameView != null ? rc.Node.GameView.ReferenceFrame : null;
-			if (frame != null)
-			{
-				headingToPlanet = frame.FrameToPlanetRotation(data.Heading.ToQuaternion());
-			}
-			// 修正后验证:期望帧空间朝向 = frame.PlanetToFrameRotation(行星自转 × SrfRel)。
-			// 若与 comRot/outRot 一致 → srfRel 方案生效;若差一个 yaw = 双端自转角差 → 仍有问题。
-			Quaternion expectedFrame = Quaternion.identity;
-			if (frame != null && rc.Node.Parent != null)
-			{
-				expectedFrame = frame.PlanetToFrameRotation(rc.Node.Parent.Rotation * data.SrfRel);
-			}
-			Vector3 outFwd = rc.Node.CraftScript.Transform.forward;
-			Vector3 outUp = rc.Node.CraftScript.Transform.up;
-			Mod.Log("[朝向诊断|远端P" + rc.PlayerId + "飞船] SrfRel=" + Q(data.SrfRel) +
-				" | 期望帧朝向=" + Q(expectedFrame) +
-				" | 根Transform=" + Q(outRot) +
-				" | comRot=" + Q(comRot) +
-				" | 游戏Heading(行星)=" + Q(craftHeading) +
-				" | 应=FrameToPlanet(收到heading)=" + Q(headingToPlanet) +
-				" | fwd=(" + outFwd.x.ToString("F2") + "," + outFwd.y.ToString("F2") + "," + outFwd.z.ToString("F2") + ")" +
-				" up=(" + outUp.x.ToString("F2") + "," + outUp.y.ToString("F2") + "," + outUp.z.ToString("F2") + ")" +
-				" | planetAngle=" + planetAngle.ToString("F2") +
-				" | body:" + BuildBodyPoseSummary(rc.Node.CraftScript));
+			// 朝向诊断日志已暂时禁用（朝向已修复）
+			//if (rc.Node == null || rc.Node.CraftScript == null) return;
+			//_headingDiagTimer -= Time.unscaledDeltaTime;
+			//if (_headingDiagTimer > 0f) return;
+			//_headingDiagTimer = 10f;
+			//Mod.Log("[朝向诊断|远端P" + rc.PlayerId + "飞船] SrfRel=" + Q(data.SrfRel) + " ...");
 		}
 
 		// ---------------- 本机状态采样 ----------------
@@ -1279,6 +1336,21 @@ namespace Assets.Scripts.Net
 			}
 			catch { }
 			return -1;
+		}
+
+		/// <summary>诊断辅助：判断指定 CraftNode 是否仍登记在 FlightState.CraftNodes 中。</summary>
+		private static bool IsNodeInFlightState(CraftNode node)
+		{
+			try
+			{
+				if (node == null || FlightSceneScript.Instance == null || FlightSceneScript.Instance.FlightState == null) return false;
+				foreach (CraftNode cn in FlightSceneScript.Instance.FlightState.CraftNodes)
+				{
+					if (cn == node) return true;
+				}
+			}
+			catch { }
+			return false;
 		}
 
 		/// <summary>
