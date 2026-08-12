@@ -36,8 +36,8 @@ namespace Assets.Scripts.Net
 
 		[Tooltip("状态包发送间隔(ms)，默认 50ms = 20Hz")]
 		public float SendIntervalMs = 50f;
-		[Tooltip("对端超时判定(ms)。TCP 下连接断开由 read loop 检测，此值仅用于半开连接兜底，应设得较大以容忍主线程卡顿/GC/场景加载")]
-		public long TimeoutMs = 15000;
+		[Tooltip("对端超时判定(ms)。TCP 下连接断开由 read loop 检测，此值仅用于半开连接兜底，应设得较大以容忍主线程卡顿/GC/场景加载/全屏切换")]
+		public long TimeoutMs = 60000;
 
 		/// <summary>客户端未收到房主 CraftDataAck 时，CraftData 重发间隔（秒）。</summary>
 		private const float CraftResendIntervalSec = 1.5f;
@@ -159,6 +159,16 @@ namespace Assets.Scripts.Net
 			_spawnMissLogged.Clear();
 			_spawnAttemptTime.Clear();
 			lock (_playersByPlayerId) _playersByPlayerId.Clear();
+			// 停止联机时真正销毁所有远程飞船（避免 Stop 后场景里残留幽灵飞船），
+			// 已销毁/已随场景卸载的节点跳过。
+			foreach (RemoteCraft rc in _remoteCrafts.Values)
+			{
+				if (rc != null && rc.Node != null && !rc.Node.IsDestroyed)
+				{
+					try { rc.Node.DestroyCraft(); }
+					catch (Exception e) { Mod.LogError("MP.Stop: DestroyCraft error: " + e.Message); }
+				}
+			}
 			_remoteCrafts.Clear();
 			Mod.LogLobby("MP.Stop: wasServer=" + wasServer + ", wasConnected=" + wasConnected +
 				", wasPlayerId=" + wasPlayerId + ", Transport.IsRunning=" + Transport.IsRunning);
@@ -218,6 +228,20 @@ namespace Assets.Scripts.Net
 				}
 			}
 			Mod.Log("MP: local craft NodeId=" + LocalNodeId + ", xmlLen=" + (craftXml == null ? 0 : craftXml.Length));
+		}
+
+		/// <summary>
+		/// 进入飞行场景时由 Mod.OnSceneLoaded 调用：
+		/// 清理上一场景遗留的远程飞船引用。场景重载/全屏切换会把旧 CraftNode 卸载销毁，
+		/// 残留引用会导致新场景中状态包无法重新生成远程飞船（ApplyRemoteState 认为已存在）。
+		/// 清空后收到状态包会按"尚未生成"分支用真实位置重新 SpawnCraft。
+		/// </summary>
+		public void OnFlightSceneLoaded()
+		{
+			_remoteCrafts.Clear();
+			_spawnMissLogged.Clear();
+			_spawnAttemptTime.Clear();
+			Mod.LogLobby("MP.OnFlightSceneLoaded: cleared stale remote crafts (count=" + _remoteCrafts.Count + ")");
 		}
 
 		// ---------------- 主循环 ----------------
@@ -789,10 +813,11 @@ namespace Assets.Scripts.Net
 				return;
 			}
 			_remoteCrafts.Remove(playerId);
-			if (rc.Node != null && rc.Node.CraftScript != null)
+			if (rc.Node != null)
 			{
 				// 诊断：记录移除前飞船节点状态，用于定位 MapView NRE（MapCraft.transform 为 null 但仍在 registry）
 				bool inFlightState = false;
+				string goActive = "null";
 				try
 				{
 					if (FlightSceneScript.Instance != null && FlightSceneScript.Instance.FlightState != null)
@@ -802,19 +827,31 @@ namespace Assets.Scripts.Net
 							if (cn == rc.Node) { inFlightState = true; break; }
 						}
 					}
+					if (rc.Node.GameObject != null) goActive = rc.Node.GameObject.activeSelf.ToString();
 				}
 				catch (Exception e) { Mod.LogError("RemoveRemoteCraft: check FlightState error: " + e.Message); }
-				Mod.LogLobby("MP: removed (hidden) remote craft for player " + playerId +
+				Mod.LogLobby("MP: destroyed remote craft for player " + playerId +
 					", nodeId=" + rc.Node.NodeId +
 					", inFlightState=" + inFlightState +
-					", goActive=" + rc.Node.GameObject.activeSelf +
+					", goActive=" + goActive +
 					", craftScriptNull=" + (rc.Node.CraftScript == null) +
 					", isDestroyed=" + rc.Node.IsDestroyed);
-				rc.Node.GameObject.SetActive(false); // MVP：隐藏而非销毁
+				// 真正销毁远程飞船，不再用 SetActive(false) 隐藏（原机制会留下残影/僵尸飞船且不释放资源）：
+				// DestroyCraft() 置 IsDestroyed=true 并触发 Destroyed 事件；
+				// 游戏 FlightSceneScript.FlightLateUpdate 每帧调用 FlightState.ProcessDestroyedCraftNodes()
+				// 从 FlightState 移除该节点、注销其数据并触发 CraftNodeRemoved，资源彻底释放。
+				try
+				{
+					rc.Node.DestroyCraft();
+				}
+				catch (Exception e)
+				{
+					Mod.LogError("RemoveRemoteCraft: DestroyCraft error: " + e.Message);
+				}
 			}
 			else
 			{
-				Mod.LogLobby("MP.RemoveRemoteCraft: player " + playerId + " rc.Node=" + (rc.Node == null ? "null" : "craftScriptNull=" + (rc.Node.CraftScript == null)));
+				Mod.LogLobby("MP.RemoveRemoteCraft: player " + playerId + " rc.Node=null");
 			}
 		}
 

@@ -146,6 +146,10 @@ namespace Assets.Scripts
 			if (MpNetworkManager.Instance == null)
 			{
 				if (MPGameObject == null) MPGameObject = new GameObject("MPNetwork");
+				// 关键：让管理器跨场景存活。切换全屏/退出菜单等触发场景重载时，
+				// 普通场景 GameObject 会被销毁 → OnDestroy → Transport.Stop() 断线 → 远程飞船被移除。
+				// DontDestroyOnLoad 保证联机会话在场景切换期间保持连接。
+				GameObject.DontDestroyOnLoad(MPGameObject);
 				MPGameObject.AddComponent<MpNetworkManager>();
 				MPGameObject.SetActive(true);
 			}
@@ -154,10 +158,20 @@ namespace Assets.Scripts
 
 		public void OnSceneLoaded(object sender, SceneEventArgs e)
 		{
-			if (Game.Instance.SceneManager.InFlightScene && MpNetworkManager.Instance != null)
+			if (Game.Instance.SceneManager.InFlightScene)
 			{
-				//进入飞行场景后上报/刷新本机飞船 NodeId
-				MpNetworkManager.Instance.RefreshLocalCraft();
+				// 兜底：若管理器因场景重载被销毁（理论上 DontDestroyOnLoad 后不应发生），在此重建
+				if (MpNetworkManager.Instance == null)
+				{
+					EnsureMpManager();
+				}
+				if (MpNetworkManager.Instance != null)
+				{
+					// 清理上一场景遗留的远程飞船引用（旧 CraftNode 已被场景卸载销毁），
+					// 再上报/刷新本机飞船 NodeId
+					MpNetworkManager.Instance.OnFlightSceneLoaded();
+					MpNetworkManager.Instance.RefreshLocalCraft();
+				}
 			}
 		}
 
