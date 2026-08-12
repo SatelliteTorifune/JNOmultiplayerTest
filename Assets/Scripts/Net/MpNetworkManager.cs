@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Xml.Linq;
@@ -917,8 +918,11 @@ namespace Assets.Scripts.Net
 				if (_spawnAttemptTime.TryGetValue(playerId, out last) && Time.unscaledTime - last < 2f) return;
 				_spawnAttemptTime[playerId] = Time.unscaledTime;
 
-				SpawnRemoteCraftAtPosition(peer, data);
-				if (!_remoteCrafts.TryGetValue(playerId, out rc) || rc.Node == null) return;
+				// 异步延迟生成：SpawnCraft（LoadCraftImmediate + 实例化全部部件/渲染器）在
+				// 大飞船时可能阻塞主线程数秒（白屏），且期间不读网络导致对端写阻塞（"卡到无响应"）。
+				// 改为协程延迟几帧再生成：先让本帧网络处理完（回 Ack/收状态包），再执行重量级生成。
+				StartCoroutine(SpawnRemoteCraftCoroutine(peer, data));
+				return;
 			}
 
 			if (rc.HasState)
@@ -933,6 +937,28 @@ namespace Assets.Scripts.Net
 			rc.Target = data;
 			rc.HasState = true;
 			rc.InterpStartTime = Time.unscaledTime;
+		}
+
+		/// <summary>
+		/// 协程延迟生成远程飞船：先让网络处理几帧（DrainIncoming/回 Ack/状态包），
+		/// 再执行重量级 SpawnCraft，降低"加入时主线程长时间阻塞（白屏）/对端写阻塞（无响应）"。
+		/// </summary>
+		private IEnumerator SpawnRemoteCraftCoroutine(MpPeer peer, Mod.recdata data)
+		{
+			// 先跑完当前帧网络处理，再等 2 帧，让握手/回 Ack/状态包有充足时间流动
+			yield return null;
+			yield return null;
+
+			// 协程延迟期间可能发生：离开飞行场景 / 玩家已离开 / 已被其他路径生成 / 飞船信息失效
+			if (peer == null || FlightSceneScript.Instance == null) yield break;
+			if (peer.PlayerId == PlayerId) yield break;
+			bool stillThere = false;
+			lock (_playersByPlayerId) { stillThere = _playersByPlayerId.ContainsKey(peer.PlayerId); }
+			if (!stillThere) yield break;
+			if (_remoteCrafts.ContainsKey(peer.PlayerId)) yield break;
+			if (string.IsNullOrEmpty(peer.CraftXml)) yield break;
+
+			SpawnRemoteCraftAtPosition(peer, data);
 		}
 
 		/// <summary>

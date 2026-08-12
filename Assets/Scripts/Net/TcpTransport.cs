@@ -86,6 +86,9 @@ namespace Assets.Scripts.Net
                 _client = new TcpClient();
                 _client.Connect(new IPEndPoint(ip, port));
                 _client.NoDelay = true; // 禁用 Nagle，降低小包延迟
+                // 关键：设置发送超时。对端（如正在同步 SpawnCraft 大飞船）长时间不读时，
+                // 主线程 WriteMessage 会永久阻塞 → 游戏"卡到无响应"。超时后抛异常由上层捕获。
+                _client.SendTimeout = 5000;
                 _running = true;
                 LocalPort = ((IPEndPoint)_client.Client.LocalEndPoint).Port;
                 IPEndPoint remoteEp = (IPEndPoint)_client.Client.RemoteEndPoint;
@@ -234,6 +237,8 @@ namespace Assets.Scripts.Net
                 {
                     client = _listener.AcceptTcpClient();
                     client.NoDelay = true;
+                    // 与 StartClient 一致：设置发送超时，防对端不读时主线程 WriteMessage 永久阻塞
+                    client.SendTimeout = 5000;
                     IPEndPoint ep = (IPEndPoint)client.Client.RemoteEndPoint;
                     MpPeer peer = GetOrAddPeer(ep);
                     lock (_peersLock)
