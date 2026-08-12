@@ -307,28 +307,7 @@ namespace Assets.Scripts.Net
 			catch { return false; }
 		}
 
-		// ---------------- Pause / Ping ----------------
-
-		public static byte[] EncodePause(bool paused)
-		{
-			return Pack(MpMessageType.Pause, w => w.Write(paused));
-		}
-
-		public static bool TryDecodePause(byte[] buffer, out bool paused)
-		{
-			paused = false;
-			try
-			{
-				using (MemoryStream ms = new MemoryStream(buffer))
-				using (BinaryReader r = new BinaryReader(ms))
-				{
-					if (r.ReadByte() != (byte)MpMessageType.Pause) return false;
-					paused = r.ReadBoolean();
-					return true;
-				}
-			}
-			catch { return false; }
-		}
+		// ---------------- Ping ----------------
 
 		public static byte[] EncodePing(long tick)
 		{
@@ -338,23 +317,6 @@ namespace Assets.Scripts.Net
 		public static byte[] EncodePong(long tick)
 		{
 			return Pack(MpMessageType.Pong, w => w.Write(tick));
-		}
-
-		public static bool TryDecodePingPong(byte[] buffer, out long tick)
-		{
-			tick = 0;
-			try
-			{
-				using (MemoryStream ms = new MemoryStream(buffer))
-				using (BinaryReader r = new BinaryReader(ms))
-				{
-					byte type = r.ReadByte();
-					if (type != (byte)MpMessageType.Ping && type != (byte)MpMessageType.Pong) return false;
-					tick = r.ReadInt64();
-					return true;
-				}
-			}
-			catch { return false; }
 		}
 
 		// ---------------- recdata 序列化 ----------------

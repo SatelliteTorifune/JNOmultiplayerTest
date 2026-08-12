@@ -25,7 +25,8 @@ namespace Assets.Scripts.Net
 	{
 		public static MpNetworkManager Instance { get; private set; }
 
-		[NonSerialized] public TcpTransport Transport = new TcpTransport();
+		[NonSerialized] 
+		public TcpTransport Transport = new TcpTransport();
 
 		public bool IsServer { get; private set; }
 		public bool IsConnected { get; private set; }
@@ -47,16 +48,12 @@ namespace Assets.Scripts.Net
 		private readonly Dictionary<int, float> _spawnAttemptTime = new Dictionary<int, float>(); // 生成尝试节流
 		private float _sendTimer;
 		private float _keepAliveTimer;
-		private float _selfStateLogTimer;
 		private float _craftResendTimer; // 客户端重发 CraftData 节流计时
 		private float _hostCraftResendTimer; // 房主重发 host craft（PlayerJoin）节流计时
-		private float _remoteVisualTimer; // 远程飞船视觉强制恢复节流计时（游戏可能原生隐藏非活动幽灵飞船的 Renderer）
-		private long _lastPingTick;
 		private bool _craftReported;      // 本机飞船已上报且被房主确认（客户端收到 CraftDataAck 才置 true）
 		// 房主：记录"已发给客户端、但尚未收到 PlayerJoinAck 确认"的 host craft（key=peer.EndPoint）。
 		private readonly Dictionary<string, float> _hostCraftResend = new Dictionary<string, float>();
 		private string _localCraftXml = string.Empty;
-		private static float _headingDiagTimer; // 朝向诊断日志节流计时器
 
 		/// <summary>收到远程玩家加入。</summary>
 		public event Action<MpPeer> OnPlayerJoined;
@@ -340,48 +337,9 @@ namespace Assets.Scripts.Net
 			// 否则会以 PlayerId=-1 发包，房主无法关联到已登记玩家（"state for player -1"）。
 			if (PlayerId < 0) return;
 
-			// 周期性本机状态日志（每 5 秒一次，与接收端目标朝向跨端对比）。
-			// 关键：对比【本机朝向】的 Pitch/Bank 与对端【远程飞船】的 对方Pitch/Bank，
-			// 若不一致即为传输/转换或采样基准问题。
-			// 位置诊断日志已暂时禁用（连接卡顿排查期间）
-			_selfStateLogTimer -= Time.unscaledDeltaTime;
-			if (false && _selfStateLogTimer <= 0f)
-			{
-				_selfStateLogTimer = 5f;
-				CraftNode selfNode = FlightSceneScript.Instance.CraftNode as CraftNode;
-				if (selfNode != null && selfNode.CraftScript != null)
-				{
-					Quaternion selfCom = selfNode.CraftScript.CenterOfMass != null
-						? selfNode.CraftScript.CenterOfMass.rotation : selfNode.CraftScript.Transform.rotation;
-					ICraftFlightData sfd = selfNode.CraftScript.FlightData;
-					double sPitch = sfd != null ? sfd.Pitch : double.NaN;
-					double sBank = sfd != null ? sfd.BankAngle : double.NaN;
-					Vector3d sPosNorm = sfd != null ? sfd.PositionNormalized : Vector3d.zero;
-				string sPlanet = selfNode.Parent != null ? selfNode.Parent.PlanetData.Name : "?";
-					IReferenceFrame selfFrame = selfNode.ReferenceFrame;
-					if (selfFrame == null && FlightSceneScript.Instance != null && FlightSceneScript.Instance.ViewManager != null &&
-						FlightSceneScript.Instance.ViewManager.GameView != null)
-					{
-						selfFrame = FlightSceneScript.Instance.ViewManager.GameView.ReferenceFrame;
-					}
-					double selfPlanetRot = selfNode.Parent != null ? selfNode.Parent.RotationAngle : double.NaN;
-					double selfFrameRot = selfFrame != null ? selfFrame.RotationAngle : double.NaN;
-					Mod.Log("【本机朝向|" + PlayerName + "(P" + PlayerId + ")】" +
-						" 质心朝向=" + Q(selfCom) +
-						" 根朝向=" + Q(selfNode.CraftScript.Transform.rotation) +
-						" 发送朝向(行星)=" + Q(data.Heading) +
-						" SrfRel=" + Q(data.SrfRel) +
-						" | 行星=" + sPlanet +
-						" 行星角=" + selfPlanetRot.ToString("F3") +
-						" 帧角=" + selfFrameRot.ToString("F3") +
-						" 帧-行星=" + (selfFrameRot - selfPlanetRot).ToString("F3") +
-						" 行星pos=(" + selfNode.Position.x.ToString("F0") + "," + selfNode.Position.y.ToString("F0") + "," + selfNode.Position.z.ToString("F0") + ")" +
-						" PosNorm=(" + sPosNorm.x.ToString("F3") + "," + sPosNorm.y.ToString("F3") + "," + sPosNorm.z.ToString("F3") + ")" +
-						" | 本机Pitch=" + sPitch.ToString("F2") +
-						" Bank=" + sBank.ToString("F2"));
-				}
-			}
-
+			
+			// 周期性本机朝向/位置诊断日志已移除（原为 if(false) 禁用块；
+			// 其内曾被加入过早 return，导致 ProcessOutgoing 每帧提前返回、状态包完全停发）
 			double time = FlightSceneScript.Instance.FlightState.Time;
 			byte[] packet = MpMessages.EncodeState(PlayerId, LocalNodeId, time, data);
 			if (IsServer)
@@ -454,7 +412,6 @@ namespace Assets.Scripts.Net
 					Transport.SendTo(peer, MpMessages.EncodePong(0));
 					break;
 				case MpMessageType.Pong:
-					_lastPingTick = DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;
 					break;
 				case MpMessageType.CraftDataAck:
 					OnCraftDataAck(packet);
@@ -650,24 +607,6 @@ namespace Assets.Scripts.Net
 		}
 
 		// ---------------- 工具 ----------------
-
-		/// <summary>房主广播暂停/恢复（临时禁用，见 OnPause）。</summary>
-		public void BroadcastPause(bool paused)
-		{
-			Mod.LogLobby("BroadcastPause temporarily disabled (paused=" + paused + ")");
-			// if (!IsServer) return;
-			// Transport.Broadcast(MpMessages.EncodePause(paused));
-			// if (FlightSceneScript.Instance != null)
-			// {
-			// 	FlightSceneScript.Instance.TimeManager.RequestPauseChange(paused, false);
-			// }
-		}
-
-		/// <summary>房主广播玩家离开。</summary>
-		public void BroadcastPlayerLeave(int playerId)
-		{
-			Transport.Broadcast(MpMessages.EncodePlayerLeave(playerId));
-		}
 
 		private int _nextPlayerId = 1;
 		private int NextPlayerId() => _nextPlayerId++;
@@ -1303,26 +1242,6 @@ namespace Assets.Scripts.Net
 			}
 		}
 
-		/// <summary>
-		/// 接收端朝向诊断日志（每10秒，由 UpdateRemoteCrafts 调用）。
-		/// 姿态应用已统一在 ApplyRemoteState 中完成；此处仅输出核对数据：
-		/// 收到heading=状态包帧空间朝向；根Transform=赋给根的旋转(应=收到heading)；
-		/// rootPart=命令舱世界旋转；comRot=本机质心旋转；
-		/// 游戏Heading=行星字段(应=FrameToPlanet(收到heading))；
-		/// fwd/up=对方飞船在本机的视觉"前方/上方"方向(应与发送端本机一致)；
-		/// body摘要=首/次/末body相对质心的欧拉角(判断分裂)。
-		/// </summary>
-		/// <summary>朝向诊断日志（已暂时禁用，朝向已修复）。</summary>
-		private static void LogRemoteHeadingDiag(RemoteCraft rc, Mod.recdata data)
-		{
-			// 朝向诊断日志已暂时禁用（朝向已修复）
-			//if (rc.Node == null || rc.Node.CraftScript == null) return;
-			//_headingDiagTimer -= Time.unscaledDeltaTime;
-			//if (_headingDiagTimer > 0f) return;
-			//_headingDiagTimer = 10f;
-			//Mod.Log("[朝向诊断|远端P" + rc.PlayerId + "飞船] SrfRel=" + Q(data.SrfRel) + " ...");
-		}
-
 		// ---------------- 本机状态采样 ----------------
 
 		private static int GetLocalCraftNodeId()
@@ -1489,28 +1408,5 @@ namespace Assets.Scripts.Net
 			return "(" + q.x.ToString("F3") + "," + q.y.ToString("F3") + "," + q.z.ToString("F3") + "," + q.w.ToString("F3") + ")";
 		}
 
-		/// <summary>
-		/// body 姿态摘要：只列数量与首/次/末 body 的"相对质心"欧拉角（避免刷屏，用于判断分裂）。
-		/// 用相对质心的基准：接收端根=comRot，body 的 localRotation 即相对质心；
-		/// 发送端 root≠comRot（差~17°），若用相对根的 localRotation 会与接收端不可比。
-		/// </summary>
-		private static string BuildBodyPoseSummary(ICraftScript craft)
-		{
-			if (craft == null || craft.Data == null || craft.Data.Assembly == null) return "count=0";
-			Quaternion comRot = craft.CenterOfMass != null ? craft.CenterOfMass.rotation : craft.Transform.rotation;
-			var bodies = craft.Data.Assembly.Bodies;
-			int n = bodies.Count;
-			System.Text.StringBuilder sb = new System.Text.StringBuilder();
-			sb.Append("count=").Append(n);
-			for (int i = 0; i < n; i++)
-			{
-				if (i != 0 && i != 1 && i != n - 1) continue; // 只列首、次、末
-				if (bodies[i].BodyScript == null || bodies[i].BodyScript.Transform == null) continue;
-				Vector3 e = (Quaternion.Inverse(comRot) * bodies[i].BodyScript.Transform.rotation).eulerAngles;
-				sb.Append(" b").Append(bodies[i].Id)
-					.Append("=(").Append(e.x.ToString("F0")).Append(",").Append(e.y.ToString("F0")).Append(",").Append(e.z.ToString("F0")).Append(")");
-			}
-			return sb.ToString();
-		}
 	}
 }

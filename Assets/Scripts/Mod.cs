@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using Assets.Packages.DevConsole;
-using ModApi;
 using ModApi.Mods;
 using ModApi.Scenes.Events;
 
@@ -51,15 +50,6 @@ namespace Assets.Scripts
 			UnityEngine.Debug.Log("[Mptest][Lobby] " + message);
 		}
 
-		public static void LogWarning(object message)
-		{
-			if (!ModSettings.Instance.DebugMode)
-			{
-				return;	
-			}
-			UnityEngine.Debug.LogWarning("[Mptest] " + message);
-		}
-
 		protected override void OnModInitialized()
 		{
 			try
@@ -76,6 +66,7 @@ namespace Assets.Scripts
 			{
 				Log("Init failed: " + e.ToString());
 			}
+			BuildUi();
 			Game.Instance.SceneManager.SceneLoaded += OnSceneLoaded;
 		}
 
@@ -239,56 +230,6 @@ namespace Assets.Scripts
 				BodyRotations = new List<Vector3>();
 			}
 
-			public recdata(
-				Vector3d position,
-				Vector3d velocity,
-				Quaterniond heading,
-
-				float pitch,
-				float yaw,
-				float roll,
-
-				float throttle,
-				float brake,
-
-				float slider1,
-				float slider2,
-				float slider3,
-				float slider4,
-
-				float translateForward,
-				float translateRight,
-				float translateUp,
-
-				List<bool> activationGroupStates,
-				int stage
-				)
-			{
-				Position = position;
-				Velocity = velocity;
-				Heading = heading;
-				SrfRel = Quaterniond.identity;
-
-				Pitch = pitch;
-				Yaw = yaw;
-				Roll = roll;
-
-				Throttle = throttle;
-				Brake = brake;
-
-				Slider1 = slider1;
-				Slider2 = slider2;
-				Slider3 = slider3;
-				Slider4 = slider4;
-
-				TranslateForward = translateForward;
-				TranslateRight = translateRight;
-				TranslateUp = translateUp;
-
-				ActivationGroupStates = activationGroupStates;
-				Stage = stage;
-				BodyRotations = new List<Vector3>();
-			}
 		}
 	}
 }

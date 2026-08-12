@@ -367,31 +367,9 @@ namespace Assets.Scripts.Net
             }
         }
 
-        public void RemovePeer(MpPeer peer)
-        {
-            if (peer == null || peer.EndPoint == null) return;
-            lock (_peersLock)
-            {
-                _peers.Remove(peer.EndPoint.ToString());
-                TcpClient c;
-                if (_peerClients.TryGetValue(peer.EndPoint.ToString(), out c))
-                {
-                    try
-                    {
-                        c.Close();
-                    }
-                    catch
-                    {
-                    }
-                }
-
-                _peerClients.Remove(peer.EndPoint.ToString());
-            }
-        }
-
-		/// <summary>
-		/// TCP 下此方法仅是"半开连接"兜底：正常情况下连接断开由 read loop 检测（EOF/异常）。
-		/// 只有当对端长时间（timeoutMs）无任何数据、且连接仍处于半开状态时才触发移除。
+  /// <summary>
+  /// TCP 下此方法仅是"半开连接"兜底：正常情况下连接断开由 read loop 检测（EOF/异常）。
+  /// 只有当对端长时间（timeoutMs）无任何数据、且连接仍处于半开状态时才触发移除。
 		/// 注意：TCP 对端"暂时不发数据"（如主线程卡顿/GC）不代表断线，因此 timeoutMs 应设得较大。
 		/// </summary>
 		public void CheckTimeouts(long timeoutMs)
