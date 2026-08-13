@@ -2,6 +2,7 @@ using System.Linq;
 using System.Xml.Linq;
 using ModApi.Ui;
 using UI.Xml;
+using Assets.Scripts.Net;
 
 namespace Assets.Scripts
 {
@@ -54,37 +55,44 @@ namespace Assets.Scripts
             }
         }
 
+        /// <summary>
+        /// Host：Steam P2P 开房（无需端口，port 忽略），开房后显示本机 SteamId 供好友加入。
+        /// </summary>
         private void OnHostLobbyClick()
         {
-            global::ModApi.Ui.InputDialogScript portDialog = Game.Instance.UserInterface.CreateInputDialog(null);
-            portDialog.MessageText = "Enter Port";
-            portDialog.InputText = "";
-            portDialog.OkayClicked += delegate(global::ModApi.Ui.InputDialogScript d)
+            // 端口已无意义（Steam 无真实端口/端口转发），直接开房
+            bool ok = HostLobby(0);
+            if (ok)
             {
-                d.Close();
-                HostLobby(int.Parse(portDialog.InputText));
-            };
+                ulong steamId = 0UL;
+                var mgr = MpNetworkManager.Instance;
+                if (mgr != null && mgr.Transport is Net.SteamTransport st) steamId = st.LocalSteamId;
+                global::ModApi.Ui.MessageDialogScript msg = Game.Instance.UserInterface.CreateMessageDialog(global::ModApi.Ui.MessageDialogType.Okay, null, true);
+                msg.MessageText = "Lobby started!\nYour SteamId:\n" + steamId + "\n\n";
+            }
         }
 
+        /// <summary>
+        /// Join：Steam P2P 按房主 SteamId 加入（替代 IP:port）。
+        /// </summary>
         private void OnJoinLobbyClick()
         {
-            global::ModApi.Ui.InputDialogScript ipDialog = Game.Instance.UserInterface.CreateInputDialog(null);
-            ipDialog.MessageText = "Enter Ip";
-            ipDialog.InputText = "127.0.0.1";
-            ipDialog.OkayClicked += delegate(global::ModApi.Ui.InputDialogScript d)
+            global::ModApi.Ui.InputDialogScript idDialog = Game.Instance.UserInterface.CreateInputDialog(null);
+            idDialog.MessageText = "Enter Host SteamId";
+            idDialog.InputText = "";
+            idDialog.OkayClicked += delegate(global::ModApi.Ui.InputDialogScript d)
             {
-                string ipString = ipDialog.InputText;
+                string steamId = idDialog.InputText.Trim();
                 d.Close();
-
-                global::ModApi.Ui.InputDialogScript portDialog = Game.Instance.UserInterface.CreateInputDialog(null);
-                portDialog.MessageText = "Enter Port";
-                portDialog.InputText = "25555";
-                portDialog.OkayClicked += delegate(global::ModApi.Ui.InputDialogScript d1)
+                if (ulong.TryParse(steamId, out ulong _) && steamId.Length > 0)
                 {
-                    int portNumber = int.Parse(portDialog.InputText);
-                    d1.Close();
-                    JoinLobby(ipString, portNumber);
-                };
+                    JoinLobby(steamId, 0);
+                }
+                else
+                {
+                    global::ModApi.Ui.MessageDialogScript msg = Game.Instance.UserInterface.CreateMessageDialog(global::ModApi.Ui.MessageDialogType.Okay, null, true);
+                    msg.MessageText = "Invalid SteamId: '" + steamId + "'\n应为 17 位数字（如 76561199127915239）";
+                }
             };
         }
     }
