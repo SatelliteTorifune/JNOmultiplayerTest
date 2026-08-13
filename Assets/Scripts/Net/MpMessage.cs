@@ -9,20 +9,24 @@ namespace Assets.Scripts.Net
 {
 	/// <summary>
 	/// 联机消息类型定义。
+	/// SP2 方案：PlayerJoin 只广播"谁加入了 + 飞船 hash"，不带飞船 XML；
+	/// 客户端收到后若本地缓存无该 hash，则发 CraftXmlRequest 按需拉取 XML。
 	/// </summary>
 	public enum MpMessageType : byte
 	{
 		Hello = 1,       // 加入者 -> 房主：请求加入（含玩家名）
 		Welcome = 2,     // 房主 -> 加入者：欢迎（分配 PlayerId / 初始 NodeId）
-		PlayerJoin = 3,  // 房主 -> 所有：通知新玩家加入（含该玩家 craft XML）
+		PlayerJoin = 3,  // 房主 -> 所有：通知玩家加入/飞船更新（含 playerId/nodeId/name + craft XML hash，不含 XML）
 		PlayerLeave = 4, // 房主 -> 所有：通知玩家离开
 		State = 5,       // 状态包：NodeId + 时间戳 + recdata
 		Pause = 6,       // 暂停 / 恢复广播
-		CraftData = 7,   // craft XML 交换（加入者把自己的飞船发给房主）
+		CraftData = 7,   // 客户端 -> 房主：把自己的飞船 XML 上报给房主
 		Ping = 8,        // RTT 探测
 		Pong = 9,
-		CraftDataAck = 10, // 房主 -> 加入者：确认已收到其飞船（nodeId），客户端据此停止重发
-		PlayerJoinAck = 11, // 加入者 -> 房主：确认已收到指定玩家（playerId）的飞船 XML，房主据此停止重发 PlayerJoin
+		CraftDataAck = 10, // 房主 -> 客户端：确认已收到其飞船（nodeId），客户端据此停止重发
+		PlayerJoinAck = 11, // 客户端 -> 房主：确认已收到指定玩家（playerId）的飞船信息，房主据此停止重发 PlayerJoin
+		CraftXmlRequest = 12,  // 客户端 -> 房主：按需请求指定玩家（playerId）的飞船 XML（SP2 方案）
+		CraftXmlResponse = 13, // 房主 -> 客户端：返回指定玩家的飞船 XML（大包，走可靠通道）
 	}
 
 	/// <summary>
@@ -139,23 +143,35 @@ namespace Assets.Scripts.Net
 		}
 
 		// ---------------- PlayerJoin / PlayerLeave ----------------
+		// SP2 方案：PlayerJoin 只广播"谁加入了 + 飞船 hash"，不带飞船 XML。
+		// 客户端收到后若本地缓存无该 hash，则发 CraftXmlRequest 向房主按需拉取 XML（见下），
+		// 避免新玩家加入时把所有人的大 XML 全量广播（SP2 的成熟做法）。
 
-		public static byte[] EncodePlayerJoin(int playerId, int nodeId, string playerName, string craftXml)
+		/// <summary>飞船 XML 的稳定 hash（用于按需下载缓存去重）。</summary>
+		public static string ComputeXmlHash(string craftXml)
+		{
+			using (System.Security.Cryptography.MD5 md5 = System.Security.Cryptography.MD5.Create())
+			{
+				byte[] raw = Encoding.UTF8.GetBytes(craftXml ?? string.Empty);
+				byte[] hash = md5.ComputeHash(raw);
+				return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+			}
+		}
+
+		public static byte[] EncodePlayerJoin(int playerId, int nodeId, string playerName, string craftXmlHash)
 		{
 			return Pack(MpMessageType.PlayerJoin, w =>
 			{
 				w.Write(playerId);
 				w.Write(nodeId);
 				w.Write(playerName ?? string.Empty);
-				byte[] xmlBytes = CompressXml(craftXml ?? string.Empty);
-				w.Write(xmlBytes.Length);
-				w.Write(xmlBytes);
+				w.Write(craftXmlHash ?? string.Empty);
 			});
 		}
 
-		public static bool TryDecodePlayerJoin(byte[] buffer, out int playerId, out int nodeId, out string playerName, out string craftXml)
+		public static bool TryDecodePlayerJoin(byte[] buffer, out int playerId, out int nodeId, out string playerName, out string craftXmlHash)
 		{
-			playerId = -1; nodeId = -1; playerName = null; craftXml = null;
+			playerId = -1; nodeId = -1; playerName = null; craftXmlHash = null;
 			try
 			{
 				using (MemoryStream ms = new MemoryStream(buffer))
@@ -165,8 +181,7 @@ namespace Assets.Scripts.Net
 					playerId = r.ReadInt32();
 					nodeId = r.ReadInt32();
 					playerName = r.ReadString();
-					int len = r.ReadInt32();
-					craftXml = DecompressXml(r.ReadBytes(len));
+					craftXmlHash = r.ReadString();
 					return true;
 				}
 			}
@@ -301,6 +316,67 @@ namespace Assets.Scripts.Net
 				{
 					if (r.ReadByte() != (byte)MpMessageType.PlayerJoinAck) return false;
 					playerId = r.ReadInt32();
+					return true;
+				}
+			}
+			catch { return false; }
+		}
+
+		// ---------------- CraftXmlRequest / CraftXmlResponse（SP2 按需下载） ----------------
+
+		/// <summary>客户端 -> 房主：请求指定玩家（playerId）的飞船 XML（带其 hash 供房主校验）。</summary>
+		public static byte[] EncodeCraftXmlRequest(int playerId, string craftXmlHash)
+		{
+			return Pack(MpMessageType.CraftXmlRequest, w =>
+			{
+				w.Write(playerId);
+				w.Write(craftXmlHash ?? string.Empty);
+			});
+		}
+
+		public static bool TryDecodeCraftXmlRequest(byte[] buffer, out int playerId, out string craftXmlHash)
+		{
+			playerId = -1; craftXmlHash = null;
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					if (r.ReadByte() != (byte)MpMessageType.CraftXmlRequest) return false;
+					playerId = r.ReadInt32();
+					craftXmlHash = r.ReadString();
+					return true;
+				}
+			}
+			catch { return false; }
+		}
+
+		/// <summary>房主 -> 客户端：返回指定玩家的飞船 XML（压缩，大包自动分片）。</summary>
+		public static byte[] EncodeCraftXmlResponse(int playerId, string craftXmlHash, string craftXml)
+		{
+			return Pack(MpMessageType.CraftXmlResponse, w =>
+			{
+				w.Write(playerId);
+				w.Write(craftXmlHash ?? string.Empty);
+				byte[] xmlBytes = CompressXml(craftXml ?? string.Empty);
+				w.Write(xmlBytes.Length);
+				w.Write(xmlBytes);
+			});
+		}
+
+		public static bool TryDecodeCraftXmlResponse(byte[] buffer, out int playerId, out string craftXmlHash, out string craftXml)
+		{
+			playerId = -1; craftXmlHash = null; craftXml = null;
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					if (r.ReadByte() != (byte)MpMessageType.CraftXmlResponse) return false;
+					playerId = r.ReadInt32();
+					craftXmlHash = r.ReadString();
+					int len = r.ReadInt32();
+					craftXml = DecompressXml(r.ReadBytes(len));
 					return true;
 				}
 			}

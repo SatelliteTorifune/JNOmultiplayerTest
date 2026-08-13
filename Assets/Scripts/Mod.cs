@@ -78,6 +78,22 @@ namespace Assets.Scripts
 			DevConsoleApi.RegisterCommand<int>("HostLobbyPort", new Action<int>(port => HostLobby(port)));
 			DevConsoleApi.RegisterCommand<string, int>("JoinLobbyPort", new Action<string, int>((host, port) => JoinLobby(host, port)));
 			DevConsoleApi.RegisterCommand("StopLobby", new Action(() => StopLobby()));
+			// FishNet spike 临时验证命令：起本地 server+client 验证连接
+			DevConsoleApi.RegisterCommand("FishNetSpike", new Action(() =>
+			{
+				Log("FishNetSpike: creating spike object");
+				new GameObject("FishNetSpike").AddComponent<Net.FishNetSpike>();
+			}));
+			// Steam API 可行性 spike：反射 SocialExt 验证 mod 能否拿到 Steam 身份
+			DevConsoleApi.RegisterCommand("SteamSpike", new Action(() =>
+			{
+				LogLobby("SteamSpike: creating spike object");
+				new GameObject("SteamSpike").AddComponent<Net.SteamSpike>();
+			}));
+			// Steam P2P：房主开房（port 忽略，Steam 无端口）
+			DevConsoleApi.RegisterCommand<int>("SteamHostLobby", new Action<int>(port => HostLobby(port)));
+			// Steam P2P：客户端按房主 SteamId 加入
+			DevConsoleApi.RegisterCommand<string>("SteamJoinLobby", new Action<string>(hostSteamId => JoinLobby(hostSteamId, 0)));
 		}
 
 		/// <summary>作为房主开启联机房间。</summary>
@@ -98,7 +114,7 @@ namespace Assets.Scripts
 				", Transport.IsRunning=" + mgr.Transport.IsRunning +
 				", LocalPort=" + mgr.Transport.LocalPort +
 				", peerCount=" + mgr.Transport.GetPeersCount());
-			if (!ok) LogLobby("HostLobby FAILED: see above for TcpTransport start error (port " + port + " may already be in use)");
+			if (!ok) LogLobby("HostLobby FAILED: see above for Transport start error (port " + port + " may already be in use)");
 			return ok;
 		}
 

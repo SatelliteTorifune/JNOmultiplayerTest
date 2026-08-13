@@ -27,7 +27,11 @@ namespace Assets.Scripts.Net
 		public static MpNetworkManager Instance { get; private set; }
 
 		[NonSerialized] 
-		public TcpTransport Transport = new TcpTransport();
+		// 传输层切换点：
+		// - SteamTransport：Steam P2P（Steam Networking Sockets），零端口转发/零 frp，最推荐（SP2 的 FishySteamworks 同款）。
+		// - TcpTransport：TCP，可走 frp/nginx 等纯 TCP 内网穿透（无 MTU 限制，无需分片）；缺点 head-of-line blocking。
+		// - LiteNetLibTransport：UDP + 可靠/不可靠通道分离 + 应用层分片；缺点公网需 UDP 端口转发。
+		public SteamTransport Transport = new SteamTransport();
 
 		public bool IsServer { get; private set; }
 		public bool IsConnected { get; private set; }
@@ -55,6 +59,11 @@ namespace Assets.Scripts.Net
 		// 房主：记录"已发给客户端、但尚未收到 PlayerJoinAck 确认"的 host craft（key=peer.EndPoint）。
 		private readonly Dictionary<string, float> _hostCraftResend = new Dictionary<string, float>();
 		private string _localCraftXml = string.Empty;
+
+		// SP2 按需下载：客户端缓存 hash->xml，避免重复下载同一飞船。
+		private readonly Dictionary<string, string> _xmlCache = new Dictionary<string, string>();
+		// 已请求但尚未收到响应的 playerId -> 请求时的 hash（hash 变化时重新请求，防止飞船更新后漏拉）。
+		private readonly Dictionary<int, string> _pendingXmlRequests = new Dictionary<int, string>();
 
 		/// <summary>收到远程玩家加入。</summary>
 		public event Action<MpPeer> OnPlayerJoined;
@@ -94,10 +103,10 @@ namespace Assets.Scripts.Net
 			try { PlayerName = ModSettings.Instance.PlayerName.Value; }
 			catch { PlayerName = "Player"; }
 			if (string.IsNullOrWhiteSpace(PlayerName)) PlayerName = "Player";
-			Mod.LogLobby("MP.Host(): attempting to bind TCP on port " + port + " ...");
+			Mod.LogLobby("MP.Host(): starting " + Transport.GetType().Name + " on port " + port + " ...");
 			if (!Transport.Start(port))
 			{
-				Mod.LogError("MP.Host FAILED: TcpTransport.Start(" + port + ") returned false (port may be in use)");
+				Mod.LogError("MP.Host FAILED: Transport.Start(" + port + ") returned false (port may be in use)");
 				return false;
 			}
 			IsServer = true;
@@ -130,7 +139,7 @@ namespace Assets.Scripts.Net
 			Mod.LogLobby("MP.Join(): connecting to " + host + ":" + port + " as '" + PlayerName + "' ...");
 			if (!Transport.StartClient(host, port, hello))
 			{
-				Mod.LogError("MP.Join FAILED: TcpTransport.StartClient(" + host + ":" + port + ") returned false");
+				Mod.LogError("MP.Join FAILED: Transport.StartClient(" + host + ":" + port + ") returned false");
 				return false;
 			}
 			IsServer = false;
@@ -193,16 +202,18 @@ namespace Assets.Scripts.Net
 
 			if (IsServer)
 			{
-				// 房主：广播自己的飞船给所有客户端；已广播过且未变化则跳过。
+				// 房主：广播自己的飞船（只带 hash，XML 由客户端按需下载）给所有客户端；已广播过且未变化则跳过。
 				if (_craftReported && !changed) return;
-				Transport.Broadcast(MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, PlayerName, craftXml));
+				string craftHash = MpMessages.ComputeXmlHash(craftXml);
+				Transport.Broadcast(MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, PlayerName, craftHash));
 				_craftReported = true; // 房主无需确认（新加入者由 OnHello 补发）
-				// 对所有已连接 peer 登记待确认：客户端回 PlayerJoinAck 前周期性重发（防公网大分片丢失）。
+				// 对所有已连接 peer 登记待确认：客户端回 PlayerJoinAck 前周期性重发（防公网丢包）。
 				foreach (MpPeer p in Transport.GetPeers())
 				{
-					_hostCraftResend[p.EndPoint.ToString()] = Time.unscaledTime;
+					_hostCraftResend[p.Id] = Time.unscaledTime;
 				}
 				Mod.LogLobby("MP.RefreshLocalCraft (host): broadcast PlayerJoin playerId=" + PlayerId + ", nodeId=" + LocalNodeId +
+					", hash=" + craftHash +
 					", xmlLen=" + (craftXml == null ? 0 : craftXml.Length) +
 					", pendingAck=" + _hostCraftResend.Count);
 			}
@@ -216,7 +227,7 @@ namespace Assets.Scripts.Net
 					if (peer.IsServer)
 					{
 						Transport.SendTo(peer, MpMessages.EncodeCraftData(LocalNodeId, craftXml));
-						Mod.LogLobby("MP.RefreshLocalCraft (client): sent CraftData nodeId=" + LocalNodeId + " to host " + peer.EndPoint +
+						Mod.LogLobby("MP.RefreshLocalCraft (client): sent CraftData nodeId=" + LocalNodeId + " to host " + peer.Id +
 							", xmlLen=" + (craftXml == null ? 0 : craftXml.Length) +
 							", acked=" + _craftReported);
 						sent = true;
@@ -263,21 +274,21 @@ namespace Assets.Scripts.Net
 				}
 			}
 			// 房主：已发 host craft 但客户端尚未回 PlayerJoinAck 的 peer，周期性重发
-			// （房主飞船 XML 可能达 500KB+，公网 UDP 大分片会丢，必须确认前持续重发）。
+			// （只重发 hash 小包，XML 由客户端按需下载；确认前持续重发防公网丢包）。
 			if (IsServer && _hostCraftResend.Count > 0 && LocalNodeId >= 0 && !string.IsNullOrEmpty(_localCraftXml))
 			{
 				_hostCraftResendTimer -= Time.unscaledDeltaTime;
 				if (_hostCraftResendTimer <= 0f)
 				{
 					_hostCraftResendTimer = CraftResendIntervalSec;
-					byte[] hostJoin = MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, PlayerName, _localCraftXml);
+					byte[] hostJoin = MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, PlayerName, MpMessages.ComputeXmlHash(_localCraftXml));
 					foreach (MpPeer peer in Transport.GetPeers())
 					{
-						if (_hostCraftResend.ContainsKey(peer.EndPoint.ToString()))
-						{
-							Transport.SendTo(peer, hostJoin);
-							Mod.LogLobby("MP.Update (host): resend host craft PlayerJoin (nodeId=" + LocalNodeId + ") to " +
-								peer.EndPoint + " (unacked)");
+					if (_hostCraftResend.ContainsKey(peer.Id))
+					{
+						Transport.SendTo(peer, hostJoin);
+						Mod.LogLobby("MP.Update (host): resend host craft PlayerJoin (nodeId=" + LocalNodeId + ") to " +
+							peer.Id + " (unacked)");
 						}
 					}
 				}
@@ -444,6 +455,12 @@ namespace Assets.Scripts.Net
 				case MpMessageType.PlayerJoinAck:
 					OnPlayerJoinAck(peer, packet);
 					break;
+				case MpMessageType.CraftXmlRequest:
+					OnCraftXmlRequest(peer, packet);
+					break;
+				case MpMessageType.CraftXmlResponse:
+					OnCraftXmlResponse(packet);
+					break;
 			}
 		}
 
@@ -473,12 +490,12 @@ namespace Assets.Scripts.Net
 			if (!IsServer) return;
 			int playerId;
 			if (!MpMessages.TryDecodePlayerJoinAck(packet, out playerId)) return;
-			if (peer == null || peer.EndPoint == null) return;
+			if (peer == null) return;
 			if (playerId == PlayerId)
 			{
-				if (_hostCraftResend.Remove(peer.EndPoint.ToString()))
+				if (_hostCraftResend.Remove(peer.Id))
 				{
-					Mod.LogLobby("MP.OnPlayerJoinAck (host): peer " + peer.EndPoint + " confirmed host craft, stop resending");
+					Mod.LogLobby("MP.OnPlayerJoinAck (host): peer " + peer.Id + " confirmed host craft, stop resending");
 				}
 			}
 		}
@@ -502,24 +519,27 @@ namespace Assets.Scripts.Net
 
 			// 回复 Welcome
 			Transport.SendTo(peer, MpMessages.EncodeWelcome(peer.PlayerId, -1, DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond));
-			Mod.LogLobby("MP.OnHello (host): '" + name + "' from " + peer.EndPoint + " joined as PlayerId=" + peer.PlayerId +
+			Mod.LogLobby("MP.OnHello (host): '" + name + "' from " + peer.Id + " joined as PlayerId=" + peer.PlayerId +
 				", sent Welcome, total peers=" + Transport.GetPeersCount());
 
 			// 把当前所有已登记玩家（含房主自己）的飞船信息同步给新加入者
+			// SP2 方案：只发 hash，XML 由客户端按需下载（见 OnPlayerJoin / CraftXmlRequest）。
 			foreach (MpPeer p in GetPlayers())
 			{
 				if (p.NodeId >= 0 && !string.IsNullOrEmpty(p.CraftXml))
 				{
-					Transport.SendTo(peer, MpMessages.EncodePlayerJoin(p.PlayerId, p.NodeId, p.PlayerName, p.CraftXml));
-					Mod.LogLobby("MP.OnHello (host): sent existing player " + p.PlayerId + " craft to new client");
+					string hash = MpMessages.ComputeXmlHash(p.CraftXml);
+					Transport.SendTo(peer, MpMessages.EncodePlayerJoin(p.PlayerId, p.NodeId, p.PlayerName, hash));
+					Mod.LogLobby("MP.OnHello (host): sent existing player " + p.PlayerId + " craft hash to new client (hash=" + hash + ")");
 				}
 			}
 			if (LocalNodeId >= 0 && !string.IsNullOrEmpty(_localCraftXml))
 			{
-				Transport.SendTo(peer, MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, PlayerName, _localCraftXml));
-				Mod.LogLobby("MP.OnHello (host): sent host craft PlayerJoin (nodeId=" + LocalNodeId + ") to new client " + peer.EndPoint);
-				// 登记待确认：客户端回 PlayerJoinAck 前，每 1.5s 重发 host craft（防公网大分片丢失）。
-				_hostCraftResend[peer.EndPoint.ToString()] = Time.unscaledTime;
+				string hostHash = MpMessages.ComputeXmlHash(_localCraftXml);
+				Transport.SendTo(peer, MpMessages.EncodePlayerJoin(PlayerId, LocalNodeId, PlayerName, hostHash));
+				Mod.LogLobby("MP.OnHello (host): sent host craft PlayerJoin (nodeId=" + LocalNodeId + ", hash=" + hostHash + ") to new client " + peer.Id);
+				// 登记待确认：客户端回 PlayerJoinAck 前，每 1.5s 重发 host craft（防公网丢包）。
+				_hostCraftResend[peer.Id] = Time.unscaledTime;
 			}
 		}
 
@@ -541,9 +561,11 @@ namespace Assets.Scripts.Net
 			// 回 Ack 给上报者：告知已完整收到其飞船，客户端据此停止周期性重发。
 			Transport.SendTo(peer, MpMessages.EncodeCraftDataAck(nodeId));
 
-			// 广播给所有客户端（含新玩家本人，用于互相生成对方飞船）
-			Transport.Broadcast(MpMessages.EncodePlayerJoin(peer.PlayerId, peer.NodeId, peer.PlayerName, craftXml));
+			// SP2 方案：广播 PlayerJoin 只带 hash，其他客户端按需下载 XML（见 OnCraftXmlRequest）。
+			string craftHash = MpMessages.ComputeXmlHash(craftXml);
+			Transport.Broadcast(MpMessages.EncodePlayerJoin(peer.PlayerId, peer.NodeId, peer.PlayerName, craftHash));
 			Mod.LogLobby("MP.OnCraftData (host): '" + peer.PlayerName + "' craft registered NodeId=" + nodeId +
+				", hash=" + craftHash +
 				", xmlLen=" + (craftXml == null ? 0 : craftXml.Length) +
 				", sent CraftDataAck, broadcast PlayerJoin to " + Transport.GetPeersCount() + " peer(s)");
 			OnPlayerJoined?.Invoke(peer);
@@ -560,33 +582,119 @@ namespace Assets.Scripts.Net
 			// （此前把 host peer 的 PlayerId 覆盖成客户端 ID，导致超时日志显示 PlayerId=1 等错乱）。
 			peer.IsServer = true;
 			Mod.LogLobby("MP.OnWelcome (client): received Welcome, PlayerId=" + playerId +
-				", nodeId=" + nodeId + ", serverTick=" + serverTick + ", peer=" + peer.EndPoint +
+				", nodeId=" + nodeId + ", serverTick=" + serverTick + ", peer=" + peer.Id +
 				", peer.PlayerId=" + peer.PlayerId + " (host peer, kept as-is)");
 		}
 
 		private void OnPlayerJoin(MpPeer peer, byte[] packet)
 		{
-			int playerId, nodeId; string playerName, craftXml;
-			if (!MpMessages.TryDecodePlayerJoin(packet, out playerId, out nodeId, out playerName, out craftXml)) return;
-			MpPeer p = new MpPeer { EndPoint = peer.EndPoint, PlayerId = playerId, NodeId = nodeId, PlayerName = playerName, CraftXml = craftXml };
+			int playerId, nodeId; string playerName, craftXmlHash;
+			if (!MpMessages.TryDecodePlayerJoin(packet, out playerId, out nodeId, out playerName, out craftXmlHash)) return;
+			// 自己无需下载自己的飞船（房主广播时会带上报者本人，此处跳过）
+			if (playerId == PlayerId) return;
+
+			MpPeer p = new MpPeer { EndPoint = peer.EndPoint, SteamId = peer.SteamId, PlayerId = playerId, NodeId = nodeId, PlayerName = playerName };
 			RegisterPlayer(p);
 			Mod.LogLobby("MP.OnPlayerJoin: playerId=" + playerId + ", nodeId=" + nodeId +
-				", craftXmlLen=" + (craftXml == null ? 0 : craftXml.Length) + ", peer=" + peer.EndPoint +
-				", isServer=" + IsServer + ", inFlightScene=" + (FlightSceneScript.Instance != null) +
-				", craftXmlEmpty=" + string.IsNullOrEmpty(craftXml));
-			// 诊断：记录该玩家飞船是否已登记到 _playersByPlayerId（供 ApplyRemoteState 生成远程飞船用）
-			MpPeer registered;
-			lock (_playersByPlayerId) { _playersByPlayerId.TryGetValue(playerId, out registered); }
-			Mod.LogLobby("MP.OnPlayerJoin: registered lookup playerId=" + playerId +
-				", found=" + (registered != null) +
-				", registeredCraftXmlLen=" + (registered != null && registered.CraftXml != null ? registered.CraftXml.Length : -1));
-			// 客户端回 PlayerJoinAck：告知房主已收到该玩家飞船，房主据此停止重发（防公网大分片丢失）。
-			if (!IsServer && peer != null && peer.EndPoint != null)
+				", hash=" + (craftXmlHash ?? "null") + ", peer=" + peer.Id +
+				", isServer=" + IsServer + ", inFlightScene=" + (FlightSceneScript.Instance != null));
+
+			// 客户端回 PlayerJoinAck：告知房主已收到该玩家飞船信息，房主据此停止重发（防公网丢包）。
+			if (!IsServer && peer != null)
 			{
 				Transport.SendTo(peer, MpMessages.EncodePlayerJoinAck(playerId));
 			}
+
+			// SP2 按需下载：本地缓存命中直接使用；否则向房主请求该玩家飞船 XML。
+			if (!IsServer)
+			{
+				if (string.IsNullOrEmpty(craftXmlHash))
+				{
+					Mod.Log("MP.OnPlayerJoin: player " + playerId + " has no craft hash, nothing to download");
+					return;
+				}
+				if (_xmlCache.TryGetValue(craftXmlHash, out string cachedXml))
+				{
+					p.CraftXml = cachedXml;
+					Mod.LogLobby("MP.OnPlayerJoin: cache hit for player " + playerId + " (hash=" + craftXmlHash + ", xmlLen=" + cachedXml.Length + ")");
+					OnPlayerJoined?.Invoke(p);
+				}
+				else
+				{
+					// 若已在请求且 hash 未变，不重复请求；hash 变化（飞船更新）则重新请求。
+					string pendingHash;
+					bool alreadyPending = _pendingXmlRequests.TryGetValue(playerId, out pendingHash) && pendingHash == craftXmlHash;
+					if (!alreadyPending)
+					{
+						_pendingXmlRequests[playerId] = craftXmlHash;
+						Transport.SendTo(peer, MpMessages.EncodeCraftXmlRequest(playerId, craftXmlHash));
+						Mod.LogLobby("MP.OnPlayerJoin: requested craft xml for player " + playerId + " (hash=" + craftXmlHash + ")");
+					}
+				}
+			}
+			else
+			{
+				OnPlayerJoined?.Invoke(p);
+			}
+			// M2：根据 craftXml 生成远程飞船（xml 到位后由 OnCraftXmlResponse 触发 OnPlayerJoined）
+		}
+
+		/// <summary>
+		/// 房主：响应客户端的按需下载请求，把指定玩家的飞船 XML 发给请求者（大包，走可靠通道+分片）。
+		/// </summary>
+		private void OnCraftXmlRequest(MpPeer peer, byte[] packet)
+		{
+			if (!IsServer) return;
+			int playerId; string hash;
+			if (!MpMessages.TryDecodeCraftXmlRequest(packet, out playerId, out hash)) return;
+			string craftXml = null;
+			if (playerId == PlayerId)
+			{
+				// 房主自己（playerId=0）不在 _playersByPlayerId 表中，单独用 _localCraftXml 响应。
+				craftXml = _localCraftXml;
+			}
+			else
+			{
+				MpPeer target = null;
+				lock (_playersByPlayerId) { _playersByPlayerId.TryGetValue(playerId, out target); }
+				if (target != null) craftXml = target.CraftXml;
+			}
+			if (string.IsNullOrEmpty(craftXml))
+			{
+				Mod.Log("MP.OnCraftXmlRequest: player " + playerId + " has no craft xml yet");
+				return;
+			}
+			// 用实际 XML 的 hash 响应（而非请求带过来的 hash），保证客户端缓存 key 正确（飞船中途变化时）
+			string actualHash = MpMessages.ComputeXmlHash(craftXml);
+			Transport.SendTo(peer, MpMessages.EncodeCraftXmlResponse(playerId, actualHash, craftXml));
+			Mod.LogLobby("MP.OnCraftXmlRequest (host): sent craft xml for player " + playerId + " to " + peer.Id +
+				", reqHash=" + hash + ", actualHash=" + actualHash + ", xmlLen=" + craftXml.Length);
+		}
+
+		/// <summary>
+		/// 客户端：收到按需下载的飞船 XML。填入玩家信息并触发 OnPlayerJoined（远程飞船在此后生成）。
+		/// </summary>
+		private void OnCraftXmlResponse(byte[] packet)
+		{
+			if (IsServer) return;
+			int playerId; string hash; string craftXml;
+			if (!MpMessages.TryDecodeCraftXmlResponse(packet, out playerId, out hash, out craftXml)) return;
+			_pendingXmlRequests.Remove(playerId);
+			if (!string.IsNullOrEmpty(hash) && !string.IsNullOrEmpty(craftXml))
+			{
+				_xmlCache[hash] = craftXml;
+			}
+			MpPeer p = null;
+			lock (_playersByPlayerId) { _playersByPlayerId.TryGetValue(playerId, out p); }
+			if (p == null)
+			{
+				Mod.Log("MP.OnCraftXmlResponse: player " + playerId + " not registered, xml discarded");
+				return;
+			}
+			p.CraftXml = craftXml;
+			Mod.LogLobby("MP.OnCraftXmlResponse (client): received craft xml for player " + playerId +
+				", hash=" + hash + ", xmlLen=" + (craftXml == null ? 0 : craftXml.Length));
 			OnPlayerJoined?.Invoke(p);
-			// M2：根据 craftXml 生成远程飞船
 		}
 
 		private void OnPlayerLeave(byte[] packet)
@@ -602,6 +710,7 @@ namespace Assets.Scripts.Net
 				}
 			}
 			Mod.LogLobby("MP.OnPlayerLeave: playerId=" + playerId + (removed != null ? " removed" : " (not found)"));
+			_pendingXmlRequests.Remove(playerId);
 			if (removed != null) OnPlayerLeft?.Invoke(removed);
 		}
 
@@ -647,15 +756,15 @@ namespace Assets.Scripts.Net
 
 		private void HandlePeerTimeout(MpPeer peer)
 		{
-			Mod.LogLobby("MP peer timeout: " + peer.EndPoint + " (PlayerId=" + peer.PlayerId + ", NodeId=" + peer.NodeId + ")");
-			if (peer != null && peer.EndPoint != null) _hostCraftResend.Remove(peer.EndPoint.ToString());
+			Mod.LogLobby("MP peer timeout: " + peer.Id + " (PlayerId=" + peer.PlayerId + ", NodeId=" + peer.NodeId + ")");
+			if (peer != null) _hostCraftResend.Remove(peer.Id);
 			MpPeer removed = null;
 			lock (_playersByPlayerId)
 			{
 				MpPeer match = null;
 				foreach (MpPeer p in _playersByPlayerId.Values)
 				{
-					if (p.EndPoint != null && p.EndPoint.Equals(peer.EndPoint)) { match = p; break; }
+					if (p.Id == peer.Id) { match = p; break; }
 				}
 				if (match != null)
 				{
@@ -665,6 +774,7 @@ namespace Assets.Scripts.Net
 			}
 			if (removed != null)
 			{
+				_pendingXmlRequests.Remove(removed.PlayerId);
 				if (IsServer)
 				{
 					Transport.Broadcast(MpMessages.EncodePlayerLeave(removed.PlayerId));

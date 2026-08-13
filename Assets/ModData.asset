@@ -13,6 +13,11 @@ MonoBehaviour:
   m_Name: ModData
   m_EditorClassIdentifier: 
   _assemblies:
+  - FishNet.CodeAnalysis.dll
+  - GameKit.Dependencies.dll
+  - FishNet.Runtime.dll
+  - SynapseSocket.dll
+  - FishNet.Demos.dll
   - aMptest.dll
   _author: Torifune
   _description: 

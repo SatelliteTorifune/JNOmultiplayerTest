@@ -3,7 +3,7 @@
 > 项目:JNOmultiplayerTest(SimpleRockets 2 多人联机 mod)
 > 反编译参考:`C:/renko/shitProgram/jnoCode`
 > KSP 参考:`C:/renko/unityProjects/LunaMultiplayer`
-> 状态:已修正坐标系转换 bug(帧空间 vs 行星空间),待双端实测
+> 状态:✅ 已修复并双端实测通过(相对地表朝向一致、warp 无漂移、Pitch/Bank 两端一致)
 
 ---
 
@@ -30,7 +30,7 @@
 | C:强制同步 host 的 `FlightState.Time`/行星自转 | 副作用大(500km 位置爆炸、地图空引用、client 飞起),回退 |
 | 发送端自转外推补偿 `RotateY(−θ_send)×Heading` | warp 不动,但**相对地表朝向不一致** → 剩余固定误差 |
 | 经纬度+ASL 定位 | 无效(位置不影响朝向),回退 |
-| **LunaMultiplayer srfRel(最终)** | 待实测 |
+| **LunaMultiplayer srfRel(最终)** | ✅ 双端实测通过(相对地表朝向一致、warp 无漂移) |
 
 ## 4. 最终方案:LunaMultiplayer srfRel(相对地表朝向)
 
@@ -73,8 +73,15 @@ var rotation = (Quaternion)lerpedBody.rotation * currentSurfaceRelRotation;  // 
 - 接收端([`ApplyRemoteState`](../Assets/Scripts/Net/MpNetworkManager.cs) + [`ForceRemoteHeading`](../Assets/Scripts/Net/MpNetworkManager.cs)):`headingFrame = frame.PlanetToFrameRotation(planet.Rotation * SrfRel) = RotateY(θ_planet - θ_frame) * SrfRel`;
 - 数学验证:接收端帧空间 = `RotateY(θ_planet_recv - θ_frame_recv) * RotateY(θ_frame_send - θ_planet_send) * comRot`。因双端同行星表面锁定帧 `θ_frame - θ_planet` 为同一常量 → 结果 = `comRot`(发送端帧空间朝向)。两端帧空间朝向一致,随各自行星自转保持相对地表不变,无 warp 漂移、无时间同步依赖。
 
-## 6. 待实测与后续
+## 6. 实测结果与下一步
 
-1. 重新编译双端实测:对方飞船相对地表朝向两端一致、warp 无漂移、无全局副作用;
-2. `FlightData.Pitch/Bank` 目前走基线逻辑(接收端口径);如需两端精确一致,补 PosNorm(反射写 `PositionNormalized`)+ Harmony `get_CraftRight`;
-3. 若仍有余差:提高发包频率、或发送端 comRot 采样稳定性(座椅 vs body)。
+### 6.1 实测结果(✅ 已通过)
+
+- 双端实测:对方飞船相对地表朝向两端一致、warp 无漂移、无全局副作用;
+- `FlightData.Pitch/Bank` 两端一致:接收端已通过反射写 `PositionNormalized`/`CraftForward` 刷新 FlightData(见日志 `MP FlightData 刷新诊断`)。
+
+### 6.2 下一步重心
+
+1. **Body 同步**:当前仅同步 `BodyRotations`(每 body 相对根的欧拉角)。下一步做更完整的 body 级同步(位置/速度/角速度、分离/对接/残骸事件),彻底消除"分裂/散架";
+2. **平滑插帧**:当前是"前后两包线性/Slerp 插值"([`UpdateRemoteCrafts`](../Assets/Scripts/Net/MpNetworkManager.cs) 内联插值)。下一步改为带时间戳的环形缓冲 + 100~150ms 延迟补偿,容忍抖动与乱序;
+3. **多 craft 支持**:当前只同步 `FlightSceneScript.Instance.CraftNode`(本机唯一玩家飞船)。下一步支持每玩家多艘飞船(NodeId → CraftNode 映射)、残骸/对接后的多节点同步。
