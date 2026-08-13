@@ -101,7 +101,7 @@ MPStatePacket
 1. 新玩家连接房主，发送自己飞船的 **craft XML**（`CraftNode.LoadCraftData()` 或 craft 文件）。
 2. 房主广播"玩家加入 + 该玩家飞船 XML"给所有客户端（含新玩家本人，以便生成他人飞船）。
 3. 各客户端用 `LoadCraftImmediate(XElement)` + `SpawnCraft(...)` 生成该玩家飞船，标记 `AllowPlayerControl = false`，并注册到 `NodeId → CraftNode` 映射。
-4. 玩家离开 → 移除/隐藏对应飞船节点（可用 `CraftNode.DestroyCraft()` 或隐藏）。
+4. 玩家离开 → 用 `CraftNode.DestroyCraft()` **真正销毁**对应飞船节点（不再隐藏；游戏每帧 `FlightState.ProcessDestroyedCraftNodes()` 会自动将其从 FlightState 移除、注销数据并触发 `CraftNodeRemoved`）。
 
 ### 4.4 状态接收与插值
 - 每客户端维护"每 NodeId 一个 recdata 环形缓冲"，带时间戳。
@@ -163,35 +163,37 @@ MPStatePacket
 
 ## 七、实施里程碑（建议拆分）
 
-### M1 · 网络原型（最小闭环） ✅ 2026-08-05 实测通过（自建 UDP，未采用 FishNet）
-- [x] 引入网络传输（采用自建 UDP Socket 封装 [`UdpTransport`](Assets/Scripts/Net/UdpTransport.cs)）
-- [x] 局域网 IP 直连 + 房间（房主/加入者）基础流程（HostLobby/JoinLobby/StopLobby）
-- [x] 状态包序列化（基于 recdata + NodeId + 时间戳）（[`MpMessages.EncodeState`](Assets/Scripts/Net/MpMessage.cs:159)）
-- [x] 本机飞船状态定时发送（20Hz，[`ProcessOutgoing`](Assets/Scripts/Net/MpNetworkManager.cs:167)）
-- [ ] 保活/心跳（M1 遗留问题，纳入下一步优先解决）
+### M1 · 网络原型（最小闭环） ✅
+- [x] 网络传输（自建 TCP [`TcpTransport`](Assets/Scripts/Net/TcpTransport.cs)，早期 UDP 已弃用；含发送超时防挂死）
+- [x] 局域网/公网 IP 直连 + 房间（房主/加入者）基础流程（HostLobby/JoinLobby/StopLobby）
+- [x] 状态包序列化（基于 recdata + NodeId + 时间戳）（[`MpMessages.EncodeState`](Assets/Scripts/Net/MpMessage.cs)）
+- [x] 本机飞船状态定时发送（20Hz，[`ProcessOutgoing`](Assets/Scripts/Net/MpNetworkManager.cs)）
+- [x] 保活/心跳（[`SendKeepAlive`](Assets/Scripts/Net/MpNetworkManager.cs)，1s 心跳）
 
-### M2 · 飞船加载与显示（下一步）
-- [ ] 玩家加入时交换**完整** craft XML（当前 [`RefreshLocalCraft`](Assets/Scripts/Net/MpNetworkManager.cs:129) 传空 XML，需修复）
-- [ ] 连接保活，避免未进飞行场景被 3 秒超时踢出
-- [ ] `LoadCraftImmediate` + `SpawnCraft` 生成远程飞船
-- [ ] `NodeId → CraftNode` 映射管理
-- [ ] 远程飞船 `AllowPlayerControl = false` + 禁用物理（复用 [`CraftUtils.DisableCraftPhysicCalculation`](Assets/Scripts/CraftUtils.cs:165)）
+### M2 · 飞船加载与显示 ✅
+- [x] 玩家加入时交换完整 craft XML（[`RefreshLocalCraft`](Assets/Scripts/Net/MpNetworkManager.cs) 上报本机飞船 XML）
+- [x] 连接保活 + 超时放宽（`TimeoutMs=60s`，避免加入/场景重载被踢）
+- [x] `LoadCraftImmediate` + `SpawnCraft` 生成远程飞船（[`SpawnRemoteCraftAtPosition`](Assets/Scripts/Net/MpNetworkManager.cs)，协程延迟生成防白屏）
+- [x] `NodeId → CraftNode` 映射管理（`_remoteCrafts`）
+- [x] 远程飞船 `AllowPlayerControl = false` + 禁用物理（[`CraftUtils.DisableCraftPhysicCalculation`](Assets/Scripts/CraftUtils.cs) + `SetPhysicsEnabled(false, Warp)`）
 
-### M3 · 状态同步与插值
-- [ ] 复用 `CraftUtils.InterpolatedTransform` / `RecalculateFrameState` 应用远程状态
-- [ ] 带时间戳的环形缓冲 + 延迟补偿（100~150ms）
-- [ ] 掉线/超时处理（飞船冻结/移除）
-- [ ] 玩家离开时移除远程飞船
+### M3 · 状态同步与插值（进行中）
+- [x] 复用 `CraftUtils.RecalculateFrameState` 应用远程状态
+- [x] 朝向同步（srfRel 相对地表朝向，双端实测通过，详见 `plans/mp-heading-sync.md`）
+- [x] 掉线/超时处理（`TimeoutMs=60s`，超时移除飞船）
+- [x] 玩家离开时移除远程飞船（[`RemoveRemoteCraft`](Assets/Scripts/Net/MpNetworkManager.cs)，用 `DestroyCraft()` 真正销毁，不再 `SetActive(false)` 隐藏）
+- [ ] 平滑插帧：带时间戳环形缓冲 + 延迟补偿（100~150ms）——**下一步重心**
+- [ ] Body 同步：位置/速度/角速度 + 分离/对接/残骸事件——**下一步重心**
 
-### M4 · 时间与事件同步
-- [ ] 强制 1x 实时 + 暂停广播
+### M4 · 时间与事件同步（未开始）
+- [ ] 强制 1x 实时 + 暂停广播（`OnPause` 已实现但暂禁用）
 - [ ] 时钟偏移校准（基于包时间戳 RTT）
 - [ ] 基础事件消息（对接/分离/爆炸）广播
 
-### M5 · 联机 UI 与打磨
-- [ ] 联机按钮/房间列表 UI（在 [`UI.cs`](Assets/Scripts/UI.cs) 中扩展）
+### M5 · 联机 UI 与打磨（部分）
+- [x] 联机按钮/房间（[`UI.cs`](Assets/Scripts/UI.cs) 中 HostLobby/JoinLobby 按钮 + IP/Port 输入对话框）
 - [ ] 延迟/丢包显示
-- [ ] 稳定性与异常处理
+- [x] 稳定性：管理器 `DontDestroyOnLoad` 跨场景存活、TCP 发送超时防挂死、远程飞船协程生成防白屏
 
 ---
 
@@ -203,32 +205,27 @@ MPStatePacket
 
 ---
 
-## 九、当前进展与下一步（2026-08-05）
+## 九、当前进展与下一步（2026-08-12）
 
-### 9.1 M1 已验证（网络原型闭环 ✅）
+### 9.1 已完成（M1 ~ M3 大部分 ✅）
 
-VMware NAT + 宿主机 Windows 实测通过：
-- 房主 `HostLobby`（UDP 25555）绑定成功；虚拟机 `JoinLobbyPort 192.168.249.1 25555` 加入成功。
-- 握手链路完整：客户端 Hello → 房主 `OnHello` 分配 PlayerId=1 → 回 Welcome。
-- 实测经验：**VM 默认网关（192.168.249.2）是 VMware NAT 服务 vmnat 的地址，并非宿主机网卡 IP**；要连宿主机上运行的进程，应使用宿主机 VMnet8 真实 IP（192.168.249.1）。
+- **M1 ✅**：自建 TCP 传输（[`TcpTransport`](Assets/Scripts/Net/TcpTransport.cs)，早期 UDP 已弃用）+ 房间流程 + 状态包 + 1s 心跳保活。
+- **M2 ✅**：完整 craft XML 交换、`LoadCraftImmediate` + `SpawnCraft` 生成远程飞船、NodeId→CraftNode 映射、幻影模式（`AllowPlayerControl=false` + 禁用物理）。
+- **M3 部分 ✅**：朝向同步（srfRel 相对地表朝向）双端实测通过；掉线/超时处理；玩家离开用 `DestroyCraft()` 真正销毁远程飞船。
 
-### 9.2 实测暴露的问题（下一步需优先解决）
+### 9.2 近期稳定性修复（2026-08-12）
 
-1. **3 秒超时踢人（阻塞性）**：握手成功后房主日志 `MP peer timeout: 192.168.249.128:51539 (PlayerId=1, NodeId=-1)`。
-   - 根因：当前无心跳包（Ping/Pong 只定义编码、从不自动发送）；状态包仅在飞行场景有飞船时发送；客户端未进飞行场景时 `GetLocalCraftNodeId()` 返回 -1，既不发 CraftData 也不发状态包 → 房主按 3000ms 超时将其移除（[`CheckTimeouts`](Assets/Scripts/Net/UdpTransport.cs:187)）。
-   - 修复方向：① 增加心跳/空状态包保活；② 未进飞行场景阶段放宽超时；③ 连接期间周期性发送最小包。
-2. **CraftData 携带空 XML**：[`RefreshLocalCraft`](Assets/Scripts/Net/MpNetworkManager.cs:129) 发送 `EncodeCraftData(LocalNodeId, string.Empty)`，`GetLocalCraftNodeId` 只取 NodeId 不取飞船 XML → 房主广播的 PlayerJoin 中 craftXml 为空，远程端无法据此生成飞船（M2 前提缺失）。
+1. **管理器跨场景存活**：[`EnsureMpManager`](Assets/Scripts/Mod.cs) 给 `MPGameObject` 加 `DontDestroyOnLoad`——修复"切全屏/场景重载导致断线、craft 消失"；
+2. **TCP 发送超时**（`SendTimeout=5s`）：修复"别人加入时卡到无响应"（对端同步生成大飞船不读 socket 时，主线程写阻塞被永久卡住）；
+3. **远程飞船协程生成**（[`SpawnRemoteCraftCoroutine`](Assets/Scripts/Net/MpNetworkManager.cs)）：延迟几帧再 `SpawnCraft`，先让网络/回 Ack 流动，降低加入白屏；
+4. **玩家离开/停止联机**用 [`RemoveRemoteCraft`](Assets/Scripts/Net/MpNetworkManager.cs) + `DestroyCraft()` 真正销毁（不再 `SetActive(false)` 隐藏，避免残留幽灵飞船）。
 
-### 9.3 下一步执行清单（M2 + M1 收尾）
+### 9.3 下一步重心（2026-08-12 起）
 
-1. **连接保活**：在 `MpNetworkManager`/`UdpTransport` 增加心跳或空状态包；未进飞行场景时也周期性发包，解决 3 秒被踢。
-2. **完整 CraftData**：客户端上报本机飞船 craft XML（研究 `ICraftData`/`CraftNode` 序列化为 XML 的公开 API），替换 `string.Empty`。
-3. **房主映射与广播**：`OnCraftData` 登记 PlayerId→NodeId→craftXml，广播带 XML 的 PlayerJoin。
-4. **远程飞船生成**：各客户端 `OnPlayerJoined` 中用 `ICraftLoader.LoadCraftImmediate(XElement)` + `SpawnCraft(...)` 生成远程飞船，注册 NodeId→CraftNode 映射。
-5. **幻影模式**：远程飞船 `AllowPlayerControl=false` + 复用 [`CraftUtils.DisableCraftPhysicCalculation`](Assets/Scripts/CraftUtils.cs:165)。
-6. **状态应用**：`OnRemoteState` 接收 recdata，复用 [`CraftUtils.InterpolatedTransform`](Assets/Scripts/CraftUtils.cs:246) / `RecalculateFrameState` 应用到远程 CraftNode。
-7. **VMware 双端联机验证**：双方各自开飞船进入同一行星系统，互相可见、运动平滑、无超时踢人。
+1. **Body 同步**：当前仅同步 `BodyRotations`（每 body 相对根的欧拉角）；下一步补 body 位置/速度/角速度，以及分离/对接/残骸事件，彻底消除"分裂/散架"。
+2. **平滑插帧**：当前是前后两包线性/Slerp 插值（[`UpdateRemoteCrafts`](Assets/Scripts/Net/MpNetworkManager.cs)）；下一步改为**带时间戳的环形缓冲 + 100~150ms 延迟补偿**，容忍抖动与乱序。
+3. **多 craft 支持**：当前只同步 `FlightSceneScript.Instance.CraftNode`（本机唯一玩家飞船）；下一步支持**每玩家多艘飞船**（NodeId→CraftNode 映射）、残骸/对接后的多节点同步。
 
 **开放问题（需确认）**：
-- 网络层继续沿用现有自建 UDP 栈（M1 已打通，推荐，避免返工），暂不引入 FishNet？
+- 网络层已从早期 UDP 切换为自建 TCP（[`TcpTransport`](Assets/Scripts/Net/TcpTransport.cs)），后续是否仍需引入 FishNet？
 - 双方测试需处于同一行星系统（M2 生成飞船的前提），如何约定（房主指定行星系统）？
