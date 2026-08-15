@@ -31,7 +31,8 @@ namespace Assets.Scripts.Net
 		// - SteamTransport：Steam P2P（Steam Networking Sockets），零端口转发/零 frp，最推荐（SP2 的 FishySteamworks 同款）。
 		// - TcpTransport：TCP，可走 frp/nginx 等纯 TCP 内网穿透（无 MTU 限制，无需分片）；缺点 head-of-line blocking。
 		// - LiteNetLibTransport：UDP + 可靠/不可靠通道分离 + 应用层分片；缺点公网需 UDP 端口转发。
-		public SteamTransport Transport = new SteamTransport();
+		// 默认 Steam；本地虚拟机 debug 时用控制台 TcpHostLobby / TcpJoinLobby 切到 TcpTransport（见 SetTransport）。
+		public IMpTransport Transport = new SteamTransport();
 
 		public bool IsServer { get; private set; }
 		public bool IsConnected { get; private set; }
@@ -182,6 +183,29 @@ namespace Assets.Scripts.Net
 			_remoteCrafts.Clear();
 			Mod.LogLobby("MP.Stop: wasServer=" + wasServer + ", wasConnected=" + wasConnected +
 				", wasPlayerId=" + wasPlayerId + ", Transport.IsRunning=" + Transport.IsRunning);
+		}
+
+		/// <summary>
+		/// 切换到指定传输实例（debug 用：切到 TcpTransport 走本地 TCP，虚拟机按宿主 IP:端口 连接）。
+		/// 会停止当前会话、退订旧传输事件、挂接新传输事件。默认仍为 SteamTransport，仅在显式调用时切换。
+		/// </summary>
+		public void SetTransport(IMpTransport newTransport)
+		{
+			if (ReferenceEquals(newTransport, Transport)) return;
+			if (Transport != null)
+			{
+				if (Transport.IsRunning) Stop();
+				Transport.OnDataReceived -= HandlePacket;
+				Transport.OnPeerTimeout -= HandlePeerTimeout;
+				Transport.Dispose();
+			}
+			Transport = newTransport;
+			if (Transport != null)
+			{
+				Transport.OnDataReceived += HandlePacket;
+				Transport.OnPeerTimeout += HandlePeerTimeout;
+			}
+			Mod.LogLobby("MP.SetTransport: switched to " + (Transport == null ? "<null>" : Transport.GetType().Name));
 		}
 
 		/// <summary>

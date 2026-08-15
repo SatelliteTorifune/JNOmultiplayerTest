@@ -15,7 +15,7 @@ namespace Assets.Scripts.Net
     ///   无需应用层分片/重组（大飞船 XML 压缩后可直接整包发送）。
     /// 本类不触碰任何 Unity API，可在网络线程安全运行。
     /// </summary>
-    public class TcpTransport : IDisposable
+    public class TcpTransport : IMpTransport
     {
         public event Action<MpPeer, byte[]> OnDataReceived;
         public event Action<MpPeer> OnPeerTimeout;

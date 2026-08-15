@@ -94,6 +94,20 @@ namespace Assets.Scripts
 			DevConsoleApi.RegisterCommand<int>("SteamHostLobby", new Action<int>(port => HostLobby(port)));
 			// Steam P2P：客户端按房主 SteamId 加入
 			DevConsoleApi.RegisterCommand<string>("SteamJoinLobby", new Action<string>(hostSteamId => JoinLobby(hostSteamId, 0)));
+			// TCP debug（本地虚拟机联机调试）：先切到 TcpTransport 再开房 / 加入。
+			// 房主监听 IPAddress.Any:port；客户端按宿主局域网 IP:port 连接（如 192.168.56.1:25555）。
+			DevConsoleApi.RegisterCommand<int>("TcpHostLobby", new Action<int>(port =>
+			{
+				MpNetworkManager mgr = EnsureMpManager();
+				if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
+				HostLobby(port);
+			}));
+			DevConsoleApi.RegisterCommand<string, int>("TcpJoinLobby", new Action<string, int>((host, port) =>
+			{
+				MpNetworkManager mgr = EnsureMpManager();
+				if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
+				JoinLobby(host, port);
+			}));
 		}
 
 		/// <summary>作为房主开启联机房间。</summary>

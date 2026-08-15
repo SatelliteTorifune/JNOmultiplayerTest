@@ -18,7 +18,7 @@ namespace Assets.Scripts.Net
 	/// 依赖：com.rlabrecque.steamworks.net.dll（游戏 Managed 自带，已复制到 ModTools/Assemblies）。
 	/// 注意：游戏启动时已 SteamAPI.Init()，本类不重复初始化，直接用 SteamNetworkingSockets。
 	/// </summary>
-	public class SteamTransport : IDisposable
+	public class SteamTransport : IMpTransport
 	{
 		public event Action<MpPeer, byte[]> OnDataReceived;
 		public event Action<MpPeer> OnPeerTimeout;
