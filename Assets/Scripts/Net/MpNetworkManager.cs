@@ -42,6 +42,10 @@ namespace Assets.Scripts.Net
 
 		[Tooltip("状态包发送间隔(ms)，默认 50ms = 20Hz")]
 		public float SendIntervalMs = 50f;
+		[Tooltip("远程飞船插值渲染延迟(ms)，容忍抖动/乱序；默认 100ms ≈ 2 包 @ 20Hz")]
+		public float RenderDelayMs = 100f;
+		/// <summary>当前状态包发送频率（Hz）。房主可用 SetTickRate 指令调整并广播给客户端（SP2 ServerTickRate 同款思路）。</summary>
+		public int TickRate { get; private set; } = 20;
 		[Tooltip("对端超时判定(ms)。TCP 下连接断开由 read loop 检测，此值仅用于半开连接兜底，应设得较大以容忍主线程卡顿/GC/场景加载/全屏切换")]
 		public long TimeoutMs = 60000;
 
@@ -73,12 +77,20 @@ namespace Assets.Scripts.Net
 		/// <summary>收到远程飞船状态（playerId, nodeId, 时间, recdata）。</summary>
 		public event Action<int, int, double, Mod.recdata> OnRemoteState;
 
+		// FlightUI 提示：已提示过"加入"的玩家（房主可能重发 PlayerJoin，避免重复提示）
+		private readonly HashSet<int> _joinNoticeShown = new HashSet<int>();
+		/// <summary>客户端刚加入后的宽限期：期间收到的 PlayerJoin 均为"已存在玩家"（含房主），不弹 joined 提示。</summary>
+		private const float JoinNoticeGraceSec = 3f;
+		private float _clientJoinedTime = -1f;
+
 		private void Awake()
 		{
 			Instance = this;
 			Transport.OnDataReceived += HandlePacket;
 			Transport.OnPeerTimeout += HandlePeerTimeout;
 			OnPlayerLeft += HandlePlayerLeft;
+			OnPlayerJoined += ShowPlayerJoinedNotice;
+			OnPlayerLeft += ShowPlayerLeftNotice;
 			OnRemoteState += ApplyRemoteState;
 			Mod.LogLobby("MpNetworkManager created on GameObject '" + gameObject.name + "' (Awake)");
 		}
@@ -89,9 +101,51 @@ namespace Assets.Scripts.Net
 			Transport.OnDataReceived -= HandlePacket;
 			Transport.OnPeerTimeout -= HandlePeerTimeout;
 			OnPlayerLeft -= HandlePlayerLeft;
+			OnPlayerJoined -= ShowPlayerJoinedNotice;
+			OnPlayerLeft -= ShowPlayerLeftNotice;
 			OnRemoteState -= ApplyRemoteState;
 			Transport.Stop();
 			if (Instance == this) Instance = null;
+		}
+
+		/// <summary>通过 FlightUI 显示联机提示（仅飞行场景内可弹 UI；任何情况都写日志兜底）。</summary>
+		public static void ShowFlightMessage(string message, bool isError = false, float duration = 6f)
+		{
+			Mod.LogLobby(message);
+			try
+			{
+				if (FlightSceneScript.Instance != null && FlightSceneScript.Instance.FlightSceneUI != null)
+				{
+					FlightSceneScript.Instance.FlightSceneUI.ShowMessage(message, isError, duration);
+				}
+			}
+			catch (Exception e) { Mod.LogError("ShowFlightMessage error: " + e.Message); }
+		}
+
+		/// <summary>有玩家加入：FlightUI 提示（按 playerId 去重，只提示一次）。</summary>
+		private void ShowPlayerJoinedNotice(MpPeer peer)
+		{
+			if (peer == null || peer.PlayerId < 0) return;
+			// 客户端不把房主(playerId 0)当"新加入"提示（房主是房间创建者，避免与"连接成功"混淆）
+			if (!IsServer && peer.PlayerId == 0) return;
+			// 客户端刚连接时，房主会把"已存在的玩家"补发过来——这些不是新加入，宽限期内不提示
+			if (!IsServer && _clientJoinedTime >= 0f && Time.unscaledTime - _clientJoinedTime < JoinNoticeGraceSec)
+			{
+				return;
+			}
+			if (!_joinNoticeShown.Add(peer.PlayerId)) return;
+			string name = string.IsNullOrEmpty(peer.PlayerName) ? ("Player " + peer.PlayerId) : peer.PlayerName;
+			ShowFlightMessage(name + " joined the game");
+		}
+
+		/// <summary>有玩家离开：FlightUI 提示。</summary>
+		private void ShowPlayerLeftNotice(MpPeer peer)
+		{
+			if (peer == null || peer.PlayerId < 0) return;
+			// 客户端不把房主(playerId 0)离开当"玩家离开"提示（房主掉线由连接断开处理）
+			if (!IsServer && peer.PlayerId == 0) return;
+			string name = string.IsNullOrEmpty(peer.PlayerName) ? ("Player " + peer.PlayerId) : peer.PlayerName;
+			ShowFlightMessage(name + " left the game", false, 5f);
 		}
 
 		// ---------------- 生命周期 API ----------------
@@ -169,6 +223,8 @@ namespace Assets.Scripts.Net
 			_hostCraftResend.Clear();
 			_spawnMissLogged.Clear();
 			_spawnAttemptTime.Clear();
+			_joinNoticeShown.Clear();
+			_clientJoinedTime = -1f;
 			lock (_playersByPlayerId) _playersByPlayerId.Clear();
 			// 停止联机时真正销毁所有远程飞船（避免 Stop 后场景里残留幽灵飞船），
 			// 已销毁/已随场景卸载的节点跳过。
@@ -334,10 +390,12 @@ namespace Assets.Scripts.Net
 			if (!IsConnected || _remoteCrafts.Count == 0) return;
 			foreach (RemoteCraft rc in _remoteCrafts.Values)
 			{
-				if (rc.Node == null || rc.Node.CraftScript == null || !rc.HasState) continue;
+				if (rc.Node == null || rc.Node.CraftScript == null || !rc.HasState || !rc.HasApplied) continue;
 				try
 				{
-					ForceRemoteHeading(rc, rc.Target);
+					// 用"最近一次实际应用"的插值状态写回朝向（而非最新包 Target），
+					// 避免"Update 插值 → LateUpdate 被最新包覆盖"导致的朝向跳变。
+					ForceRemoteHeading(rc, rc.LastApplied);
 				}
 				catch (Exception e) { Mod.LogError("LateUpdate refresh error (P" + rc.PlayerId + "): " + e.Message); }
 			}
@@ -440,6 +498,26 @@ namespace Assets.Scripts.Net
 			}
 		}
 
+		/// <summary>
+		/// 设置状态包发送频率（Hz）。房主调用会广播给所有客户端（客户端收到 TickRate 消息后同样调用本方法，不再广播）：
+		/// - 发包间隔 SendIntervalMs = 1000 / hz（驱动 ProcessOutgoing）；
+		/// - 插值渲染延迟 RenderDelayMs 自动校准为约 2 个发包周期，保证平滑插帧在任意 tickrate 下都成立。
+		/// </summary>
+		public void SetTickRate(int hz)
+		{
+			int clamped = Mathf.Clamp(hz, 1, 120);
+			if (TickRate == clamped) return; // 无变化
+			TickRate = clamped;
+			SendIntervalMs = 1000f / clamped;
+			RenderDelayMs = Mathf.Clamp(2000f / clamped, 40f, 400f);
+			Mod.LogLobby("MP.SetTickRate: " + clamped + " Hz (interval=" + SendIntervalMs.ToString("F1") +
+				"ms, renderDelay=" + RenderDelayMs.ToString("F1") + "ms, IsServer=" + IsServer + ")");
+			if (IsServer)
+			{
+				Transport.Broadcast(MpMessages.EncodeTickRate(clamped));
+			}
+		}
+
 		// ---------------- 消息处理 ----------------
 
 		private void HandlePacket(MpPeer peer, byte[] packet)
@@ -484,6 +562,9 @@ namespace Assets.Scripts.Net
 					break;
 				case MpMessageType.CraftXmlResponse:
 					OnCraftXmlResponse(packet);
+					break;
+				case MpMessageType.TickRate:
+					OnTickRate(packet);
 					break;
 			}
 		}
@@ -543,8 +624,10 @@ namespace Assets.Scripts.Net
 
 			// 回复 Welcome
 			Transport.SendTo(peer, MpMessages.EncodeWelcome(peer.PlayerId, -1, DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond));
+			// 同步当前状态包频率给新加入者（SP2 ServerTickRate 初始同步思路）
+			Transport.SendTo(peer, MpMessages.EncodeTickRate(TickRate));
 			Mod.LogLobby("MP.OnHello (host): '" + name + "' from " + peer.Id + " joined as PlayerId=" + peer.PlayerId +
-				", sent Welcome, total peers=" + Transport.GetPeersCount());
+				", sent Welcome + TickRate(" + TickRate + "Hz), total peers=" + Transport.GetPeersCount());
 
 			// 把当前所有已登记玩家（含房主自己）的飞船信息同步给新加入者
 			// SP2 方案：只发 hash，XML 由客户端按需下载（见 OnPlayerJoin / CraftXmlRequest）。
@@ -605,6 +688,10 @@ namespace Assets.Scripts.Net
 			// 房主 peer 的 PlayerId 应保持 0（房主身份），否则超时日志/寻址会错乱
 			// （此前把 host peer 的 PlayerId 覆盖成客户端 ID，导致超时日志显示 PlayerId=1 等错乱）。
 			peer.IsServer = true;
+			// client 成功加入房间：FlightUI 提示；并记录加入时刻，宽限期内不提示"已存在玩家"
+			_clientJoinedTime = Time.unscaledTime;
+			string myName = string.IsNullOrEmpty(PlayerName) ? ("Player " + playerId) : PlayerName;
+			ShowFlightMessage("Connected to host as " + myName + " (Player " + playerId + ")");
 			Mod.LogLobby("MP.OnWelcome (client): received Welcome, PlayerId=" + playerId +
 				", nodeId=" + nodeId + ", serverTick=" + serverTick + ", peer=" + peer.Id +
 				", peer.PlayerId=" + peer.PlayerId + " (host peer, kept as-is)");
@@ -764,6 +851,17 @@ namespace Assets.Scripts.Net
 			// }
 		}
 
+		/// <summary>
+		/// 客户端收到房主的 TickRate（状态包频率）：本地采纳该频率，保证双端发包节奏一致，
+		/// 平滑插帧（P1）与渲染延迟据此自动校准。
+		/// </summary>
+		private void OnTickRate(byte[] packet)
+		{
+			int hz;
+			if (!MpMessages.TryDecodeTickRate(packet, out hz)) return;
+			SetTickRate(hz);
+		}
+
 		// ---------------- 工具 ----------------
 
 		private int _nextPlayerId = 1;
@@ -817,18 +915,57 @@ namespace Assets.Scripts.Net
 
 		private class RemoteCraft
 		{
+			public const int BufferCapacity = 32; // 插值缓冲容量 ≈ 1.6s @ 20Hz，容抖动/乱序
+
 			public int PlayerId;
 			public string PlayerName;   // 玩家名(诊断日志区分用)
 			public CraftNode Node;
-			public Mod.recdata Prev;
-			public Mod.recdata Target;
 			public bool HasState;      // 是否已收到至少一个状态包
-			public bool HasPrev;       // 是否已进入插值阶段
 			public bool IsInitialized; // 幻影模式是否已应用（CraftScript 延迟构建后置 true）
-			public float InterpStartTime;
 			public float LastStateLogTime; // 周期性状态日志计时
 			public float LastVisualLogTime; // 可见性诊断日志计时
 			public Quaternion LastAppliedHeading; // ApplyRemoteState 最近一次写入的帧空间朝向(诊断用)
+
+			// --- 平滑插帧：带时间戳环形缓冲（按到达端 unscaledTime 排列，暂停安全、容抖动/乱序） ---
+			public readonly StateSample[] Buffer = new StateSample[BufferCapacity];
+			public int BufferCount;          // 有效样本数
+			public int BufferHead;           // 最旧样本索引（环形）
+			public Mod.recdata LastApplied;  // 最近一次实际应用的状态（LateUpdate 用，避免"最新包覆盖插值"）
+			public bool HasApplied;          // LastApplied 是否已有效
+
+			public struct StateSample
+			{
+				public float ArrivalTime;  // 到达端 Time.unscaledTime（单调）
+				public double PacketTime;  // 发送端 FlightState.Time（诊断用）
+				public Mod.recdata Data;
+			}
+
+			/// <summary>环形追加一条样本；按到达时间天然有序，满则覆盖最旧。</summary>
+			public void PushSample(float arrivalTime, double packetTime, Mod.recdata data)
+			{
+				int idx = (BufferHead + BufferCount) % BufferCapacity;
+				Buffer[idx] = new StateSample { ArrivalTime = arrivalTime, PacketTime = packetTime, Data = data };
+				if (BufferCount < BufferCapacity) BufferCount++;
+				else BufferHead = (BufferHead + 1) % BufferCapacity;
+				HasState = true;
+			}
+
+			/// <summary>取最新样本。</summary>
+			public bool TryGetNewest(out Mod.recdata data)
+			{
+				data = default;
+				if (BufferCount == 0) return false;
+				data = Buffer[(BufferHead + BufferCount - 1) % BufferCapacity].Data;
+				return true;
+			}
+
+			/// <summary>清空缓冲（重建远程飞船时调用）。</summary>
+			public void ClearBuffer()
+			{
+				BufferCount = 0;
+				BufferHead = 0;
+				HasApplied = false;
+			}
 		}
 
 		private void HandlePlayerLeft(MpPeer peer)
@@ -880,8 +1017,10 @@ namespace Assets.Scripts.Net
 				//Mod.Log("[朝向诊断|远端P" + peer.PlayerId + "飞船] 生成: Heading(行星)=" + Q(remote.Heading) +
 					//" | 传入spawnHeading(行星)=" + Q(spawnHeading));
 
-				// 先登记（无论 CraftScript 是否已构建），避免状态包反复触发重新生成
-				RemoteCraft rc = new RemoteCraft { PlayerId = peer.PlayerId, PlayerName = peer.PlayerName, Node = remote, Target = new Mod.recdata() };
+				// 先登记（无论 CraftScript 是否已构建），避免状态包反复触发重新生成；
+				// 并把首个状态包入插值缓冲（BufferCount=1，UpdateRemoteCrafts 直接应用）。
+				RemoteCraft rc = new RemoteCraft { PlayerId = peer.PlayerId, PlayerName = peer.PlayerName, Node = remote };
+				rc.PushSample(Time.unscaledTime, 0, data);
 				_remoteCrafts[peer.PlayerId] = rc;
 
 				// 立即进入"表面锁定"分支（防止游戏推进轨道导致坠落），并预置 GroundedSurface* 避免空引用
@@ -1059,18 +1198,9 @@ namespace Assets.Scripts.Net
 				return;
 			}
 
-			if (rc.HasState)
-			{
-				rc.Prev = rc.Target;
-				rc.HasPrev = true;
-			}
-			else
-			{
-				rc.Prev = data;
-			}
-			rc.Target = data;
-			rc.HasState = true;
-			rc.InterpStartTime = Time.unscaledTime;
+			// 平滑插帧：状态包入环形缓冲（按到达端 unscaledTime，暂停安全）。
+			// 首个包也入缓冲（BufferCount=1 时下一帧直接应用），后续由 UpdateRemoteCrafts 取前后两包插值。
+			rc.PushSample(Time.unscaledTime, time, data);
 		}
 
 		/// <summary>
@@ -1141,7 +1271,10 @@ namespace Assets.Scripts.Net
 				if (rc.HasState)
 				{
 					// 初始状态：位置/速度/朝向一次性应用（含 RecalculateFrameState 刷新 Transform）
-					ApplyRemoteState(rc, rc.Target);
+					if (rc.TryGetNewest(out Mod.recdata newest))
+					{
+						ApplyRemoteState(rc, newest);
+					}
 				}
 				rc.IsInitialized = true;
 				Mod.LogLobby("MP: remote craft initialized (ghost mode) for player " + rc.PlayerId);
@@ -1169,37 +1302,12 @@ namespace Assets.Scripts.Net
 					if (!rc.IsInitialized) InitializeRemoteCraft(rc);
 					if (!rc.IsInitialized) continue;
 
-					if (!rc.HasPrev)
+					// 平滑插帧：renderTime = now - renderDelay，取前后两包插值；
+					// 渲染延迟吸收抖动/乱序，避免"最新包覆盖"导致的橡皮筋/跳变。
+					float renderTime = Time.unscaledTime - RenderDelayMs / 1000f;
+					if (TryGetInterpolatedState(rc, renderTime, out Mod.recdata interp))
 					{
-						ApplyRemoteTransformDirect(rc, rc.Target);
-					}
-					else
-					{
-						float interval = Mathf.Max(SendIntervalMs / 1000f, 0.001f);
-						float t = (Time.unscaledTime - rc.InterpStartTime) / interval;
-						if (t >= 1f)
-						{
-							ApplyRemoteTransformDirect(rc, rc.Target);
-						}
-						else
-						{
-							// 内联插值（与原 InterpolatedTransform 一致：位置/速度线性、朝向球面插值），
-							// 并在更新 GroundedSurface* 后统一应用，确保游戏表面锁定分支也跟随插值状态。
-							float pct = Mathf.Clamp01(t);
-							Vector3d interpPos = Vector3d.Lerp(rc.Prev.Position, rc.Target.Position, pct);
-							Vector3d interpVel = Vector3d.Lerp(rc.Prev.Velocity, rc.Target.Velocity, pct);
-							Quaterniond interpHeading = new Quaterniond(
-								Quaternion.Slerp(
-									new Quaternion((float)rc.Prev.Heading.x, (float)rc.Prev.Heading.y, (float)rc.Prev.Heading.z, (float)rc.Prev.Heading.w),
-									new Quaternion((float)rc.Target.Heading.x, (float)rc.Target.Heading.y, (float)rc.Target.Heading.z, (float)rc.Target.Heading.w),
-									pct));
-							// 用插值后的位置/速度/朝向生成一个临时状态应用（body 姿态沿用最新 Target）
-							Mod.recdata interp = rc.Target;
-							interp.Position = interpPos;
-							interp.Velocity = interpVel;
-							interp.Heading = interpHeading;
-							ApplyRemoteState(rc, interp);
-						}
+						ApplyRemoteState(rc, interp);
 					}
 
 					// 诊断：周期性记录远程飞船可见性（每 3 秒），用于定位"无法显示对方 craft"。
@@ -1215,12 +1323,6 @@ namespace Assets.Scripts.Net
 							{
 								foreach (Renderer r in rgo.GetComponentsInChildren<Renderer>(true)) { rendererCount++; if (r.enabled) enabledCount++; }
 							}
-							Mod.LogLobby("MP visualDiag p" + rc.PlayerId + ": goActive=" + (rgo != null ? rgo.activeSelf.ToString() : "null") +
-								", craftScript=" + (rc.Node.CraftScript != null ? "built" : "notBuilt") +
-								", renderers=" + rendererCount + "/enabled=" + enabledCount +
-								", inFlightState=" + IsNodeInFlightState(rc.Node) +
-								", isDestroyed=" + rc.Node.IsDestroyed +
-								", isLoadedInGameView=" + rc.Node.IsLoadedInGameView);
 						}
 						catch (Exception e) { Mod.LogError("MP visualDiag error (p" + rc.PlayerId + "): " + e.Message); }
 					}
@@ -1255,10 +1357,10 @@ namespace Assets.Scripts.Net
 						double rPlanetRot = rc.Node.Parent != null ? rc.Node.Parent.RotationAngle : double.NaN;
 						double rFrameRot = shipFrame != null ? shipFrame.RotationAngle : double.NaN;
 						Mod.Log("【远程飞船|" + (string.IsNullOrEmpty(rc.PlayerName) ? "?" : rc.PlayerName) + "(P" + rc.PlayerId + ")】" +
-							" 目标位置=(" + rc.Target.Position.x.ToString("F1") + "," + rc.Target.Position.y.ToString("F1") + "," + rc.Target.Position.z.ToString("F1") + ")" +
+							" 目标位置=(" + rc.LastApplied.Position.x.ToString("F1") + "," + rc.LastApplied.Position.y.ToString("F1") + "," + rc.LastApplied.Position.z.ToString("F1") + ")" +
 							" 实际位置=(" + remoteSurface.x.ToString("F1") + "," + remoteSurface.y.ToString("F1") + "," + remoteSurface.z.ToString("F1") + ")" +
-							" | 目标朝向(行星)=" + Q(rc.Target.Heading) +
-							" SrfRel=" + Q(rc.Target.SrfRel) +
+							" | 目标朝向(行星)=" + Q(rc.LastApplied.Heading) +
+							" SrfRel=" + Q(rc.LastApplied.SrfRel) +
 							" 实际朝向=" + Q(tr) +
 							" 写入朝向=" + Q(rc.LastAppliedHeading) +
 							" 质心朝向=" + Q(comR) +
@@ -1289,6 +1391,55 @@ namespace Assets.Scripts.Net
 		private static void ApplyRemoteTransformDirect(RemoteCraft rc, Mod.recdata data)
 		{
 			ApplyRemoteState(rc, data);
+		}
+
+		/// <summary>
+		/// 平滑插帧：从远程飞船环形缓冲中取 renderTime 前后两包做插值（位置/速度线性、朝向球面插值）。
+		/// 缓冲不足时回退为直接应用最新包（冻结），不产生跳变。
+		/// </summary>
+		private static bool TryGetInterpolatedState(RemoteCraft rc, float renderTime, out Mod.recdata result)
+		{
+			result = default;
+			if (rc.BufferCount == 0) return false;
+
+			// 找到 renderTime 落入的区间 [i, i+1]（缓冲为 FIFO，按到达时间天然有序）
+			int i = -1;
+			for (int k = 0; k < rc.BufferCount; k++)
+			{
+				float at = rc.Buffer[(rc.BufferHead + k) % RemoteCraft.BufferCapacity].ArrivalTime;
+				if (at <= renderTime) i = k;
+				else break;
+			}
+
+			// renderTime 早于最旧样本：冻结在最旧样本（缓冲欠载，等新包）
+			if (i < 0)
+			{
+				result = rc.Buffer[rc.BufferHead].Data;
+				return true;
+			}
+			// renderTime 晚于/等于最新样本：直接应用最新（缓冲不足，无前瞻样本）
+			if (i >= rc.BufferCount - 1)
+			{
+				result = rc.Buffer[(rc.BufferHead + rc.BufferCount - 1) % RemoteCraft.BufferCapacity].Data;
+				return true;
+			}
+
+			int idxA = (rc.BufferHead + i) % RemoteCraft.BufferCapacity;
+			int idxB = (rc.BufferHead + i + 1) % RemoteCraft.BufferCapacity;
+			Mod.recdata a = rc.Buffer[idxA].Data;
+			Mod.recdata b = rc.Buffer[idxB].Data;
+			float tA = rc.Buffer[idxA].ArrivalTime;
+			float tB = rc.Buffer[idxB].ArrivalTime;
+			float pct = Mathf.Clamp01((renderTime - tA) / Mathf.Max(tB - tA, 0.0001f));
+
+			// 位置/速度线性、朝向球面插值；body 姿态/激活组沿用最新包（避免欧拉角绕转问题）
+			Mod.recdata interp = b;
+			interp.Position = Vector3d.Lerp(a.Position, b.Position, pct);
+			interp.Velocity = Vector3d.Lerp(a.Velocity, b.Velocity, pct);
+			interp.Heading = Quaterniond.FromQuaternion(Quaternion.Slerp(a.Heading.ToQuaternion(), b.Heading.ToQuaternion(), pct));
+			interp.SrfRel = Quaterniond.FromQuaternion(Quaternion.Slerp(a.SrfRel.ToQuaternion(), b.SrfRel.ToQuaternion(), pct));
+			result = interp;
+			return true;
 		}
 
 		/// <summary>
@@ -1398,6 +1549,11 @@ namespace Assets.Scripts.Net
 				}
 				catch (Exception e) { Mod.LogError("Refresh remote FlightData error (P" + rc.PlayerId + "): " + e.Message); }
 			}
+
+			// 记录最近一次实际应用的状态（供 LateUpdate 渲染前写回朝向复用，
+			// 保证写回的是"插值后"状态而非"最新包"，避免朝向跳变）。
+			rc.LastApplied = data;
+			rc.HasApplied = true;
 		}
 
 		private static readonly PropertyInfo _groundedSurfacePositionProp =

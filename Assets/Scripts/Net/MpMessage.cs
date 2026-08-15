@@ -27,6 +27,7 @@ namespace Assets.Scripts.Net
 		PlayerJoinAck = 11, // 客户端 -> 房主：确认已收到指定玩家（playerId）的飞船信息，房主据此停止重发 PlayerJoin
 		CraftXmlRequest = 12,  // 客户端 -> 房主：按需请求指定玩家（playerId）的飞船 XML（SP2 方案）
 		CraftXmlResponse = 13, // 房主 -> 客户端：返回指定玩家的飞船 XML（大包，走可靠通道）
+		TickRate = 14,         // 房主 -> 所有：当前状态包发送频率（Hz），客户端据此调整发包节奏与插值
 	}
 
 	/// <summary>
@@ -393,6 +394,29 @@ namespace Assets.Scripts.Net
 		public static byte[] EncodePong(long tick)
 		{
 			return Pack(MpMessageType.Pong, w => w.Write(tick));
+		}
+
+		// ---------------- TickRate（房主 -> 客户端：状态包发送频率） ----------------
+
+		public static byte[] EncodeTickRate(int hz)
+		{
+			return Pack(MpMessageType.TickRate, w => w.Write(hz));
+		}
+
+		public static bool TryDecodeTickRate(byte[] buffer, out int hz)
+		{
+			hz = 20;
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					if (r.ReadByte() != (byte)MpMessageType.TickRate) return false;
+					hz = r.ReadInt32();
+					return true;
+				}
+			}
+			catch { return false; }
 		}
 
 		// ---------------- recdata 序列化 ----------------

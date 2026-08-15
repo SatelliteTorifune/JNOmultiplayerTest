@@ -9,7 +9,7 @@ using Assets.Scripts.Net;
 using Jundroo.ModTools;
 using UnityEngine;
 
-using HarmonyLib;
+//using HarmonyLib;
 
 namespace Assets.Scripts
 {
@@ -55,7 +55,7 @@ namespace Assets.Scripts
 			try
 			{
 				base.OnModInitialized();
-				new Harmony("MPTest").PatchAll();
+				//new Harmony("MPTest").PatchAll();
 
 				RegisterMpCommands();
 
@@ -108,6 +108,9 @@ namespace Assets.Scripts
 				if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
 				JoinLobby(host, port);
 			}));
+			// 房主调整状态包发送频率（Hz）：SetTickRate 20 → 50ms（默认）；5 → 200ms；60 → ~16.7ms。
+			// 房主设置后广播给所有客户端（SP2 ServerTickRate 同款思路）。
+			DevConsoleApi.RegisterCommand<int>("SetTickRate", new Action<int>(hz => SetTickRateCommand(hz)));
 		}
 
 		/// <summary>作为房主开启联机房间。</summary>
@@ -168,6 +171,25 @@ namespace Assets.Scripts
 			{
 				MpNetworkManager.Instance.Stop();
 			}
+		}
+
+		/// <summary>
+		/// 房主调整状态包发送频率（Hz）的控制台指令实现（SetTickRate <hz>）。
+		/// 仅房主设置会广播给所有客户端；客户端调用仅改本端（采纳房主广播值为准）。
+		/// </summary>
+		public void SetTickRateCommand(int hz)
+		{
+			MpNetworkManager mgr = EnsureMpManager();
+			if (mgr == null)
+			{
+				LogLobby("SetTickRate FAILED: MpNetworkManager.Instance is null (EnsureMpManager returned null)");
+				return;
+			}
+			if (!mgr.IsServer)
+			{
+				LogLobby("SetTickRate: 仅房主可调整全局发包频率（当前为客户端，本端将采纳房主广播值）");
+			}
+			mgr.SetTickRate(hz);
 		}
 
 		/// <summary>确保联机网络管理器已创建并返回实例。</summary>
