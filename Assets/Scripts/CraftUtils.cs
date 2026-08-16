@@ -2,12 +2,10 @@
 using System.Collections.Generic;
 using System.Linq;
 
-using ModApi;
 using ModApi.Craft;
 using ModApi.Craft.Parts;
 using ModApi.Craft.Parts.Modifiers;
 using ModApi.Flight.GameView;
-using ModApi.Flight.Sim;
 
 using Assets.Scripts.Craft;
 using Assets.Scripts.Flight;
@@ -95,90 +93,6 @@ namespace Assets.Scripts
 			*/
 			
 		}
-		//通过PCL坐标设置位置
-		public static bool SetCraftTransform(CraftNode craft, Vector3d position, Vector3d velocity, Quaternion orientation)
-		{
-			try
-			{
-				SetStateVectorsAtDefaultTime(position, velocity, craft);
-				craft.CraftScript.Transform.rotation = orientation;
-				return true;
-			}
-			catch (Exception e)
-			{
-				FlightSceneScript.Instance.FlightSceneUI.ShowMessage(e.ToString(), false, 10f);
-				return false;
-			}
-		}
-		//通过地面位置与地面速度设置位置
-		//注意：groundedTransform 是"表面坐标朝向"（GroundedSurfaceRotation），
-		//需要先乘行星自转转成行星空间朝向，再经参考系转成帧空间朝向（Transform.rotation 使用帧空间）。
-		public static bool SetCraftTransform(CraftNode craft, Vector3d surfacePosition, Vector3d surfaceVelocity, Quaterniond groundedTransform, IPlanetNode planet)
-		{
-			try
-			{
-				var position = surfacePosition == Vector3d.zero ? craft.Position : planet.SurfaceVectorToPlanetVector(surfacePosition);
-				var velocity = planet.SurfaceVectorToPlanetVector(surfaceVelocity);
-				Quaterniond planetHeading = planet.Rotation * groundedTransform;
-				SetCraftTransform(craft, position, velocity, GetFrameRotation(craft, planetHeading));
-				return true;
-			}
-			catch (Exception e)
-			{
-				FlightSceneScript.Instance.FlightSceneUI.ShowMessage(e.ToString(), false, 10f);
-				return false;
-			}
-		}
-		//我操,我他妈这么知道Quaternion是什么东西
-		public static bool SetCraftTransform(CraftNode craft, Vector3d surfacePosition, Vector3d surfaceVelocity, Quaternion groundedTransform, IPlanetNode planet)
-		{
-			try
-			{
-				var position = surfacePosition == Vector3d.zero ? craft.Position : planet.SurfaceVectorToPlanetVector(surfacePosition);
-				var velocity = planet.SurfaceVectorToPlanetVector(surfaceVelocity);
-				Quaterniond grounded = new Quaterniond(groundedTransform.x, groundedTransform.y, groundedTransform.z, groundedTransform.w);
-				Quaterniond planetHeading = planet.Rotation * grounded;
-				SetCraftTransform(craft, position, velocity, GetFrameRotation(craft, planetHeading));
-				return true;
-			}
-			catch (Exception e)
-			{
-				FlightSceneScript.Instance.FlightSceneUI.ShowMessage(e.ToString(), false, 10f);
-				return false;
-			}
-		}
-		//通过经纬度+高度加地面速度设置craft位置
-		public static bool SetCraftTransform(CraftNode craft, double latitude, double longtitude, double asl, Vector3d surfaceVelocity, Quaternion groundedTransform, PlanetNode planet)
-		{
-			try
-			{
-				Quaterniond grounded = new Quaterniond(groundedTransform.x, groundedTransform.y, groundedTransform.z, groundedTransform.w);
-				Quaterniond planetHeading = planet.Rotation * grounded;
-				var position = planet.GetSurfacePosition(latitude, longtitude, AltitudeType.AboveSeaLevel, asl);
-				var velocity = planet.SurfaceVectorToPlanetVector(surfaceVelocity);
-				SetCraftTransform(craft, position, velocity, GetFrameRotation(craft, planetHeading));
-				return true;
-			}
-			catch (Exception e)
-			{
-				FlightSceneScript.Instance.FlightSceneUI.ShowMessage(e.ToString(), false, 10f);
-				return false;
-			}
-		}
-
-		/// <summary>
-		/// 把"行星空间朝向"转换为"帧空间朝向"（Transform.rotation 使用帧空间）。
-		/// GameView/参考系未就绪时回退为直接使用行星空间朝向（保持向后兼容，不抛异常）。
-		/// </summary>
-		private static Quaternion GetFrameRotation(CraftNode craft, Quaterniond planetHeading)
-		{
-			IReferenceFrame frame = craft.GameView != null ? craft.GameView.ReferenceFrame : null;
-			if (frame != null)
-			{
-				return frame.PlanetToFrameRotation(planetHeading);
-			}
-			return new Quaternion((float)planetHeading.x, (float)planetHeading.y, (float)planetHeading.z, (float)planetHeading.w);
-		}
 		//禁用craft1的物理计算更新
 		public static bool DisableCraftPhysicCalculation(ref CraftNode craft)
 		{
@@ -225,106 +139,5 @@ namespace Assets.Scripts
 				return false;
 			}
 		}
-
-		public static bool SetBodyTransform(BodyData body, Vector3 position, Quaternion orientation)
-		{
-			try
-			{
-				body.BodyScript.Transform.position = position;
-				body.BodyScript.Transform.rotation = orientation;
-				return true;
-			}
-			catch (Exception e)
-			{
-				FlightSceneScript.Instance.FlightSceneUI.ShowMessage(e.ToString(), false, 10f);
-				return false;
-			}
-		}
-
-		public static bool SetBodyTransform(BodyData body, Vector3d surfacePosition, Quaternion groundedTransform, IPlanetNode planet)
-		{
-			try
-			{
-				var rotation = new Quaternion((float)planet.RotationInverse.x, (float)planet.RotationInverse.y, (float)planet.RotationInverse.z, (float)planet.RotationInverse.w) * groundedTransform;
-				var position = planet.SurfaceVectorToPlanetVector(surfacePosition);
-				SetBodyTransform(body, new Vector3((float)position.x, (float)position.y, (float)position.z), rotation);
-				return true;
-			}
-			catch (Exception e)
-			{
-				FlightSceneScript.Instance.FlightSceneUI.ShowMessage(e.ToString(), false, 10f);
-				return false;
-			}
-		}
-		//使用Vector3d.Lerp进行线性插值		
-		//使用Quaternion.Slerp进行球面插值（保持旋转姿态的自然过渡）
-		//percentage控制插值程度
-		//2025 4 2 从vs code切换至rider
-		//没别的我就是瞎几把写
-		public static void InterpolatedTransform(CraftNode craft, Vector3d initialSurfacePosition, Vector3d targetSurfacePosition, Vector3d initialSurfaceVelocity, Vector3d targetSurfaceVelocity, Quaterniond initialGroundedTransform, Quaterniond targetGroundedTransform, double percentage)
-		{
-
-			Quaternion surfaceRotation = Quaternion.Slerp(
-				new Quaternion(
-					(float)initialGroundedTransform.x,
-					(float)initialGroundedTransform.y,
-					(float)initialGroundedTransform.z,
-					(float)initialGroundedTransform.w
-				),
-				new Quaternion(
-					(float)targetGroundedTransform.x,
-					(float)targetGroundedTransform.y,
-					(float)targetGroundedTransform.z,
-					(float)targetGroundedTransform.w
-				),
-				(float)percentage
-
-				
-			);
-
-			IPlanetNode planet = craft.Parent;
-			Vector3d interpolatedPos = Vector3d.Lerp(initialSurfacePosition, targetSurfacePosition, percentage);
-			Vector3d interpolatedVel = Vector3d.Lerp(initialSurfaceVelocity, targetSurfaceVelocity, percentage);
-
-			SetCraftTransform(craft, interpolatedPos, interpolatedVel, surfaceRotation, planet);
-		}
-
-		public static void InterpolatedTransform(CraftNode craft, Vector3d initialSurfaceVelocity, Vector3d targetSurfaceVelocity, Quaterniond initialGroundedTransform, Quaterniond targetGroundedTransform, double percentage)
-		{
-			Quaterniond surfaceRotation = new Quaterniond(
-				Quaternion.Slerp(
-					new Quaternion(
-						(float)initialGroundedTransform.x,
-						(float)initialGroundedTransform.y,
-						(float)initialGroundedTransform.z,
-						(float)initialGroundedTransform.w
-					),
-					new Quaternion(
-						(float)targetGroundedTransform.x,
-						(float)targetGroundedTransform.y,
-						(float)targetGroundedTransform.z,
-						(float)targetGroundedTransform.w
-					),
-					(float)percentage
-				)
-			);
-
-			IPlanetNode planet = craft.Parent;
-			Vector3d interpolatedVel = Vector3d.Lerp(initialSurfaceVelocity, targetSurfaceVelocity, percentage);
-
-			SetCraftTransform(craft, Vector3d.zero, interpolatedVel, surfaceRotation, planet);
-		}
-
-		public static void InterpolatedBodyTransform(BodyData body, Vector3 initialSurfacePosition, Vector3 targetSurfacePosition, Quaternion initialGroundedTransform, Quaternion targetGroundedTransform, double percentage)
-		{
-
-			Quaternion surfaceRotation = Quaternion.Slerp(initialGroundedTransform, targetGroundedTransform, (float)percentage);
-
-			Vector3d interpolatedPos = Vector3d.Lerp(initialSurfacePosition, targetSurfacePosition, percentage);
-
-			SetBodyTransform(body, new Vector3((float)interpolatedPos.x, (float)interpolatedPos.y, (float)interpolatedPos.z), surfaceRotation);
-		}
-
 	}
 }
-

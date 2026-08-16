@@ -18,9 +18,9 @@ MonoBehaviour:
   - Content/XML UI
   AutomaticallyRemoveEntries: 1
   entries:
-  - path: aMptest/Sprites/BTblue
-    resource: {fileID: 21300000, guid: 1bc2b87736fd5814db2ef1d9c869605f, type: 3}
-  - path: aMptest/Sprites/BTyellow
-    resource: {fileID: 21300000, guid: 5172585969a3acb4cb8d364d13244729, type: 3}
+  - path: aMptest/Sprites/HostLobby
+    resource: {fileID: 21300000, guid: 9edb07a6d808e2b4da3aacf2e8f6b84e, type: 3}
+  - path: aMptest/Sprites/JoinLobby
+    resource: {fileID: 21300000, guid: 6ad3a711e167b5547ad4891b3f41c8f0, type: 3}
   - path: aMptest/UIResourceDatabase
     resource: {fileID: 11400000}

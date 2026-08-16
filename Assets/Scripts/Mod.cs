@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using Assets.Packages.DevConsole;
-using ModApi;
 using ModApi.Mods;
 using ModApi.Scenes.Events;
 
@@ -10,7 +9,7 @@ using Assets.Scripts.Net;
 using Jundroo.ModTools;
 using UnityEngine;
 
-using HarmonyLib;
+//using HarmonyLib;
 
 namespace Assets.Scripts
 {
@@ -22,9 +21,7 @@ namespace Assets.Scripts
 		}
 
 		public static Mod Instance { get; } = GameModBase.GetModInstance<Mod>();
-
 		public GameObject MPGameObject = null;
-		private bool _mpCommandsRegistered;
 
 		public static void Log(object message)
 		{
@@ -53,21 +50,12 @@ namespace Assets.Scripts
 			UnityEngine.Debug.Log("[Mptest][Lobby] " + message);
 		}
 
-		public static void LogWarning(object message)
-		{
-			if (!ModSettings.Instance.DebugMode)
-			{
-				return;	
-			}
-			UnityEngine.Debug.LogWarning("[Mptest] " + message);
-		}
-
 		protected override void OnModInitialized()
 		{
 			try
 			{
 				base.OnModInitialized();
-				new Harmony("MPTest").PatchAll();
+				//new Harmony("MPTest").PatchAll();
 
 				RegisterMpCommands();
 
@@ -78,34 +66,51 @@ namespace Assets.Scripts
 			{
 				Log("Init failed: " + e.ToString());
 			}
+			BuildUi();
 			Game.Instance.SceneManager.SceneLoaded += OnSceneLoaded;
 		}
 
 		/// <summary>注册联机控制台命令（HostLobby / JoinLobby / StopLobby）。</summary>
+		
+
 		private void RegisterMpCommands()
 		{
-			try
-			{
-				RegisterMpCommandsNow();
-			}
-			catch (Exception e)
-			{
-				Log("RegisterMpCommands failed: " + e.ToString());
-			}
-		}
-
-		private void RegisterMpCommandsNow()
-		{
-			if (_mpCommandsRegistered) return;
-
-			DevConsoleApi.RegisterCommand("HostLobby", new Action(() => HostLobby()));
 			DevConsoleApi.RegisterCommand<int>("HostLobbyPort", new Action<int>(port => HostLobby(port)));
-			DevConsoleApi.RegisterCommand<string>("JoinLobby", new Action<string>(host => JoinLobby(host)));
 			DevConsoleApi.RegisterCommand<string, int>("JoinLobbyPort", new Action<string, int>((host, port) => JoinLobby(host, port)));
 			DevConsoleApi.RegisterCommand("StopLobby", new Action(() => StopLobby()));
-
-			_mpCommandsRegistered = true;
-			Log("MP console commands registered");
+			// FishNet spike 临时验证命令：起本地 server+client 验证连接
+			DevConsoleApi.RegisterCommand("FishNetSpike", new Action(() =>
+			{
+				Log("FishNetSpike: creating spike object");
+				new GameObject("FishNetSpike").AddComponent<Net.FishNetSpike>();
+			}));
+			// Steam API 可行性 spike：反射 SocialExt 验证 mod 能否拿到 Steam 身份
+			DevConsoleApi.RegisterCommand("SteamSpike", new Action(() =>
+			{
+				LogLobby("SteamSpike: creating spike object");
+				new GameObject("SteamSpike").AddComponent<Net.SteamSpike>();
+			}));
+			// Steam P2P：房主开房（port 忽略，Steam 无端口）
+			DevConsoleApi.RegisterCommand<int>("SteamHostLobby", new Action<int>(port => HostLobby(port)));
+			// Steam P2P：客户端按房主 SteamId 加入
+			DevConsoleApi.RegisterCommand<string>("SteamJoinLobby", new Action<string>(hostSteamId => JoinLobby(hostSteamId, 0)));
+			// TCP debug（本地虚拟机联机调试）：先切到 TcpTransport 再开房 / 加入。
+			// 房主监听 IPAddress.Any:port；客户端按宿主局域网 IP:port 连接（如 192.168.56.1:25555）。
+			DevConsoleApi.RegisterCommand<int>("TcpHostLobby", new Action<int>(port =>
+			{
+				MpNetworkManager mgr = EnsureMpManager();
+				if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
+				HostLobby(port);
+			}));
+			DevConsoleApi.RegisterCommand<string, int>("TcpJoinLobby", new Action<string, int>((host, port) =>
+			{
+				MpNetworkManager mgr = EnsureMpManager();
+				if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
+				JoinLobby(host, port);
+			}));
+			// 房主调整状态包发送频率（Hz）：SetTickRate 20 → 50ms（默认）；5 → 200ms；60 → ~16.7ms。
+			// 房主设置后广播给所有客户端（SP2 ServerTickRate 同款思路）。
+			DevConsoleApi.RegisterCommand<int>("SetTickRate", new Action<int>(hz => SetTickRateCommand(hz)));
 		}
 
 		/// <summary>作为房主开启联机房间。</summary>
@@ -126,13 +131,20 @@ namespace Assets.Scripts
 				", Transport.IsRunning=" + mgr.Transport.IsRunning +
 				", LocalPort=" + mgr.Transport.LocalPort +
 				", peerCount=" + mgr.Transport.GetPeersCount());
-			if (!ok) LogLobby("HostLobby FAILED: see above for UdpTransport start error (port " + port + " may already be in use)");
+			if (!ok) LogLobby("HostLobby FAILED: see above for Transport start error (port " + port + " may already be in use)");
 			return ok;
 		}
 
 		/// <summary>作为客户端加入房主。</summary>
-		public bool JoinLobby(string host, int port = 25555, string playerName = "Player")
+		public bool JoinLobby(string host, int port = 25555, string playerName = null)
 		{
+			// 未显式传名时读取 ModSettings 配置的玩家名,避免硬编码 "Player" 覆盖设置值
+			if (string.IsNullOrWhiteSpace(playerName))
+			{
+				try { playerName = ModSettings.Instance.PlayerName.Value; }
+				catch { playerName = "Player"; }
+				if (string.IsNullOrWhiteSpace(playerName)) playerName = "Player";
+			}
 			LogLobby("JoinLobby() called: host=" + host + ":" + port + ", playerName='" + playerName + "'");
 			MpNetworkManager mgr = EnsureMpManager();
 			if (mgr == null)
@@ -161,12 +173,35 @@ namespace Assets.Scripts
 			}
 		}
 
+		/// <summary>
+		/// 房主调整状态包发送频率（Hz）的控制台指令实现（SetTickRate <hz>）。
+		/// 仅房主设置会广播给所有客户端；客户端调用仅改本端（采纳房主广播值为准）。
+		/// </summary>
+		public void SetTickRateCommand(int hz)
+		{
+			MpNetworkManager mgr = EnsureMpManager();
+			if (mgr == null)
+			{
+				LogLobby("SetTickRate FAILED: MpNetworkManager.Instance is null (EnsureMpManager returned null)");
+				return;
+			}
+			if (!mgr.IsServer)
+			{
+				LogLobby("SetTickRate: 仅房主可调整全局发包频率（当前为客户端，本端将采纳房主广播值）");
+			}
+			mgr.SetTickRate(hz);
+		}
+
 		/// <summary>确保联机网络管理器已创建并返回实例。</summary>
 		public MpNetworkManager EnsureMpManager()
 		{
 			if (MpNetworkManager.Instance == null)
 			{
 				if (MPGameObject == null) MPGameObject = new GameObject("MPNetwork");
+				// 关键：让管理器跨场景存活。切换全屏/退出菜单等触发场景重载时，
+				// 普通场景 GameObject 会被销毁 → OnDestroy → Transport.Stop() 断线 → 远程飞船被移除。
+				// DontDestroyOnLoad 保证联机会话在场景切换期间保持连接。
+				GameObject.DontDestroyOnLoad(MPGameObject);
 				MPGameObject.AddComponent<MpNetworkManager>();
 				MPGameObject.SetActive(true);
 			}
@@ -175,10 +210,20 @@ namespace Assets.Scripts
 
 		public void OnSceneLoaded(object sender, SceneEventArgs e)
 		{
-			if (Game.Instance.SceneManager.InFlightScene && MpNetworkManager.Instance != null)
+			if (Game.Instance.SceneManager.InFlightScene)
 			{
-				//进入飞行场景后上报/刷新本机飞船 NodeId
-				MpNetworkManager.Instance.RefreshLocalCraft();
+				// 兜底：若管理器因场景重载被销毁（理论上 DontDestroyOnLoad 后不应发生），在此重建
+				if (MpNetworkManager.Instance == null)
+				{
+					EnsureMpManager();
+				}
+				if (MpNetworkManager.Instance != null)
+				{
+					// 清理上一场景遗留的远程飞船引用（旧 CraftNode 已被场景卸载销毁），
+					// 再上报/刷新本机飞船 NodeId
+					MpNetworkManager.Instance.OnFlightSceneLoaded();
+					MpNetworkManager.Instance.RefreshLocalCraft();
+				}
 			}
 		}
 
@@ -187,6 +232,14 @@ namespace Assets.Scripts
 			public Vector3d Position;
 			public Vector3d Velocity;
 			public Quaterniond Heading;
+
+			/// <summary>
+			/// 发送端飞船"相对行星地表"的朝向(surface-relative rotation,仿 KSP LunaMultiplayer 的 srfRelRotation):
+			/// = RotateY(θ_frame - θ_send_planet) * comRot(comRot 是帧空间;表面锁定帧 θ_frame-θ_planet 为常量)。
+			/// 接收端用 frame.PlanetToFrameRotation(行星自转 × SrfRel) 渲染回帧空间,
+			/// 因双端同行星 θ_frame-θ_planet 相同 → 两端帧空间朝向一致,不依赖双端自转/时间同步、无 warp 漂移。
+			/// </summary>
+			public Quaterniond SrfRel;
 
 			public float Pitch;
 			public float Yaw;
@@ -220,6 +273,7 @@ namespace Assets.Scripts
 				Position = position;
 				Velocity = velocity;
 				Heading = heading;
+				SrfRel = Quaterniond.identity;
 
 				Pitch = 0;
 				Yaw = 0;
@@ -242,55 +296,6 @@ namespace Assets.Scripts
 				BodyRotations = new List<Vector3>();
 			}
 
-			public recdata(
-				Vector3d position,
-				Vector3d velocity,
-				Quaterniond heading,
-
-				float pitch,
-				float yaw,
-				float roll,
-
-				float throttle,
-				float brake,
-
-				float slider1,
-				float slider2,
-				float slider3,
-				float slider4,
-
-				float translateForward,
-				float translateRight,
-				float translateUp,
-
-				List<bool> activationGroupStates,
-				int stage
-				)
-			{
-				Position = position;
-				Velocity = velocity;
-				Heading = heading;
-
-				Pitch = pitch;
-				Yaw = yaw;
-				Roll = roll;
-
-				Throttle = throttle;
-				Brake = brake;
-
-				Slider1 = slider1;
-				Slider2 = slider2;
-				Slider3 = slider3;
-				Slider4 = slider4;
-
-				TranslateForward = translateForward;
-				TranslateRight = translateRight;
-				TranslateUp = translateUp;
-
-				ActivationGroupStates = activationGroupStates;
-				Stage = stage;
-				BodyRotations = new List<Vector3>();
-			}
 		}
 	}
 }

@@ -13,14 +13,19 @@ MonoBehaviour:
   m_Name: ModData
   m_EditorClassIdentifier: 
   _assemblies:
+  - FishNet.CodeAnalysis.dll
+  - GameKit.Dependencies.dll
+  - FishNet.Runtime.dll
+  - SynapseSocket.dll
+  - FishNet.Demos.dll
   - aMptest.dll
   _author: Torifune
   _description: 
   _loadPriority: 10009
   _name: aMptest
   _otherAssets:
-  - {fileID: 21300000, guid: 1bc2b87736fd5814db2ef1d9c869605f, type: 3}
-  - {fileID: 21300000, guid: 5172585969a3acb4cb8d364d13244729, type: 3}
+  - {fileID: 2800000, guid: 9edb07a6d808e2b4da3aacf2e8f6b84e, type: 3}
+  - {fileID: 2800000, guid: 6ad3a711e167b5547ad4891b3f41c8f0, type: 3}
   _prefabs: []
   _steamDescription: 
   _steamLanguage: English
@@ -29,7 +34,7 @@ MonoBehaviour:
   _steamTitle: 
   _steamVisibility: 0
   _versionMajor: 1
-  _versionMinor: 0
+  _versionMinor: 2
   _partCategories: []
   _parts: []
   _partStyleExtensions: []
