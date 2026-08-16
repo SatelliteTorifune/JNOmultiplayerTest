@@ -6,6 +6,7 @@ using System.Xml.Linq;
 using Assets.Scripts.Craft.FlightData;
 using Assets.Scripts.Flight;
 using Assets.Scripts.Flight.Sim;
+using ModApi;
 using ModApi.Craft;
 using ModApi.Craft.Parts;
 using ModApi.Flight.GameView;
@@ -135,7 +136,7 @@ namespace Assets.Scripts.Net
 			}
 			if (!_joinNoticeShown.Add(peer.PlayerId)) return;
 			string name = string.IsNullOrEmpty(peer.PlayerName) ? ("Player " + peer.PlayerId) : peer.PlayerName;
-			ShowFlightMessage(name + " joined the game");
+			ShowFlightMessage(Locale.GetString("MultiPlayer.MultiPlayerUI.PlayerJoined", name));
 		}
 
 		/// <summary>有玩家离开：FlightUI 提示。</summary>
@@ -145,7 +146,7 @@ namespace Assets.Scripts.Net
 			// 客户端不把房主(playerId 0)离开当"玩家离开"提示（房主掉线由连接断开处理）
 			if (!IsServer && peer.PlayerId == 0) return;
 			string name = string.IsNullOrEmpty(peer.PlayerName) ? ("Player " + peer.PlayerId) : peer.PlayerName;
-			ShowFlightMessage(name + " left the game", false, 5f);
+			ShowFlightMessage(Locale.GetString("MultiPlayer.MultiPlayerUI.PlayerLeft", name), false, 5f);
 		}
 
 		// ---------------- 生命周期 API ----------------
@@ -691,7 +692,7 @@ namespace Assets.Scripts.Net
 			// client 成功加入房间：FlightUI 提示；并记录加入时刻，宽限期内不提示"已存在玩家"
 			_clientJoinedTime = Time.unscaledTime;
 			string myName = string.IsNullOrEmpty(PlayerName) ? ("Player " + playerId) : PlayerName;
-			ShowFlightMessage("Connected to host as " + myName + " (Player " + playerId + ")");
+			ShowFlightMessage(Locale.GetString("MultiPlayer.MultiPlayerUI.ConnectedToHost", myName, playerId));
 			Mod.LogLobby("MP.OnWelcome (client): received Welcome, PlayerId=" + playerId +
 				", nodeId=" + nodeId + ", serverTick=" + serverTick + ", peer=" + peer.Id +
 				", peer.PlayerId=" + peer.PlayerId + " (host peer, kept as-is)");
@@ -1327,58 +1328,7 @@ namespace Assets.Scripts.Net
 						catch (Exception e) { Mod.LogError("MP visualDiag error (p" + rc.PlayerId + "): " + e.Message); }
 					}
 
-					// 周期性状态日志（每 5 秒一次，便于核对位置/朝向同步）——已暂时禁用
-					if (false && Time.unscaledTime - rc.LastStateLogTime > 5f)
-					{
-						rc.LastStateLogTime = Time.unscaledTime;
-						Quaternion tr = rc.Node.CraftScript != null ? rc.Node.CraftScript.Transform.rotation : Quaternion.identity;
-						Quaternion comR = rc.Node.CraftScript != null && rc.Node.CraftScript.CenterOfMass != null
-							? rc.Node.CraftScript.CenterOfMass.rotation : Quaternion.identity;
-						Vector3d remoteSurface = rc.Node.Parent != null ? rc.Node.Parent.PlanetVectorToSurfaceVector(rc.Node.Position) : Vector3d.zero;
-						IReferenceFrame shipFrame = rc.Node.GameView != null ? rc.Node.GameView.ReferenceFrame : null;
-						IReferenceFrame sceneFrame = null;
-						if (FlightSceneScript.Instance != null && FlightSceneScript.Instance.ViewManager != null &&
-							FlightSceneScript.Instance.ViewManager.GameView != null)
-						{
-							sceneFrame = FlightSceneScript.Instance.ViewManager.GameView.ReferenceFrame;
-						}
-						bool logIsPhys = rc.Node.CraftScript != null && rc.Node.CraftScript.IsPhysicsEnabled;
-						ICraftFlightData rfd = rc.Node.CraftScript != null ? rc.Node.CraftScript.FlightData : null;
-						double rPitch = rfd != null ? rfd.Pitch : double.NaN;
-						double rBank = rfd != null ? rfd.BankAngle : double.NaN;
-						Vector3d rFwd = rfd != null ? rfd.CraftForward : Vector3d.zero;
-						Vector3d rPosNorm = rfd != null ? rfd.PositionNormalized : Vector3d.zero;
-						string rPlanet = rc.Node.Parent != null ? rc.Node.Parent.PlanetData.Name : "?";
-						Vector3d expFwd = Vector3d.zero;
-						if (shipFrame != null && rc.Node.CraftScript != null && rc.Node.CraftScript.CenterOfMass != null)
-						{
-							expFwd = shipFrame.FrameToPlanetVector(rc.Node.CraftScript.CenterOfMass.forward).normalized;
-						}
-						double rPlanetRot = rc.Node.Parent != null ? rc.Node.Parent.RotationAngle : double.NaN;
-						double rFrameRot = shipFrame != null ? shipFrame.RotationAngle : double.NaN;
-						Mod.Log("【远程飞船|" + (string.IsNullOrEmpty(rc.PlayerName) ? "?" : rc.PlayerName) + "(P" + rc.PlayerId + ")】" +
-							" 目标位置=(" + rc.LastApplied.Position.x.ToString("F1") + "," + rc.LastApplied.Position.y.ToString("F1") + "," + rc.LastApplied.Position.z.ToString("F1") + ")" +
-							" 实际位置=(" + remoteSurface.x.ToString("F1") + "," + remoteSurface.y.ToString("F1") + "," + remoteSurface.z.ToString("F1") + ")" +
-							" | 目标朝向(行星)=" + Q(rc.LastApplied.Heading) +
-							" SrfRel=" + Q(rc.LastApplied.SrfRel) +
-							" 实际朝向=" + Q(tr) +
-							" 写入朝向=" + Q(rc.LastAppliedHeading) +
-							" 质心朝向=" + Q(comR) +
-							" | 高度=" + rc.Node.Altitude.ToString("F1") +
-							" 离地=" + rc.Node.AltitudeAgl.ToString("F1") +
-							" 物理=" + logIsPhys +
-							" | 行星角=" + rPlanetRot.ToString("F3") +
-							" 飞船帧角=" + (shipFrame != null ? shipFrame.RotationAngle.ToString("F3") : "null") +
-							" 场景帧角=" + (sceneFrame != null ? sceneFrame.RotationAngle.ToString("F3") : "null") +
-							" 帧-行星=" + (rFrameRot - rPlanetRot).ToString("F3") +
-							" | FlightData前向=(" + rFwd.x.ToString("F3") + "," + rFwd.y.ToString("F3") + "," + rFwd.z.ToString("F3") + ")" +
-							" 期望前向=(" + expFwd.x.ToString("F3") + "," + expFwd.y.ToString("F3") + "," + expFwd.z.ToString("F3") + ")" +
-							" | 行星=" + rPlanet +
-							" 行星pos=(" + rc.Node.Position.x.ToString("F0") + "," + rc.Node.Position.y.ToString("F0") + "," + rc.Node.Position.z.ToString("F0") + ")" +
-							" PosNorm=(" + rPosNorm.x.ToString("F3") + "," + rPosNorm.y.ToString("F3") + "," + rPosNorm.z.ToString("F3") + ")" +
-							" | 对方Pitch=" + rPitch.ToString("F2") +
-							" Bank=" + rBank.ToString("F2"));
-					}
+					
 
 					// 朝向诊断日志已暂时禁用（朝向已修复）
 					//LogRemoteHeadingDiag(rc, rc.Target);

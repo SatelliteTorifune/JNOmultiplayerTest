@@ -1,0 +1,15 @@
+<Strings>
+    <s id="MultiPlayer.MultiPlayerUI.MPinspector">MultiPlayerUI</s>
+    <s id="MultiPlayer.MultiPlayerUI.MpButtonTooltip">Toggle Multiplayer UI</s>
+    <s id="MultiPlayer.MultiPlayerUI.PlayerJoined">{0} joined the game</s>
+    <s id="MultiPlayer.MultiPlayerUI.PlayerLeft">{0} left the game</s>
+    <s id="MultiPlayer.MultiPlayerUI.ConnectedToHost">Connected to host as {0} (Player {1})</s>
+    <s id="MultiPlayer.MultiPlayerUI.HostLobbyButton">Host Lobby</s>
+    <s id="MultiPlayer.MultiPlayerUI.JoinLobbyButton">Join Server</s>
+    <s id="MultiPlayer.MultiPlayerUI.DisconnectButton">Disconnect</s>
+    <s id="MultiPlayer.MultiPlayerUI.Disconnected">Disconnected from multiplayer</s>
+    <s id="MultiPlayer.MultiPlayerUI.LobbyStarted">Lobby started!\nYour SteamId:\n{0}\n\n</s>
+    <s id="MultiPlayer.MultiPlayerUI.EnterHostSteamId">Enter Host SteamId</s>
+    <s id="MultiPlayer.MultiPlayerUI.InvalidSteamId">Invalid SteamId: '{0}'\nMust be 17 digits</s>
+    <s id="MultiPlayer.Mod.HostLobbyError">Unable to host lobby: SteamId not obtained (Steam not initialized or not logged in)</s>
+</Strings>

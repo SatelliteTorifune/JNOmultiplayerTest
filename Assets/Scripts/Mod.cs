@@ -1,18 +1,20 @@
 ﻿using System;
 using System.Collections.Generic;
 using Assets.Packages.DevConsole;
+using Assets.Scripts.Net;
 using ModApi.Mods;
 using ModApi.Scenes.Events;
-
-using Assets.Scripts.Net;
-
-using Jundroo.ModTools;
 using UnityEngine;
 
-//using HarmonyLib;
+using HarmonyLib;
+using Jundroo.ModTools;
 
 namespace Assets.Scripts
 {
+	/// <summary>
+	/// Mod 主入口：负责初始化、控制台命令注册与联机状态包数据结构 recdata。
+	/// 联机房间操作已抽象到独立的 LobbyManager 类（见 LobbyManager.cs），降低与主入口的耦合。
+	/// </summary>
 	public partial class Mod : GameMod
 	{
 		private Mod()
@@ -21,63 +23,43 @@ namespace Assets.Scripts
 		}
 
 		public static Mod Instance { get; } = GameModBase.GetModInstance<Mod>();
-		public GameObject MPGameObject = null;
-
-		public static void Log(object message)
-		{
-			if (!ModSettings.Instance.DebugMode)
-			{
-				return;	
-			}
-			UnityEngine.Debug.Log("[Mptest] " + message);
-		}
-
-		public static void LogError(object message)
-		{
-			if (!ModSettings.Instance.DebugMode)
-			{
-				return;
-			}
-			UnityEngine.Debug.LogError("[Mptest] " + message);
-		}
-
-		/// <summary>
-		/// 联机生命周期日志：不受 DebugMode 限制，始终输出到控制台。
-		/// 用于确认 Host/Join/Stop 等关键节点确实执行成功。
-		/// </summary>
-		public static void LogLobby(object message)
-		{
-			UnityEngine.Debug.Log("[Mptest][Lobby] " + message);
-		}
 
 		protected override void OnModInitialized()
 		{
 			try
 			{
 				base.OnModInitialized();
-				//new Harmony("MPTest").PatchAll();
+				new Harmony("MPTest").PatchAll();
+
+				// 联机房间管理器（独立类，负责网络管理器创建与场景事件）
+				new LobbyManager();
+				LobbyManager.Instance.EnsureMpManager();
+				Game.Instance.SceneManager.SceneLoaded += LobbyManager.Instance.OnSceneLoaded;
 
 				RegisterMpCommands();
-
-				//联机网络管理器
-				EnsureMpManager();
+				InitializeUserInterface();
 			}
 			catch (Exception e)
 			{
 				Log("Init failed: " + e.ToString());
 			}
-			BuildUi();
-			Game.Instance.SceneManager.SceneLoaded += OnSceneLoaded;
+		}
+
+		/// <summary>创建常驻 UI 对象（跨场景存活）。</summary>
+		private void InitializeUserInterface()
+		{
+			GameObject UiObject=new GameObject("UI");
+			UiObject.AddComponent<MultiPlayerUI>();
+			UiObject.SetActive(true);
+			GameObject.DontDestroyOnLoad(UiObject);
 		}
 
 		/// <summary>注册联机控制台命令（HostLobby / JoinLobby / StopLobby）。</summary>
-		
-
 		private void RegisterMpCommands()
 		{
-			DevConsoleApi.RegisterCommand<int>("HostLobbyPort", new Action<int>(port => HostLobby(port)));
-			DevConsoleApi.RegisterCommand<string, int>("JoinLobbyPort", new Action<string, int>((host, port) => JoinLobby(host, port)));
-			DevConsoleApi.RegisterCommand("StopLobby", new Action(() => StopLobby()));
+			DevConsoleApi.RegisterCommand<int>("HostLobbyPort", new Action<int>(port => LobbyManager.Instance.HostLobby(port)));
+			DevConsoleApi.RegisterCommand<string, int>("JoinLobbyPort", new Action<string, int>((host, port) => LobbyManager.Instance.JoinLobby(host, port)));
+			DevConsoleApi.RegisterCommand("StopLobby", new Action(() => LobbyManager.Instance.StopLobby()));
 			// FishNet spike 临时验证命令：起本地 server+client 验证连接
 			DevConsoleApi.RegisterCommand("FishNetSpike", new Action(() =>
 			{
@@ -91,142 +73,29 @@ namespace Assets.Scripts
 				new GameObject("SteamSpike").AddComponent<Net.SteamSpike>();
 			}));
 			// Steam P2P：房主开房（port 忽略，Steam 无端口）
-			DevConsoleApi.RegisterCommand<int>("SteamHostLobby", new Action<int>(port => HostLobby(port)));
+			DevConsoleApi.RegisterCommand<int>("SteamHostLobby", new Action<int>(port => LobbyManager.Instance.HostLobby(port)));
 			// Steam P2P：客户端按房主 SteamId 加入
-			DevConsoleApi.RegisterCommand<string>("SteamJoinLobby", new Action<string>(hostSteamId => JoinLobby(hostSteamId, 0)));
+			DevConsoleApi.RegisterCommand<string>("SteamJoinLobby", new Action<string>(hostSteamId => LobbyManager.Instance.JoinLobby(hostSteamId, 0)));
 			// TCP debug（本地虚拟机联机调试）：先切到 TcpTransport 再开房 / 加入。
 			// 房主监听 IPAddress.Any:port；客户端按宿主局域网 IP:port 连接（如 192.168.56.1:25555）。
 			DevConsoleApi.RegisterCommand<int>("TcpHostLobby", new Action<int>(port =>
 			{
-				MpNetworkManager mgr = EnsureMpManager();
+				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
 				if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
-				HostLobby(port);
+				LobbyManager.Instance.HostLobby(port);
 			}));
 			DevConsoleApi.RegisterCommand<string, int>("TcpJoinLobby", new Action<string, int>((host, port) =>
 			{
-				MpNetworkManager mgr = EnsureMpManager();
+				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
 				if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
-				JoinLobby(host, port);
+				LobbyManager.Instance.JoinLobby(host, port);
 			}));
 			// 房主调整状态包发送频率（Hz）：SetTickRate 20 → 50ms（默认）；5 → 200ms；60 → ~16.7ms。
 			// 房主设置后广播给所有客户端（SP2 ServerTickRate 同款思路）。
-			DevConsoleApi.RegisterCommand<int>("SetTickRate", new Action<int>(hz => SetTickRateCommand(hz)));
+			DevConsoleApi.RegisterCommand<int>("SetTickRate", new Action<int>(hz => LobbyManager.Instance.SetTickRate(hz)));
 		}
 
-		/// <summary>作为房主开启联机房间。</summary>
-		public bool HostLobby(int port = 25555)
-		{
-			LogLobby("HostLobby() called: port=" + port);
-			MpNetworkManager mgr = EnsureMpManager();
-			if (mgr == null)
-			{
-				LogLobby("HostLobby FAILED: MpNetworkManager.Instance is null (EnsureMpManager returned null)");
-				return false;
-			}
-
-			bool ok = mgr.Host(port);
-			LogLobby("HostLobby() finished: port=" + port + ", result=" + ok +
-				", IsServer=" + mgr.IsServer + ", IsConnected=" + mgr.IsConnected +
-				", PlayerId=" + mgr.PlayerId + ", LocalNodeId=" + mgr.LocalNodeId +
-				", Transport.IsRunning=" + mgr.Transport.IsRunning +
-				", LocalPort=" + mgr.Transport.LocalPort +
-				", peerCount=" + mgr.Transport.GetPeersCount());
-			if (!ok) LogLobby("HostLobby FAILED: see above for Transport start error (port " + port + " may already be in use)");
-			return ok;
-		}
-
-		/// <summary>作为客户端加入房主。</summary>
-		public bool JoinLobby(string host, int port = 25555, string playerName = null)
-		{
-			// 未显式传名时读取 ModSettings 配置的玩家名,避免硬编码 "Player" 覆盖设置值
-			if (string.IsNullOrWhiteSpace(playerName))
-			{
-				try { playerName = ModSettings.Instance.PlayerName.Value; }
-				catch { playerName = "Player"; }
-				if (string.IsNullOrWhiteSpace(playerName)) playerName = "Player";
-			}
-			LogLobby("JoinLobby() called: host=" + host + ":" + port + ", playerName='" + playerName + "'");
-			MpNetworkManager mgr = EnsureMpManager();
-			if (mgr == null)
-			{
-				LogLobby("JoinLobby FAILED: MpNetworkManager.Instance is null (EnsureMpManager returned null)");
-				return false;
-			}
-
-			bool ok = mgr.Join(host, port, playerName);
-			LogLobby("JoinLobby() finished: host=" + host + ":" + port + ", result=" + ok +
-				", IsConnected=" + mgr.IsConnected + ", PlayerId=" + mgr.PlayerId +
-				", LocalNodeId=" + mgr.LocalNodeId +
-				", Transport.IsRunning=" + mgr.Transport.IsRunning +
-				", LocalPort=" + mgr.Transport.LocalPort +
-				", peerCount=" + mgr.Transport.GetPeersCount());
-			return ok;
-		}
-
-		/// <summary>停止联机。</summary>
-		public void StopLobby()
-		{
-			LogLobby("StopLobby() called" + (MpNetworkManager.Instance != null ? " (manager exists)" : " (manager is null, nothing to stop)"));
-			if (MpNetworkManager.Instance != null)
-			{
-				MpNetworkManager.Instance.Stop();
-			}
-		}
-
-		/// <summary>
-		/// 房主调整状态包发送频率（Hz）的控制台指令实现（SetTickRate <hz>）。
-		/// 仅房主设置会广播给所有客户端；客户端调用仅改本端（采纳房主广播值为准）。
-		/// </summary>
-		public void SetTickRateCommand(int hz)
-		{
-			MpNetworkManager mgr = EnsureMpManager();
-			if (mgr == null)
-			{
-				LogLobby("SetTickRate FAILED: MpNetworkManager.Instance is null (EnsureMpManager returned null)");
-				return;
-			}
-			if (!mgr.IsServer)
-			{
-				LogLobby("SetTickRate: 仅房主可调整全局发包频率（当前为客户端，本端将采纳房主广播值）");
-			}
-			mgr.SetTickRate(hz);
-		}
-
-		/// <summary>确保联机网络管理器已创建并返回实例。</summary>
-		public MpNetworkManager EnsureMpManager()
-		{
-			if (MpNetworkManager.Instance == null)
-			{
-				if (MPGameObject == null) MPGameObject = new GameObject("MPNetwork");
-				// 关键：让管理器跨场景存活。切换全屏/退出菜单等触发场景重载时，
-				// 普通场景 GameObject 会被销毁 → OnDestroy → Transport.Stop() 断线 → 远程飞船被移除。
-				// DontDestroyOnLoad 保证联机会话在场景切换期间保持连接。
-				GameObject.DontDestroyOnLoad(MPGameObject);
-				MPGameObject.AddComponent<MpNetworkManager>();
-				MPGameObject.SetActive(true);
-			}
-			return MpNetworkManager.Instance;
-		}
-
-		public void OnSceneLoaded(object sender, SceneEventArgs e)
-		{
-			if (Game.Instance.SceneManager.InFlightScene)
-			{
-				// 兜底：若管理器因场景重载被销毁（理论上 DontDestroyOnLoad 后不应发生），在此重建
-				if (MpNetworkManager.Instance == null)
-				{
-					EnsureMpManager();
-				}
-				if (MpNetworkManager.Instance != null)
-				{
-					// 清理上一场景遗留的远程飞船引用（旧 CraftNode 已被场景卸载销毁），
-					// 再上报/刷新本机飞船 NodeId
-					MpNetworkManager.Instance.OnFlightSceneLoaded();
-					MpNetworkManager.Instance.RefreshLocalCraft();
-				}
-			}
-		}
-
+		/// <summary>联机状态包数据结构。</summary>
 		public struct recdata
 		{
 			public Vector3d Position;

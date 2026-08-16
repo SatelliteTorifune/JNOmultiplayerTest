@@ -1,0 +1,15 @@
+<Strings>
+    <s id="MultiPlayer.MultiPlayerUI.MPinspector">联机UI</s>
+    <s id="MultiPlayer.MultiPlayerUI.MpButtonTooltip">打开联机UI</s>
+    <s id="MultiPlayer.MultiPlayerUI.PlayerJoined">{0} 加入了游戏</s>
+    <s id="MultiPlayer.MultiPlayerUI.PlayerLeft">{0} 离开了游戏</s>
+    <s id="MultiPlayer.MultiPlayerUI.ConnectedToHost">已作为 {0} 连接到主机（玩家 {1}）</s>
+    <s id="MultiPlayer.MultiPlayerUI.HostLobbyButton">创建大厅</s>
+    <s id="MultiPlayer.MultiPlayerUI.JoinLobbyButton">加入服务器</s>
+    <s id="MultiPlayer.MultiPlayerUI.DisconnectButton">断开连接</s>
+    <s id="MultiPlayer.MultiPlayerUI.Disconnected">已断开联机连接</s>
+    <s id="MultiPlayer.MultiPlayerUI.LobbyStarted">已创建房间!\n你的 SteamId是:\n{0}\n\n</s>
+    <s id="MultiPlayer.MultiPlayerUI.EnterHostSteamId">输入房主的SteamId</s>
+    <s id="MultiPlayer.MultiPlayerUI.InvalidSteamId">无效输入: '{0}'\n应为 17 位数字</s>
+    <s id="MultiPlayer.Mod.HostLobbyError">无法开房：未获取到 SteamId（Steam 未初始化或未登录）</s>
+</Strings>
