@@ -25,6 +25,7 @@
 | [`archive/replay-to-multiplayer-feasibility.md`](archive/replay-to-multiplayer-feasibility.md) | Replay→联机可行性(历史) | 📋 历史分析,大部分已落地 | 联机基础能力/架构/选型的早期论证;其中的"下一步重心"已被 multi-craft-sync 继承 |
 | [`archive/steam-multiplayer-integration.md`](archive/steam-multiplayer-integration.md) | 传输层:Steam P2P | ✅ 已落地 | SteamTransport 已实现并设为默认(`MpNetworkManager.Transport`) |
 | [`archive/tcp-transport-for-vm-debug.md`](archive/tcp-transport-for-vm-debug.md) | 传输层:TCP(VM debug) | ✅ 已落地 | `IMpTransport` + `TcpTransport` + `TcpHostLobby`/`TcpJoinLobby` 命令已实现 |
+| [`archive/PLAN_AsyncPrefabPreload.md`](archive/PLAN_AsyncPrefabPreload.md) | 异步 prefab 预加载(消除加入白屏) | ✅ 已实现(MSBuild exit 0;游戏内实测待复跑) | `MpCraftPreloader` 协程预热主 prefab + 真实百分比旋转白框 + 玩家列表 "⏳ N%";见该文档「〇、经验教训」 |
 
 > ✅ 归档文档已修订为**最终状态**并附「〇、经验教训」小节(作为开发过程经验存档):文档头的"状态"均为最终结论,实施步骤的复选框标记了实际落地情况。**未勾选项 = 未留档的待验证项**(如"双 Steam 账号公网实测""Lobby 邀请"),按需复跑,勿当作当前待办执行。
 

@@ -1,6 +1,6 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Windows.Forms;
 using System.Xml.Linq;
 using Assets.Scripts.Net;
@@ -25,6 +25,17 @@ namespace Assets.Scripts
         private const int DefaultTcpPort = 25555;
         private IInspectorPanel inspectorPanel;
         private InspectorModel inspectorModel;
+        /// <summary>玩家列表分组（按玩家集合变化时 ReplaceGroup 重建）。</summary>
+        private GroupModel playersGroup;
+        /// <summary>玩家集合签名缓存（playerId 列表），变化时重建列表分组。</summary>
+        private string playersKey = "";
+        /// <summary>兜底轮询定时器（覆盖本机开房/连接/断开等无事件变化）。</summary>
+        private float playersRebuildTimer;
+        /// <summary>当前已订阅事件的 MpNetworkManager（惰性订阅，manager 创建后首次 Update 才绑定）。</summary>
+        private MpNetworkManager trackedManager;
+        /// <summary>事件驱动的脏标记：OnPlayerJoined/OnPlayerLeft 置位，主线程 Update 立即重建。</summary>
+        private volatile bool playersDirty;
+        private bool playersWasVisible;
 
         #endregion
 
@@ -65,6 +76,12 @@ namespace Assets.Scripts
         private void OnDestroy()
         {
             Game.Instance.SceneManager.SceneLoaded -= OnSceneLoaded;
+            if (trackedManager != null)
+            {
+                trackedManager.OnPlayerJoined -= OnPlayersChanged;
+                trackedManager.OnPlayerLeft -= OnPlayersChanged;
+                trackedManager = null;
+            }
         }
 
         #endregion
@@ -82,22 +99,27 @@ namespace Assets.Scripts
             inspectorModel.Add(new TextModel(
                 Locale.GetString("MultiPlayer.MultiPlayerUI.ConnectionStatus"),
                 GetConnectionStatusText, null, null, null));
-            // 在线玩家数与玩家名列表（含自己；加入/离开/状态变化时自动刷新）
+            // 在线玩家人数（实时；仅数字，避免玩家名单溢出）
             inspectorModel.Add(new TextModel(
                 Locale.GetString("MultiPlayer.MultiPlayerUI.Players"),
-                GetPlayersText, null, null, null));
-            // 当前发包频率（所有人可见；房主调整后广播同步）
-            inspectorModel.Add(new TextModel(
-                Locale.GetString("MultiPlayer.MultiPlayerUI.TickRateLabel"),
-                GetTickRateText, null, null, null));
+                GetPlayerCountText, null, null, null));
 
             inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.HostLobbyButton"), (b) => OnSteamHostLobbyClick()));
             inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.JoinLobbyButton"), (b) => OnSteamJoinLobbyClick()));
             inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.DisconnectButton"), (b) => OnDisconnectClick()));
 
+            // --- 玩家列表（SP2 风格：每玩家一行 = 名字 + 延迟；房主额外每行踢人按钮）---
+            // 初始为空分组占位，Update 中检测到玩家集合变化时用 ReplaceGroup 在原位置重建。
+            playersGroup = new GroupModel(Locale.GetString("MultiPlayer.MultiPlayerUI.PlayerList"), null);
+            playersGroup.Add(new TextModel(Locale.GetString("MultiPlayer.MultiPlayerUI.NoPlayers"), null, null, null, null));
+            inspectorModel.AddGroup(playersGroup);
+
             // --- 房主设置（仅房主可见，非房主自动隐藏）---
             GroupModel hostGroup = new GroupModel(Locale.GetString("MultiPlayer.MultiPlayerUI.HostSettings"), null);
-            hostGroup.DetermineVisibility = () => MpNetworkManager.Instance != null && MpNetworkManager.Instance.IsServer;
+            // 仅房主可见（client/未连接时隐藏）。注意 ItemElement.Collapsed 跟随 Group.Visible，
+            // 分组隐藏时其内子项必然一起隐藏；这里给子项再加一层 DetermineVisibility 双重保险。
+            bool hostOnly() => MpNetworkManager.Instance != null && MpNetworkManager.Instance.IsServer;
+            hostGroup.DetermineVisibility = hostOnly;
             // 滑条（参考游戏 jnoCode 检查器 SliderModel 用法：wholeNumbers 整数步进 + ValueFormatter 显示 Hz）
             SliderModel tickRateSlider = new SliderModel(
                 Locale.GetString("MultiPlayer.MultiPlayerUI.TickRateSlider"),
@@ -108,6 +130,7 @@ namespace Assets.Scripts
                     if (MpNetworkManager.Instance != null) MpNetworkManager.Instance.SetTickRate(Mathf.RoundToInt(v));
                 },
                 20f, 120f, true, true);
+            tickRateSlider.DetermineVisibility = hostOnly;
             tickRateSlider.ValueFormatter = (float x) => Mathf.RoundToInt(x) + " Hz";
             tickRateSlider.Tooltip = Locale.GetString("MultiPlayer.MultiPlayerUI.TickRateHint");
             tickRateSlider.ElementName = "Mp.TickRateSlider";
@@ -145,35 +168,191 @@ namespace Assets.Scripts
                 : Locale.GetString("MultiPlayer.MultiPlayerUI.ConnectedToHost", name, m.PlayerId);
         }
 
-        /// <summary>在线玩家列表文本（实时）：连接人数 + 每个玩家名（含自己）。</summary>
-        private static string GetPlayersText()
+        /// <summary>在线玩家人数（实时）：远端玩家数 + 自己。</summary>
+        private static string GetPlayerCountText()
         {
             MpNetworkManager m = MpNetworkManager.Instance;
-            if (m == null || !m.IsConnected)
-                return Locale.GetString("MultiPlayer.MultiPlayerUI.NoPlayers");
+            if (m == null || !m.IsConnected) return "0";
+            return (m.GetPlayers().Count + 1).ToString();
+        }
+        
 
-            // GetPlayers() 只含远端玩家（房主端=客户端们；客户端端=房主+其他客户端），自己单独加上。
-            var peers = m.GetPlayers().OrderBy(p => p.PlayerId).ToList();
-            var sb = new StringBuilder();
-            sb.AppendLine(Locale.GetString("MultiPlayer.MultiPlayerUI.PlayersConnected", peers.Count + 1));
-            string selfName = string.IsNullOrEmpty(m.PlayerName) ? ("Player " + m.PlayerId) : m.PlayerName;
-            sb.Append("  • ").AppendLine(m.IsServer
-                ? selfName + " " + Locale.GetString("MultiPlayer.MultiPlayerUI.HostTag")
-                : selfName);
-            foreach (MpPeer p in peers)
+        /// <summary>
+        /// 玩家列表刷新（SP2 PlayerListScript 同款思路）：
+        /// - 事件驱动：OnPlayerJoined/OnPlayerLeft 置 dirty，下一帧立即重建（加入/离开即时生效）；
+        /// - 面板打开时核对一次（SP2 Flyout.Opened 同款）；
+        /// - 低频兜底轮询（1s）：覆盖"本机开房/连接/断开"这类没有对应事件的变化。
+        /// 重建只在主线程 Update 里执行（事件可能来自网络线程，仅置标志，不直接改 UI）。
+        /// </summary>
+        private void Update()
+        {
+            if (inspectorModel == null || inspectorPanel == null) return;
+            EnsurePlayersSubscribed();
+
+            bool visible = inspectorPanel.Visible;
+            if (visible && !playersWasVisible)
             {
-                string name = string.IsNullOrEmpty(p.PlayerName) ? ("Player " + p.PlayerId) : p.PlayerName;
-                sb.Append("  • ").AppendLine(name);
+                RebuildPlayersIfChanged(); // 面板刚打开：立即核对一次
             }
-            return sb.ToString().TrimEnd('\r', '\n');
+            playersWasVisible = visible;
+            if (!visible) return;          // 面板未打开：不重建（SP2 同款守卫）
+
+            if (playersDirty)
+            {
+                playersDirty = false;
+                RebuildPlayersIfChanged();
+                return;
+            }
+
+            playersRebuildTimer -= Time.unscaledDeltaTime;
+            if (playersRebuildTimer > 0f) return;
+            playersRebuildTimer = 1f;
+            RebuildPlayersIfChanged();
         }
 
-        /// <summary>当前发包频率文本（实时）。</summary>
-        private static string GetTickRateText()
+        /// <summary>订阅/换绑玩家加入、离开事件。manager 是惰性创建的（开房/加入时才存在），首次用到时才绑定。</summary>
+        private void EnsurePlayersSubscribed()
         {
             MpNetworkManager m = MpNetworkManager.Instance;
-            if (m == null) return string.Empty;
-            return Locale.GetString("MultiPlayer.MultiPlayerUI.TickRate", m.TickRate);
+            if (m == null || m == trackedManager) return;
+            if (trackedManager != null)
+            {
+                trackedManager.OnPlayerJoined -= OnPlayersChanged;
+                trackedManager.OnPlayerLeft -= OnPlayersChanged;
+            }
+            trackedManager = m;
+            m.OnPlayerJoined += OnPlayersChanged;
+            m.OnPlayerLeft += OnPlayersChanged;
+            playersDirty = true; // 新 manager：立即重建一次
+        }
+
+        /// <summary>玩家加入/离开事件回调。可能来自网络线程，只置标志，重建在 Update 主线程执行。</summary>
+        private void OnPlayersChanged(MpPeer peer)
+        {
+            playersDirty = true;
+        }
+
+        /// <summary>玩家集合签名变化时重建"玩家列表"分组（每玩家一行）。签名没变则跳过。</summary>
+        private void RebuildPlayersIfChanged()
+        {
+            MpNetworkManager m = MpNetworkManager.Instance;
+            string key;
+            if (m == null || !m.IsConnected)
+            {
+                key = "off";
+            }
+            else
+            {
+                List<string> ids = m.GetPlayers().Select(p => p.PlayerId.ToString()).OrderBy(x => x).ToList();
+                ids.Insert(0, m.PlayerId.ToString());
+                key = (m.IsServer ? "S:" : "C:") + string.Join(",", ids);
+            }
+            if (key == playersKey) return;
+            playersKey = key;
+
+            GroupModel newGroup = BuildPlayersGroup();
+            try
+            {
+                inspectorPanel.ReplaceGroup(playersGroup, newGroup);
+            }
+            catch (Exception e)
+            {
+                Mod.LogLobby("MultiPlayerUI: ReplaceGroup players failed: " + e.Message);
+            }
+            playersGroup = newGroup;
+        }
+
+        /// <summary>构建玩家列表分组：每玩家一行（名字 + 延迟），房主额外每行一个踢人按钮。</summary>
+        private static GroupModel BuildPlayersGroup()
+        {
+            MpNetworkManager m = MpNetworkManager.Instance;
+            GroupModel g = new GroupModel(Locale.GetString("MultiPlayer.MultiPlayerUI.PlayerList"), null);
+            if (m == null || !m.IsConnected)
+            {
+                g.Add(new TextModel(Locale.GetString("MultiPlayer.MultiPlayerUI.NoPlayers"), null, null, null, null));
+                return g;
+            }
+
+            string hostTag = " " + Locale.GetString("MultiPlayer.MultiPlayerUI.HostTag");
+            // 自己（SP2 风格：房主行显示 HOST；客户端行显示自己到房主的延迟）
+            string selfName = string.IsNullOrEmpty(m.PlayerName) ? ("Player " + m.PlayerId) : m.PlayerName;
+            if (m.IsServer)
+            {
+                g.Add(new TextModel(selfName + hostTag, () => "HOST", null, null, null));
+            }
+            else
+            {
+                g.Add(new TextModel(selfName + Locale.GetString("MultiPlayer.MultiPlayerUI.YouTag"), () => m.ClientPingMs < 0 ? "—" : m.ClientPingMs + " ms", null, null, null));
+            }
+
+            // 远端玩家（房主：GetPlayers = 客户端们；客户端：GetPlayers = 房主 + 其他客户端）
+            foreach (MpPeer p in m.GetPlayers().OrderBy(x => x.PlayerId))
+            {
+                string name = string.IsNullOrEmpty(p.PlayerName) ? ("Player " + p.PlayerId) : p.PlayerName;
+                bool isHostPeer = p.PlayerId == 0;
+                string label = name + (isHostPeer ? hostTag : "");
+                if (m.IsServer)
+                {
+                    // 房主：每行显示该客户端的实时延迟（预加载期间显示 "⏳ N%"）
+                    MpPeer peer = p;
+                    g.Add(new TextModel(label, () =>
+                    {
+                        MpNetworkManager mm = MpNetworkManager.Instance;
+                        if (mm != null)
+                        {
+                            float? lp = mm.GetPlayerLoadProgress(p.PlayerId);
+                            if (lp.HasValue) return "⏳ " + Mathf.RoundToInt(lp.Value * 100f) + "%";
+                        }
+                        return peer.PingMs < 0 ? "—" : peer.PingMs + " ms";
+                    }, null, null, null));
+                    // 房主：每行一个踢人按钮（不能踢自己）
+                    int pid = p.PlayerId;
+                    g.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.KickButton", name), (b) => OnKickPlayerClick(pid)));
+                }
+                else
+                {
+                    // 客户端：中继拓扑下只能测自己到房主的延迟，其他人的延迟未知（预加载期间显示 "⏳ N%"）
+                    g.Add(new TextModel(label, () =>
+                    {
+                        MpNetworkManager mm = MpNetworkManager.Instance;
+                        if (mm != null)
+                        {
+                            float? lp = mm.GetPlayerLoadProgress(p.PlayerId);
+                            if (lp.HasValue) return "⏳ " + Mathf.RoundToInt(lp.Value * 100f) + "%";
+                        }
+                        return isHostPeer ? "HOST" : "—";
+                    }, null, null, null));
+                }
+            }
+            return g;
+        }
+
+        /// <summary>房主踢人按钮：弹出确认框后调用 KickPlayer。</summary>
+        private static void OnKickPlayerClick(int playerId)
+        {
+            MpNetworkManager m = MpNetworkManager.Instance;
+            if (m == null) return;
+            string name = "Player " + playerId;
+            foreach (MpPeer p in m.GetPlayers())
+            {
+                if (p.PlayerId == playerId)
+                {
+                    if (!string.IsNullOrEmpty(p.PlayerName)) name = p.PlayerName;
+                    break;
+                }
+            }
+            global::ModApi.Ui.MessageDialogScript dlg = Game.Instance.UserInterface.CreateMessageDialog(global::ModApi.Ui.MessageDialogType.OkayCancel, null, true);
+            dlg.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.KickConfirm", name);
+            dlg.OkayButtonText = Locale.GetString("MultiPlayer.MultiPlayerUI.Kick");
+            dlg.CancelButtonText = Locale.GetString("MultiPlayer.MultiPlayerUI.Cancel");
+            dlg.UseDangerButtonStyle = true;
+            dlg.OkayClicked += delegate(global::ModApi.Ui.MessageDialogScript d)
+            {
+                d.Close();
+                MpNetworkManager mm = MpNetworkManager.Instance;
+                if (mm != null) mm.KickPlayer(playerId);
+            };
+            dlg.CancelClicked += delegate(global::ModApi.Ui.MessageDialogScript d) { d.Close(); };
         }
 
         public void OnToggleMPInspectorPanelState()
@@ -240,17 +419,32 @@ namespace Assets.Scripts
             };
         }
 
-        /// <summary>TCP debug：切到 TcpTransport 并开房（房主监听 IPAddress.Any:DefaultTcpPort）。</summary>
+        /// <summary>TCP debug：输入端口后切到 TcpTransport 并开房（房主监听 IPAddress.Any:port）。</summary>
         private void OnTcpHostLobbyClick()
         {
-            MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-            if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
-            bool ok = LobbyManager.Instance.HostLobby(DefaultTcpPort);
-            if (ok)
+            global::ModApi.Ui.InputDialogScript idDialog = Game.Instance.UserInterface.CreateInputDialog(null);
+            idDialog.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.EnterTcpPort");
+            idDialog.InputText = DefaultTcpPort.ToString();
+            idDialog.OkayClicked += delegate(global::ModApi.Ui.InputDialogScript d)
             {
-                global::ModApi.Ui.MessageDialogScript msg = Game.Instance.UserInterface.CreateMessageDialog(global::ModApi.Ui.MessageDialogType.Okay, null, true);
-                msg.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.TcpHostStarted", DefaultTcpPort);
-            }
+                string input = idDialog.InputText.Trim();
+                d.Close();
+                int port;
+                if (!int.TryParse(input, out port) || port < 1 || port > 65535)
+                {
+                    global::ModApi.Ui.MessageDialogScript msg = Game.Instance.UserInterface.CreateMessageDialog(global::ModApi.Ui.MessageDialogType.Okay, null, true);
+                    msg.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.InvalidTcpPort", input);
+                    return;
+                }
+                MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
+                if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
+                bool ok = LobbyManager.Instance.HostLobby(port);
+                if (ok)
+                {
+                    global::ModApi.Ui.MessageDialogScript msg = Game.Instance.UserInterface.CreateMessageDialog(global::ModApi.Ui.MessageDialogType.Okay, null, true);
+                    msg.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.TcpHostStarted", port);
+                }
+            };
         }
 
         /// <summary>TCP debug：输入房主 IP（可带 :端口，默认 25555），切到 TcpTransport 后加入。</summary>

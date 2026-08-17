@@ -309,6 +309,27 @@ namespace Assets.Scripts.Net
 			}
 		}
 
+		/// <summary>房主：踢人用——关闭与指定对端的 Steam 连接。先移除映射再 CloseConnection，
+		/// 避免 OnConnectionStatusChanged 回调再次移除/触发 OnPeerTimeout（重复清理）。</summary>
+		public void DisconnectPeer(MpPeer peer)
+		{
+			if (peer == null || peer.SteamId == 0) return;
+			HSteamNetConnection conn = default;
+			lock (_serverConnections)
+			{
+				if (_serverConnections.TryGetValue(peer.SteamId, out conn))
+				{
+					_serverConnections.Remove(peer.SteamId);
+				}
+			}
+			lock (_serverPeers) { _serverPeers.Remove(peer.SteamId); }
+			if (conn.m_HSteamNetConnection != 0)
+			{
+				try { SteamNetworkingSockets.CloseConnection(conn, 1, "kicked", false); }
+				catch (Exception e) { Mod.LogError("SteamTransport.DisconnectPeer error: " + e.Message); }
+			}
+		}
+
 		/// <summary>可靠通道发送（Steam 自动重传，无需应用层分片）。</summary>
 		private static void SendReliable(HSteamNetConnection conn, byte[] data)
 		{

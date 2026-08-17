@@ -28,6 +28,7 @@ namespace Assets.Scripts.Net
 		CraftXmlRequest = 12,  // 客户端 -> 房主：按需请求指定玩家（playerId）的飞船 XML（SP2 方案）
 		CraftXmlResponse = 13, // 房主 -> 客户端：返回指定玩家的飞船 XML（大包，走可靠通道）
 		TickRate = 14,         // 房主 -> 所有：当前状态包发送频率（Hz），客户端据此调整发包节奏与插值
+		Kick = 15,             // 房主 -> 指定客户端：你被房主踢出（随后断开连接）
 	}
 
 	/// <summary>
@@ -396,6 +397,58 @@ namespace Assets.Scripts.Net
 			return Pack(MpMessageType.Pong, w => w.Write(tick));
 		}
 
+		public static bool TryDecodePing(byte[] buffer, out long tick)
+		{
+			tick = 0;
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					if (r.ReadByte() != (byte)MpMessageType.Ping) return false;
+					tick = r.ReadInt64();
+					return true;
+				}
+			}
+			catch { return false; }
+		}
+
+		public static bool TryDecodePong(byte[] buffer, out long tick)
+		{
+			tick = 0;
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					if (r.ReadByte() != (byte)MpMessageType.Pong) return false;
+					tick = r.ReadInt64();
+					return true;
+				}
+			}
+			catch { return false; }
+		}
+
+		// ---------------- Kick（房主 -> 指定客户端：你被踢出） ----------------
+
+		public static byte[] EncodeKick()
+		{
+			return Pack(MpMessageType.Kick, _ => { });
+		}
+
+		public static bool TryDecodeKick(byte[] buffer)
+		{
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					return r.ReadByte() == (byte)MpMessageType.Kick;
+				}
+			}
+			catch { return false; }
+		}
+
 		// ---------------- TickRate（房主 -> 客户端：状态包发送频率） ----------------
 
 		public static byte[] EncodeTickRate(int hz)
@@ -449,6 +502,11 @@ namespace Assets.Scripts.Net
 				Vector3 br = d.BodyRotations[i];
 				w.Write(br.x); w.Write(br.y); w.Write(br.z);
 			}
+
+			// 每引擎视觉 throttle(尾焰同步)：与发送端引擎枚举顺序一一对应
+			int etCount = d.EngineThrottles == null ? 0 : d.EngineThrottles.Count;
+			w.Write(etCount);
+			for (int i = 0; i < etCount; i++) w.Write(d.EngineThrottles[i]);
 		}
 
 		public static Mod.recdata ReadRecdata(BinaryReader r)
@@ -481,6 +539,12 @@ namespace Assets.Scripts.Net
 			for (int i = 0; i < bodyCount; i++)
 			{
 				d.BodyRotations.Add(new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
+			}
+
+			int etCount = r.ReadInt32();
+			for (int i = 0; i < etCount; i++)
+			{
+				d.EngineThrottles.Add(r.ReadSingle());
 			}
 
 			return d;

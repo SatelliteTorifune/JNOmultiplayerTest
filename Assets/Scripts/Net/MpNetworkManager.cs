@@ -47,6 +47,8 @@ namespace Assets.Scripts.Net
 		public float RenderDelayMs = 100f;
 		/// <summary>当前状态包发送频率（Hz）。房主可用 SetTickRate 指令调整并广播给客户端（SP2 ServerTickRate 同款思路）。</summary>
 		public int TickRate { get; private set; } = 30;
+		/// <summary>本端到对端（房主）的往返延迟（RTT，毫秒），客户端侧显示自己延迟用；-1 = 尚未测得。</summary>
+		public int ClientPingMs { get; private set; } = -1;
 		[Tooltip("对端超时判定(ms)。TCP 下连接断开由 read loop 检测，此值仅用于半开连接兜底，应设得较大以容忍主线程卡顿/GC/场景加载/全屏切换")]
 		public long TimeoutMs = 60000;
 
@@ -70,6 +72,17 @@ namespace Assets.Scripts.Net
 		private readonly Dictionary<string, string> _xmlCache = new Dictionary<string, string>();
 		// 已请求但尚未收到响应的 playerId -> 请求时的 hash（hash 变化时重新请求，防止飞船更新后漏拉）。
 		private readonly Dictionary<int, string> _pendingXmlRequests = new Dictionary<int, string>();
+
+		// SP2 异步 prefab 预加载（plans/PLAN_AsyncPrefabPreload.md）：
+		// 预加载期间状态包只刷新"最新状态"，不再重复起生成协程；玩家离开/场景切换时清理进度框与挂起状态。
+		/// <summary>正在预加载/生成远程飞船的玩家集合（防止状态包在预加载期间重复起协程）。</summary>
+		private readonly HashSet<int> _pendingSpawns = new HashSet<int>();
+		/// <summary>预加载期间收到的最新状态包（生成时用最新位置，减少长时间预加载后的跳变）。</summary>
+		private readonly Dictionary<int, Mod.recdata> _pendingSpawnLatest = new Dictionary<int, Mod.recdata>();
+		/// <summary>玩家 -> 加载进度框（玩家离开/场景切换/停止时销毁，防残留）。</summary>
+		private readonly Dictionary<int, MpCraftLoadingIndicator> _loadingIndicators = new Dictionary<int, MpCraftLoadingIndicator>();
+		/// <summary>玩家 -> 预加载进度（0..1；供 MultiPlayerUI 玩家列表显示 "⏳ N%"）。</summary>
+		private readonly Dictionary<int, float> _playerLoadProgress = new Dictionary<int, float>();
 
 		/// <summary>收到远程玩家加入。</summary>
 		public event Action<MpPeer> OnPlayerJoined;
@@ -106,7 +119,23 @@ namespace Assets.Scripts.Net
 			OnPlayerLeft -= ShowPlayerLeftNotice;
 			OnRemoteState -= ApplyRemoteState;
 			Transport.Stop();
+			CancelPendingSpawns();
 			if (Instance == this) Instance = null;
+		}
+
+		/// <summary>
+		/// 判断某个 CraftNode 是否为"幽灵(远程)飞船"。
+		/// 供 Harmony patch(JetEngineGhostPatch)在游戏飞行循环回调里快速判定:幽灵航发的
+		/// IFlightFixedUpdate/IFlightUpdate 需跳过,尾焰改由 EngineVisualSync 直接驱动。
+		/// </summary>
+		public static bool IsRemoteCraftNode(CraftNode node)
+		{
+			if (node == null || Instance == null) return false;
+			foreach (KeyValuePair<int, RemoteCraft> kv in Instance._remoteCrafts)
+			{
+				if (kv.Value.Node == node) return true;
+			}
+			return false;
 		}
 
 		/// <summary>通过 FlightUI 显示联机提示（仅飞行场景内可弹 UI；任何情况都写日志兜底）。</summary>
@@ -238,6 +267,8 @@ namespace Assets.Scripts.Net
 				}
 			}
 			_remoteCrafts.Clear();
+			// 清理预加载中的进度框与挂起状态（踢人/断开时无残留）
+			CancelPendingSpawns();
 			Mod.LogLobby("MP.Stop: wasServer=" + wasServer + ", wasConnected=" + wasConnected +
 				", wasPlayerId=" + wasPlayerId + ", Transport.IsRunning=" + Transport.IsRunning);
 		}
@@ -334,6 +365,8 @@ namespace Assets.Scripts.Net
 			_remoteCrafts.Clear();
 			_spawnMissLogged.Clear();
 			_spawnAttemptTime.Clear();
+			// 场景切换：上一场景的进度框已随场景卸载销毁，清空登记与挂起状态（新场景可正常重新生成）
+			CancelPendingSpawns();
 			Mod.LogLobby("MP.OnFlightSceneLoaded: cleared stale remote crafts (count=" + _remoteCrafts.Count + ")");
 		}
 
@@ -548,9 +581,17 @@ namespace Assets.Scripts.Net
 					OnPause(packet);
 					break;
 				case MpMessageType.Ping:
-					Transport.SendTo(peer, MpMessages.EncodePong(0));
+					// 收到 Ping：回 Pong 并回显对方时间戳，供对方计算 RTT（延迟）
+				{
+					long tick;
+					if (MpMessages.TryDecodePing(packet, out tick)) Transport.SendTo(peer, MpMessages.EncodePong(tick));
 					break;
+				}
 				case MpMessageType.Pong:
+					OnPong(peer, packet);
+					break;
+				case MpMessageType.Kick:
+					OnKick(packet);
 					break;
 				case MpMessageType.CraftDataAck:
 					OnCraftDataAck(packet);
@@ -863,6 +904,80 @@ namespace Assets.Scripts.Net
 			SetTickRate(hz);
 		}
 
+		/// <summary>
+		/// 收到 Pong：回显的时间戳即对方收到我们 Ping 的时刻。
+		/// - 房主：对每个客户端测量 RTT 存入 peer.PingMs（供房主玩家列表显示延迟）；
+		/// - 客户端：测量自己到房主的 RTT 存入 ClientPingMs（供客户端显示自己延迟）。
+		/// </summary>
+		private void OnPong(MpPeer peer, byte[] packet)
+		{
+			long tick;
+			if (!MpMessages.TryDecodePong(packet, out tick) || tick <= 0) return;
+			long rttMs = (DateTime.UtcNow.Ticks - tick) / TimeSpan.TicksPerMillisecond;
+			if (rttMs < 0) rttMs = 0;
+			if (IsServer)
+			{
+				// 轻微平滑，避免显示跳动
+				peer.PingMs = peer.PingMs < 0 ? (int)rttMs : (int)(peer.PingMs * 0.7 + rttMs * 0.3);
+			}
+			else
+			{
+				ClientPingMs = ClientPingMs < 0 ? (int)rttMs : (int)(ClientPingMs * 0.7 + rttMs * 0.3);
+			}
+		}
+
+		/// <summary>客户端被房主踢出：提示后停止联机会话。</summary>
+		private void OnKick(byte[] packet)
+		{
+			if (IsServer) return; // 房主不会收到 Kick
+			if (!MpMessages.TryDecodeKick(packet)) return;
+			Mod.LogLobby("MP.OnKick: kicked by host");
+			try
+			{
+				global::ModApi.Ui.MessageDialogScript msg = Game.Instance.UserInterface.CreateMessageDialog(global::ModApi.Ui.MessageDialogType.Okay, null, true);
+				msg.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.Kicked");
+			}
+			catch (Exception e)
+			{
+				Mod.LogLobby("MP.OnKick: failed to show dialog: " + e.Message);
+			}
+			Stop();
+		}
+
+		/// <summary>
+		/// 房主：踢出指定玩家（发 Kick 通知 + 断开传输连接 + 移除记录 + 广播 PlayerLeave + 触发 OnPlayerLeft 清理远程飞船）。
+		/// </summary>
+		public void KickPlayer(int playerId)
+		{
+			if (!IsServer) return;
+			if (playerId == PlayerId) return; // 不能踢自己
+			MpPeer target = null;
+			lock (_playersByPlayerId) { _playersByPlayerId.TryGetValue(playerId, out target); }
+			if (target == null) return;
+
+			Mod.LogLobby("MP.KickPlayer: kicking player " + playerId + " ('" + target.PlayerName + "', " + target.Id + ")");
+			try { Transport.SendTo(target, MpMessages.EncodeKick()); }
+			catch (Exception e) { Mod.LogLobby("MP.KickPlayer: Kick send failed: " + e.Message); }
+			Transport.DisconnectPeer(target);
+
+			MpPeer removed = null;
+			lock (_playersByPlayerId)
+			{
+				if (_playersByPlayerId.TryGetValue(playerId, out removed))
+				{
+					_playersByPlayerId.Remove(playerId);
+				}
+			}
+			_pendingXmlRequests.Remove(playerId);
+			_hostCraftResend.Remove(target.Id);
+			if (removed != null)
+			{
+				Transport.Broadcast(MpMessages.EncodePlayerLeave(playerId));
+				Mod.LogLobby("MP.KickPlayer: broadcast PlayerLeave playerId=" + playerId);
+				OnPlayerLeft?.Invoke(removed);
+			}
+		}
+
 		// ---------------- 工具 ----------------
 
 		private int _nextPlayerId = 1;
@@ -914,7 +1029,7 @@ namespace Assets.Scripts.Net
 
 		// ---------------- 远程飞船管理（M2） ----------------
 
-		private class RemoteCraft
+		public class RemoteCraft
 		{
 			public const int BufferCapacity = 32; // 插值缓冲容量 ≈ 1.6s @ 20Hz，容抖动/乱序
 
@@ -926,6 +1041,10 @@ namespace Assets.Scripts.Net
 			public float LastStateLogTime; // 周期性状态日志计时
 			public float LastVisualLogTime; // 可见性诊断日志计时
 			public Quaternion LastAppliedHeading; // ApplyRemoteState 最近一次写入的帧空间朝向(诊断用)
+
+			// --- 引擎尾焰同步(EngineVisualSync):最近应用状态中的每引擎视觉 throttle + 幽灵驱动表 ---
+			public List<float> SyncedThrottles = new List<float>();
+			public List<EngineVisualSync.EngineVisualDriver> EngineDrivers;
 
 			// --- 平滑插帧：带时间戳环形缓冲（按到达端 unscaledTime 排列，暂停安全、容抖动/乱序） ---
 			public readonly StateSample[] Buffer = new StateSample[BufferCapacity];
@@ -975,37 +1094,22 @@ namespace Assets.Scripts.Net
 		}
 
 		/// <summary>
-		/// 用远程玩家的首个状态包位置生成其远程飞船（幻影模式）。
+		/// 用远程玩家的首个（或预加载期间最新）状态包位置生成其远程飞船（幻影模式）。
 		/// 飞船一出现就在远程玩家的真实位置，而不是先出现在本机玩家身上。
+		/// CraftData / LaunchLocation / XML 由 SpawnRemoteCraftCoroutine 预加载前构建好（主 prefab 已热缓存）。
 		/// </summary>
-		private void SpawnRemoteCraftAtPosition(MpPeer peer, Mod.recdata data)
+		private void SpawnRemoteCraftAtPosition(MpPeer peer, Mod.recdata data, CraftData craftData, LaunchLocation location, XElement xml)
 		{
 			try
 			{
 				if (peer.PlayerId == PlayerId) return;                 // 自己
 				if (_remoteCrafts.ContainsKey(peer.PlayerId)) return;  // 已生成
 				if (FlightSceneScript.Instance == null) return;        // 不在飞行场景
-				if (string.IsNullOrEmpty(peer.CraftXml)) return;
+				if (craftData == null || location == null || xml == null) return;
 
 				CraftNode localNode = FlightSceneScript.Instance.CraftNode as CraftNode;
 				IPlanetNode planet = localNode != null ? localNode.Parent : null;
 				if (localNode == null || planet == null) return;
-
-				XElement xml = XElement.Parse(peer.CraftXml);
-				CraftData craftData = Game.Instance.CraftLoader.LoadCraftImmediate(xml);
-
-				// 发射点：状态包是地面坐标，用本端行星自转转成惯性坐标生成
-				Vector3d planetPos = planet.SurfaceVectorToPlanetVector(data.Position);
-				Vector3d planetVel = planet.SurfaceVectorToPlanetVector(data.Velocity);
-				// data.Heading 已是"行星空间"朝向(发送端采样时已 FrameToPlanet)。
-				// CreateLaunchLocation 内部会做 heading=RotationInverse*heading(把入参当行星空间)，
-				// 再被 SpawnCraft 乘回 planet.Rotation → 最终 Heading=入参(行星空间)，故直接传入即可。
-				Quaterniond spawnHeading = data.Heading;
-				LaunchLocation location = LaunchLocation.CreateLaunchLocation(
-					"MP_Remote_" + peer.PlayerId,
-					planet, planetPos, planetVel, spawnHeading,
-					localNode.ReferenceFrame,
-					LaunchLocationType.SurfaceLockedGround);
 
 				CraftNode remote = FlightSceneScript.Instance.SpawnCraft(peer.PlayerName+"|"+craftData.Name, craftData, location, xml);
 				if (remote == null)
@@ -1081,6 +1185,9 @@ namespace Assets.Scripts.Net
 		{
 			_spawnMissLogged.Remove(playerId);
 			_spawnAttemptTime.Remove(playerId);
+			// 玩家离开/踢出：若正在预加载（飞船尚未生成），销毁其加载进度框并结束挂起生成，防残留
+			DestroyLoadingIndicator(playerId);
+			EndSpawnAttempt(playerId);
 			RemoteCraft rc;
 			if (!_remoteCrafts.TryGetValue(playerId, out rc))
 			{
@@ -1187,14 +1294,24 @@ namespace Assets.Scripts.Net
 					return;
 				}
 
+				// 已有生成协程在预加载：只刷新"最新状态包"（生成时用最新位置），不再重复起协程
+				// （否则预加载数秒期间每个状态包都会再起一个协程，重复预加载同一飞船）。
+				if (_pendingSpawns.Contains(playerId))
+				{
+					_pendingSpawnLatest[playerId] = data;
+					return;
+				}
+
 				// 生成尝试节流：状态包 20Hz 到达，失败时最多每 2 秒重试一次，避免刷屏
 				float last;
 				if (_spawnAttemptTime.TryGetValue(playerId, out last) && Time.unscaledTime - last < 2f) return;
 				_spawnAttemptTime[playerId] = Time.unscaledTime;
 
-				// 异步延迟生成：SpawnCraft（LoadCraftImmediate + 实例化全部部件/渲染器）在
+				// 异步预加载 + 生成：SpawnCraft（LoadCraftImmediate + 实例化全部部件/渲染器）在
 				// 大飞船时可能阻塞主线程数秒（白屏），且期间不读网络导致对端写阻塞（"卡到无响应"）。
-				// 改为协程延迟几帧再生成：先让本帧网络处理完（回 Ack/收状态包），再执行重量级生成。
+				// 改为协程：先让本帧网络处理完（回 Ack/收状态包）→ 解析 XML/构建 CraftData（纯数据）→
+				// 异步预加载部件 prefab（真实百分比加载框）→ 主 prefab 已热缓存后 SpawnCraft（只剩纯 Instantiate，快）。
+				_pendingSpawns.Add(playerId);
 				StartCoroutine(SpawnRemoteCraftCoroutine(peer, data));
 				return;
 			}
@@ -1205,8 +1322,10 @@ namespace Assets.Scripts.Net
 		}
 
 		/// <summary>
-		/// 协程延迟生成远程飞船：先让网络处理几帧（DrainIncoming/回 Ack/状态包），
-		/// 再执行重量级 SpawnCraft，降低"加入时主线程长时间阻塞（白屏）/对端写阻塞（无响应）"。
+		/// 协程异步生成远程飞船（SP2 异步预加载链路）：
+		/// 先让网络处理几帧（DrainIncoming/回 Ack/状态包）→ 解析 XML + 构建 CraftData（纯数据，快）→
+		/// 创建加载进度框（对方位置上方，真实百分比）→ 异步预加载部件 prefab（逐帧）→
+		/// 主 prefab 已热缓存后 SpawnCraft（快，无秒级白屏）→ 走现有登记/表面锁定/幻影模式逻辑。
 		/// </summary>
 		private IEnumerator SpawnRemoteCraftCoroutine(MpPeer peer, Mod.recdata data)
 		{
@@ -1215,15 +1334,157 @@ namespace Assets.Scripts.Net
 			yield return null;
 
 			// 协程延迟期间可能发生：离开飞行场景 / 玩家已离开 / 已被其他路径生成 / 飞船信息失效
-			if (peer == null || FlightSceneScript.Instance == null) yield break;
-			if (peer.PlayerId == PlayerId) yield break;
-			bool stillThere = false;
-			lock (_playersByPlayerId) { stillThere = _playersByPlayerId.ContainsKey(peer.PlayerId); }
-			if (!stillThere) yield break;
-			if (_remoteCrafts.ContainsKey(peer.PlayerId)) yield break;
-			if (string.IsNullOrEmpty(peer.CraftXml)) yield break;
+			if (!IsSpawnAttemptStillValid(peer)) { EndSpawnAttempt(peer.PlayerId); yield break; }
 
-			SpawnRemoteCraftAtPosition(peer, data);
+			// 帧 A/B：解析 XML + 构建 CraftData（纯数据、不实例化 GameObject，快）
+			XElement xml = null;
+			CraftData craftData = null;
+			try
+			{
+				xml = XElement.Parse(peer.CraftXml);
+				craftData = Game.Instance.CraftLoader.LoadCraftImmediate(xml);
+			}
+			catch (Exception e)
+			{
+				Mod.LogError("SpawnRemoteCraftCoroutine: craft data load failed (player " + peer.PlayerId + "): " + e.Message);
+				EndSpawnAttempt(peer.PlayerId);
+				yield break;
+			}
+			if (xml == null || craftData == null || craftData.Assembly == null)
+			{
+				Mod.LogError("SpawnRemoteCraftCoroutine: craft data null for player " + peer.PlayerId);
+				EndSpawnAttempt(peer.PlayerId);
+				yield break;
+			}
+			if (!IsSpawnAttemptStillValid(peer)) { EndSpawnAttempt(peer.PlayerId); yield break; }
+
+			// 发射点：状态包是地面坐标，用本端行星自转转成惯性坐标生成（与 SpawnRemoteCraftAtPosition 原逻辑一致）
+			CraftNode localNode = FlightSceneScript.Instance.CraftNode as CraftNode;
+			IPlanetNode planet = localNode != null ? localNode.Parent : null;
+			if (localNode == null || planet == null) { EndSpawnAttempt(peer.PlayerId); yield break; }
+			Vector3d planetPos = planet.SurfaceVectorToPlanetVector(data.Position);
+			Vector3d planetVel = planet.SurfaceVectorToPlanetVector(data.Velocity);
+			// data.Heading 已是"行星空间"朝向(发送端采样时已 FrameToPlanet)。
+			// CreateLaunchLocation 内部会做 heading=RotationInverse*heading(把入参当行星空间)，
+			// 再被 SpawnCraft 乘回 planet.Rotation → 最终 Heading=入参(行星空间)，故直接传入即可。
+			Quaterniond spawnHeading = data.Heading;
+			LaunchLocation location = LaunchLocation.CreateLaunchLocation(
+				"MP_Remote_" + peer.PlayerId,
+				planet, planetPos, planetVel, spawnHeading,
+				localNode.ReferenceFrame,
+				LaunchLocationType.SurfaceLockedGround);
+
+			// 创建加载进度框：挂到对方位置上方（旋转白框 + 真实百分比）
+			MpCraftLoadingIndicator indicator = CreateLoadingIndicator(peer.PlayerId, localNode.ReferenceFrame, planetPos);
+			if (indicator == null) { EndSpawnAttempt(peer.PlayerId); yield break; }
+
+			// 异步预加载部件 prefab（逐帧、真实 %）→ 进度框显示 N%；可随时取消（玩家离开/场景切换）
+			int partCount = craftData.Assembly.Parts != null ? craftData.Assembly.Parts.Count : 0;
+			Mod.LogLobby("MP: async preloading craft prefabs for player " + peer.PlayerId +
+				" ('" + peer.PlayerName + "', craft='" + craftData.Name + "', parts=" + partCount + ")");
+			yield return MpCraftPreloader.PreloadCraftPrefabs(craftData,
+				progress => SetPlayerLoadProgress(peer.PlayerId, progress),
+				() => !IsSpawnAttemptStillValid(peer));
+
+			// 预加载后：玩家可能已离开 / 场景切换 / 已被其他路径生成
+			if (!IsSpawnAttemptStillValid(peer))
+			{
+				DestroyLoadingIndicator(peer.PlayerId);
+				EndSpawnAttempt(peer.PlayerId);
+				yield break;
+			}
+
+			// 用预加载期间的最新状态包（长时间预加载后位置更准，减少跳变）
+			Mod.recdata spawnData = data;
+			if (_pendingSpawnLatest.TryGetValue(peer.PlayerId, out Mod.recdata latest)) spawnData = latest;
+
+			// 清理进度框 + 挂起标记。SpawnRemoteCraftAtPosition 内同步登记 _remoteCrafts（无 yield），
+			// 移除挂起标记到登记之间没有网络帧插入，不会重复起协程。
+			DestroyLoadingIndicator(peer.PlayerId);
+			EndSpawnAttempt(peer.PlayerId);
+
+			SpawnRemoteCraftAtPosition(peer, spawnData, craftData, location, xml);
+		}
+
+		/// <summary>
+		/// 校验生成协程当前是否仍有效：仍在飞行场景、玩家未离开、飞船信息仍在、且尚未被生成。
+		/// （预加载期间每帧调用；玩家离开/场景切换/已生成 → false，协程提前停止。）
+		/// </summary>
+		private bool IsSpawnAttemptStillValid(MpPeer peer)
+		{
+			if (peer == null || FlightSceneScript.Instance == null) return false;
+			if (peer.PlayerId == PlayerId) return false;
+			bool stillThere;
+			lock (_playersByPlayerId) { stillThere = _playersByPlayerId.ContainsKey(peer.PlayerId); }
+			if (!stillThere) return false;
+			if (_remoteCrafts.ContainsKey(peer.PlayerId)) return false;
+			return !string.IsNullOrEmpty(peer.CraftXml);
+		}
+
+		/// <summary>生成协程退出时清理挂起状态（挂起标记、最新状态缓存、加载进度显示）。</summary>
+		private void EndSpawnAttempt(int playerId)
+		{
+			_pendingSpawns.Remove(playerId);
+			_pendingSpawnLatest.Remove(playerId);
+			_playerLoadProgress.Remove(playerId);
+		}
+
+		/// <summary>取消并清理所有挂起的生成（停止联机 / 场景切换时调用）：销毁进度框 + 清空挂起状态。</summary>
+		private void CancelPendingSpawns()
+		{
+			foreach (KeyValuePair<int, MpCraftLoadingIndicator> kv in _loadingIndicators)
+			{
+				if (kv.Value != null) kv.Value.DestroyIndicator();
+			}
+			_loadingIndicators.Clear();
+			_pendingSpawns.Clear();
+			_pendingSpawnLatest.Clear();
+			_playerLoadProgress.Clear();
+		}
+
+		/// <summary>在指定玩家位置上方创建加载进度框并登记（离开/场景切换时可销毁）。</summary>
+		private MpCraftLoadingIndicator CreateLoadingIndicator(int playerId, IReferenceFrame frame, Vector3d planetPos)
+		{
+			try
+			{
+				Vector3 worldPos = frame != null
+					? frame.PlanetToFramePosition(planetPos) + Vector3.up * 4f
+					: Vector3.zero;
+				MpCraftLoadingIndicator ind = MpCraftLoadingIndicator.Create(worldPos);
+				_loadingIndicators[playerId] = ind;
+				return ind;
+			}
+			catch (Exception e)
+			{
+				Mod.LogError("CreateLoadingIndicator error (player " + playerId + "): " + e.Message);
+				return null;
+			}
+		}
+
+		/// <summary>销毁并移除指定玩家的加载进度框。</summary>
+		private void DestroyLoadingIndicator(int playerId)
+		{
+			MpCraftLoadingIndicator ind;
+			if (_loadingIndicators.TryGetValue(playerId, out ind))
+			{
+				if (ind != null) ind.DestroyIndicator();
+				_loadingIndicators.Remove(playerId);
+			}
+		}
+
+		/// <summary>记录玩家预加载进度（0..1）；达到 1f 视为完成，移除（玩家列表恢复延迟/状态显示）。</summary>
+		private void SetPlayerLoadProgress(int playerId, float progress)
+		{
+			if (progress >= 1f) _playerLoadProgress.Remove(playerId);
+			else _playerLoadProgress[playerId] = Mathf.Clamp01(progress);
+		}
+
+		/// <summary>指定玩家当前预加载进度（0..1）；未在加载返回 null（供 MultiPlayerUI 玩家列表显示 "⏳ N%"）。</summary>
+		public float? GetPlayerLoadProgress(int playerId)
+		{
+			float p;
+			if (_playerLoadProgress.TryGetValue(playerId, out p)) return p;
+			return null;
 		}
 
 		/// <summary>
@@ -1277,6 +1538,9 @@ namespace Assets.Scripts.Net
 						ApplyRemoteState(rc, newest);
 					}
 				}
+				// 幽灵船引擎尾焰:建立驱动表(液体 ExhaustThrottleOverride + 航发直接驱动)+ 抑制烟雾/加热副作用
+				EngineVisualSync.SetupGhostEngineVisuals(rc);
+				EngineVisualSync.DriveGhostEngineVisuals(rc);
 				rc.IsInitialized = true;
 				Mod.LogLobby("MP: remote craft initialized (ghost mode) for player " + rc.PlayerId);
 			}
@@ -1309,6 +1573,8 @@ namespace Assets.Scripts.Net
 					if (TryGetInterpolatedState(rc, renderTime, out Mod.recdata interp))
 					{
 						ApplyRemoteState(rc, interp);
+						// 每帧用插值后状态驱动幽灵船尾焰(液体 Route A 经 override、航发直接驱动)
+						EngineVisualSync.DriveGhostEngineVisuals(rc);
 					}
 
 					// 诊断：周期性记录远程飞船可见性（每 3 秒），用于定位"无法显示对方 craft"。
@@ -1474,8 +1740,10 @@ namespace Assets.Scripts.Net
 
 			// ⑤ 手动刷新对方飞船 FlightData 的缓存字段(PositionNormalized/CraftForward),
 			// 使 FlightData.Pitch/BankAngle(游戏 UI/Vizzy 读取)跟随同步后的 CenterOfMass。
-			// 反编译确认:幽灵飞船(物理禁用/非玩家)不参与 IFlightUpdate, FlightData.Update 不被调用,
-			// CraftForward/PositionNormalized 停在生成初值 → 对方 Pitch/Bank 显示旧朝向。
+			// 注(2026-08 反编译复查):幽灵的引擎/部件 modifier 实际仍收 IFlightUpdate/IFlightFixedUpdate
+			// (MonoBehaviourBase.OnEnable 注册只看 enabled,无物理过滤;CraftScript.EnablePhysics(false) 不禁用 MonoBehaviour)。
+			// FlightData 仍可能因"游戏 FlightUpdate 读 CenterOfMass 先于本帧状态写入"而滞后,
+			// 故此反射立即刷新保留(参见 plans/engine-fx-sync-feasibility.md §3.5)。
 			if (frame != null && rc.Node.CraftScript.CenterOfMass != null)
 			{
 				try
@@ -1504,6 +1772,9 @@ namespace Assets.Scripts.Net
 			// 保证写回的是"插值后"状态而非"最新包"，避免朝向跳变）。
 			rc.LastApplied = data;
 			rc.HasApplied = true;
+
+			// 引擎尾焰:快照最近应用状态的每引擎视觉 throttle(液体 override 闭包与航发驱动都读它)
+			if (data.EngineThrottles != null) rc.SyncedThrottles = data.EngineThrottles;
 		}
 
 		private static readonly PropertyInfo _groundedSurfacePositionProp =
@@ -1512,8 +1783,8 @@ namespace Assets.Scripts.Net
 			typeof(CraftNode).GetProperty("GroundedSurfaceVelocity", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 		private static readonly PropertyInfo _groundedSurfaceRotationProp =
 			typeof(CraftNode).GetProperty("GroundedSurfaceRotation", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-		// 幽灵飞船不参与 IFlightUpdate, FlightData 的 PositionNormalized/CraftForward 停旧值,
-		// 需手动刷新(用反射写 private set),使 FlightData.Pitch/BankAngle 跟随同步后的 CenterOfMass。
+		// 幽灵的 FlightData 仍可能因执行序(游戏 FlightUpdate 先于本帧状态写入)滞后,
+		// 用反射写 private set 立即刷新,使 FlightData.Pitch/BankAngle 跟随同步后的 CenterOfMass。
 		private static readonly PropertyInfo _flightPositionNormalizedProp =
 			typeof(CraftFlightData).GetProperty("PositionNormalized", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 		private static readonly PropertyInfo _flightCraftForwardProp =
@@ -1641,6 +1912,9 @@ namespace Assets.Scripts.Net
 					heading = sendFrame.FrameToPlanetRotation(heading.ToQuaternion());
 				}
 				data = new Mod.recdata(pos, vel, heading);
+
+				// 每引擎视觉 throttle(尾焰同步):按确定枚举顺序,与接收端一一对应
+				data.EngineThrottles = EngineVisualSync.SampleEngineThrottles(craft);
 
 				// 同步每个 body 的局部姿态。关键：BodyRotations 必须存"相对质心(comRot)"的旋转，
 				// 因为接收端根=comRot（发送的 heading），且 XML 的 body/part 是质心坐标系。

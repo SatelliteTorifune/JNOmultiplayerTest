@@ -17,8 +17,8 @@ MonoBehaviour:
   - GameKit.Dependencies.dll
   - FishNet.Runtime.dll
   - SynapseSocket.dll
-  - FishNet.Demos.dll
   - aMptest.dll
+  - FishNet.Demos.dll
   _author: Torifune
   _description: 
   _loadPriority: 10009

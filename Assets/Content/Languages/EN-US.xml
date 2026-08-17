@@ -28,6 +28,16 @@
     <s id="MultiPlayer.MultiPlayerUI.TcpHostLobbyButton">TCP Host Lobby</s>
     <s id="MultiPlayer.MultiPlayerUI.TcpJoinLobbyButton">TCP Join Lobby</s>
     <s id="MultiPlayer.MultiPlayerUI.TcpHostStarted">TCP lobby started on port {0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.EnterTcpPort">Enter TCP host port (default 25555)</s>
+    <s id="MultiPlayer.MultiPlayerUI.InvalidTcpPort">Invalid port: '{0}'</s>
     <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">Enter host IP (e.g. 192.168.56.1:25555)</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpHost">Invalid host: '{0}'</s>
+    <s id="MultiPlayer.MultiPlayerUI.PlayerList">Players</s>
+    <s id="MultiPlayer.MultiPlayerUI.YouTag"> (You)</s>
+    <s id="MultiPlayer.MultiPlayerUI.KickButton">Kick {0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.KickConfirm">Kick {0}?</s>
+    <s id="MultiPlayer.MultiPlayerUI.Kick">Kick</s>
+    <s id="MultiPlayer.MultiPlayerUI.Cancel">Cancel</s>
+    <s id="MultiPlayer.MultiPlayerUI.Kicked">You have been kicked by the host</s>
+    <s id="MultiPlayer.MultiPlayerUI.LoadingCraft">Loading craft</s>
 </Strings>

@@ -28,6 +28,16 @@
     <s id="MultiPlayer.MultiPlayerUI.TcpHostLobbyButton">TCP 创建大厅</s>
     <s id="MultiPlayer.MultiPlayerUI.TcpJoinLobbyButton">TCP 加入</s>
     <s id="MultiPlayer.MultiPlayerUI.TcpHostStarted">TCP 房间已开启，端口 {0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.EnterTcpPort">输入 TCP 房主端口（默认 25555）</s>
+    <s id="MultiPlayer.MultiPlayerUI.InvalidTcpPort">无效端口：'{0}'</s>
     <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">输入房主 IP（如 192.168.56.1:25555）</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpHost">无效地址：'{0}'</s>
+    <s id="MultiPlayer.MultiPlayerUI.PlayerList">玩家列表</s>
+    <s id="MultiPlayer.MultiPlayerUI.YouTag">(本机)</s>
+    <s id="MultiPlayer.MultiPlayerUI.KickButton">踢出 {0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.KickConfirm">踢出 {0}？</s>
+    <s id="MultiPlayer.MultiPlayerUI.Kick">踢出</s>
+    <s id="MultiPlayer.MultiPlayerUI.Cancel">取消</s>
+    <s id="MultiPlayer.MultiPlayerUI.Kicked">你已被房主踢出</s>
+    <s id="MultiPlayer.MultiPlayerUI.LoadingCraft">正在加载飞船</s>
 </Strings>

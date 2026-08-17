@@ -215,6 +215,20 @@ namespace Assets.Scripts.Net
             }
         }
 
+        /// <summary>房主：踢人用——关闭指定对端的 TCP 连接。read loop 检测到断开后会移除该 peer 并触发 OnPeerTimeout。</summary>
+        public void DisconnectPeer(MpPeer peer)
+        {
+            if (peer == null || peer.EndPoint == null) return;
+            lock (_peersLock)
+            {
+                TcpClient c;
+                if (_peerClients.TryGetValue(peer.EndPoint.ToString(), out c))
+                {
+                    try { c.Close(); } catch { }
+                }
+            }
+        }
+
         /// <summary>写入一条消息：[4字节长度][payload]。</summary>
         private static void WriteMessage(TcpClient tc, byte[] data)
         {

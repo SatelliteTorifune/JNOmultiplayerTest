@@ -30,6 +30,7 @@ namespace Assets.Scripts.Net
 
 		public string CraftXml = string.Empty; // 该玩家飞船的 craft XML（联机交换用）
 		public long LastReceiveTick;   // 最近收到数据的时间（环境时间戳 ms）
+		public int PingMs = -1;        // 房主测量的该对端往返延迟（RTT，毫秒）；-1 = 尚未测得
 		public bool IsServer;
 
 		public bool Equals(MpPeer other)
