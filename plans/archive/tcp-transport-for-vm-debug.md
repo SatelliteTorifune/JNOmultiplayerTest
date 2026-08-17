@@ -2,7 +2,23 @@
 
 > 项目：JNOmultiplayerTest（SimpleRockets 2 / JNO 联机 mod aMptest）
 > 创建日期：2026-08-15
-> 状态：规划中（待实现）
+> 状态：✅ 已落地（2026-08-15 按本文实现：`IMpTransport` + 两传输类实现接口 + `TcpHostLobby`/`TcpJoinLobby` 命令）
+
+---
+
+## 〇、经验教训（归档修订）
+
+> 本文是"最小改动版"方案，已按 3.1~3.4 原样落地，代码与文档一致。归档为开发经验记录。
+
+**结论**：`IMpTransport` 接口 + `TcpTransport`/`SteamTransport` 实现接口 + `SetTransport()` 切换 + 两条控制台命令均已实现（[`IMpTransport.cs`](../Assets/Scripts/Net/IMpTransport.cs)、[`TcpTransport.cs:18`](../Assets/Scripts/Net/TcpTransport.cs:18)、[`SteamTransport.cs:21`](../Assets/Scripts/Net/SteamTransport.cs:21)、[`MpNetworkManager.cs:249`](../Assets/Scripts/Net/MpNetworkManager.cs:249)）。默认仍是 Steam，不敲 `Tcp*` 命令不影响；VM debug 时 `TcpHostLobby <port>` / `TcpJoinLobby <hostIP> <port>` 切换。
+
+**经验教训**：
+
+1. **传输层抽象不可省，但可以极薄**：`MpNetworkManager` 十几个调用点全走 `Transport.xxx`，没有共同引用类型就得把调用点复制两份；一个薄接口（两传输类签名本就一致）是最小成本解。
+2. **最小改动被验证有效**：只加命令、不加枚举 / UI / 设置项，Steam 默认路径零回归风险。
+3. **接口签名即契约**：让传输类直接 `: IMpTransport`，编译期校验签名齐全；后续加传输（LiteNetLib）可复用。
+4. **`[NonSerialized]` 保护**：`Transport` 字段保持不被 Unity 序列化。
+5. **复用已验证的传输类**：`TcpTransport` 早在 replay 阶段就已可用，本次只是补接口 + 命令，不是重写。
 
 ---
 
@@ -127,13 +143,13 @@ DevConsoleApi.RegisterCommand<string, int>("TcpJoinLobby", new Action<string, in
 
 ---
 
-## 四、实施步骤（todo）
+## 四、实施步骤（✅ 已全部落地）
 
-1. 新增 `Assets/Scripts/Net/IMpTransport.cs`（接口）。
-2. [`TcpTransport.cs`](../Assets/Scripts/Net/TcpTransport.cs) / [`SteamTransport.cs`](../Assets/Scripts/Net/SteamTransport.cs) 各加 `: IMpTransport`（编译期校验签名齐全）。
-3. [`MpNetworkManager.cs:34`](../Assets/Scripts/Net/MpNetworkManager.cs:34) 字段改 `IMpTransport` + 加 `SetTransport()` 方法。
-4. [`Mod.cs`](../Assets/Scripts/Mod.cs:76) 注册 `TcpHostLobby` / `TcpJoinLobby`。
-5. 回 Unity 编译无报错；本机 + 虚拟机实测 TCP。
+1. - [x] 新增 `Assets/Scripts/Net/IMpTransport.cs`（接口）。
+2. - [x] [`TcpTransport.cs`](../Assets/Scripts/Net/TcpTransport.cs) / [`SteamTransport.cs`](../Assets/Scripts/Net/SteamTransport.cs) 各加 `: IMpTransport`（编译期校验签名齐全）。
+3. - [x] [`MpNetworkManager.cs:34`](../Assets/Scripts/Net/MpNetworkManager.cs:34) 字段改 `IMpTransport` + 加 `SetTransport()` 方法。
+4. - [x] [`Mod.cs`](../Assets/Scripts/Mod.cs:76) 注册 `TcpHostLobby` / `TcpJoinLobby`。
+5. - [x] 回 Unity 编译无报错；**✅ VM 实测可行（2026-08 用户确认）**：本机 `TcpHostLobby 25555` + 虚拟机 `TcpJoinLobby <宿主IP> 25555`，日志链与飞船互见均通过。
 
 ---
 

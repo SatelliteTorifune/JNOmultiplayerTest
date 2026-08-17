@@ -46,7 +46,7 @@ namespace Assets.Scripts.Net
 		[Tooltip("远程飞船插值渲染延迟(ms)，容忍抖动/乱序；默认 100ms ≈ 2 包 @ 20Hz")]
 		public float RenderDelayMs = 100f;
 		/// <summary>当前状态包发送频率（Hz）。房主可用 SetTickRate 指令调整并广播给客户端（SP2 ServerTickRate 同款思路）。</summary>
-		public int TickRate { get; private set; } = 20;
+		public int TickRate { get; private set; } = 30;
 		[Tooltip("对端超时判定(ms)。TCP 下连接断开由 read loop 检测，此值仅用于半开连接兜底，应设得较大以容忍主线程卡顿/GC/场景加载/全屏切换")]
 		public long TimeoutMs = 60000;
 

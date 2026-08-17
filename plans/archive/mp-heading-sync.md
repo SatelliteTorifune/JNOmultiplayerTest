@@ -80,8 +80,10 @@ var rotation = (Quaternion)lerpedBody.rotation * currentSurfaceRelRotation;  // 
 - 双端实测:对方飞船相对地表朝向两端一致、warp 无漂移、无全局副作用;
 - `FlightData.Pitch/Bank` 两端一致:接收端已通过反射写 `PositionNormalized`/`CraftForward` 刷新 FlightData(见日志 `MP FlightData 刷新诊断`)。
 
-### 6.2 下一步重心
+### 6.2 下一步重心【已归档修订 2026-08】
 
-1. **Body 同步**:当前仅同步 `BodyRotations`(每 body 相对根的欧拉角)。下一步做更完整的 body 级同步(位置/速度/角速度、分离/对接/残骸事件),彻底消除"分裂/散架";
-2. **平滑插帧**:当前是"前后两包线性/Slerp 插值"([`UpdateRemoteCrafts`](../Assets/Scripts/Net/MpNetworkManager.cs) 内联插值)。下一步改为带时间戳的环形缓冲 + 100~150ms 延迟补偿,容忍抖动与乱序;
-3. **多 craft 支持**:当前只同步 `FlightSceneScript.Instance.CraftNode`(本机唯一玩家飞船)。下一步支持每玩家多艘飞船(NodeId → CraftNode 映射)、残骸/对接后的多节点同步。
+> 本节为撰写当时的"下一步"，现状如下（均已实现或转移，勿再当作待办）：
+
+1. **Body 同步**：当前仅同步 `BodyRotations`(每 body 相对根的欧拉角)。下一步做更完整的 body 级同步(位置/速度/角速度、分离/对接/残骸事件),彻底消除"分裂/散架";——【✅ 已转移】转入 [`multi-craft-sync.md`](../../multi-craft-sync.md) MC2。
+2. **平滑插帧**：当前是"前后两包线性/Slerp 插值"([`UpdateRemoteCrafts`](../Assets/Scripts/Net/MpNetworkManager.cs) 内联插值)。下一步改为带时间戳的环形缓冲 + 100~150ms 延迟补偿,容忍抖动与乱序;——【✅ 已实现】环形缓冲 + `RenderDelayMs`。
+3. **多 craft 支持**：当前只同步 `FlightSceneScript.Instance.CraftNode`(本机唯一玩家飞船)。下一步支持每玩家多艘飞船(NodeId → CraftNode 映射)、残骸/对接后的多节点同步。——【✅ 已转移】整体转入 [`multi-craft-sync.md`](../../multi-craft-sync.md)(方案研究阶段)。

@@ -12,4 +12,22 @@
     <s id="MultiPlayer.MultiPlayerUI.EnterHostSteamId">输入房主的SteamId</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidSteamId">无效输入: '{0}'\n应为 17 位数字</s>
     <s id="MultiPlayer.Mod.HostLobbyError">无法开房：未获取到 SteamId（Steam 未初始化或未登录）</s>
+    <s id="MultiPlayer.MultiPlayerUI.ConnectionStatus">连接状态</s>
+    <s id="MultiPlayer.MultiPlayerUI.NotConnected">未连接</s>
+    <s id="MultiPlayer.MultiPlayerUI.HostingStatus">正在开房，身份：{0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.Players">玩家</s>
+    <s id="MultiPlayer.MultiPlayerUI.NoPlayers">暂无玩家在线</s>
+    <s id="MultiPlayer.MultiPlayerUI.PlayersConnected">已连接玩家（{0}）</s>
+    <s id="MultiPlayer.MultiPlayerUI.HostTag">（房主）</s>
+    <s id="MultiPlayer.MultiPlayerUI.TickRateLabel">发包频率</s>
+    <s id="MultiPlayer.MultiPlayerUI.TickRate">{0} Hz</s>
+    <s id="MultiPlayer.MultiPlayerUI.HostSettings">房主设置</s>
+    <s id="MultiPlayer.MultiPlayerUI.TickRateSlider">发包频率（Hz）</s>
+    <s id="MultiPlayer.MultiPlayerUI.TickRateHint">调整后将广播给所有已连接客户端</s>
+    <s id="MultiPlayer.MultiPlayerUI.DebugGroup">调试（TCP）</s>
+    <s id="MultiPlayer.MultiPlayerUI.TcpHostLobbyButton">TCP 创建大厅</s>
+    <s id="MultiPlayer.MultiPlayerUI.TcpJoinLobbyButton">TCP 加入</s>
+    <s id="MultiPlayer.MultiPlayerUI.TcpHostStarted">TCP 房间已开启，端口 {0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">输入房主 IP（如 192.168.56.1:25555）</s>
+    <s id="MultiPlayer.MultiPlayerUI.InvalidTcpHost">无效地址：'{0}'</s>
 </Strings>

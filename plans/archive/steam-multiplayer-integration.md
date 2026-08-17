@@ -2,7 +2,25 @@
 
 > 项目：JNOmultiplayerTest（SimpleRockets 2 / JNO 联机 mod aMptest）
 > 创建日期：2026-08-13
-> 状态：规划中（已确认可行性关键点，待 spike 验证）
+> 状态：✅ 已落地（SteamTransport 已实现并设为默认传输；spike 已验证 Steamworks.NET 可直调）
+
+---
+
+## 〇、经验教训（归档修订）
+
+> 本文方案已按 3.1~3.3 落地，归档为开发经验记录。**两处保留/不做的说明**：`LiteNetLibTransport` 备用未启用；Lobby 邀请（3.4 进阶）**【决策:不做】**，维持"手动输入房主 SteamId"（`SteamJoinLobby <hostSteamId>`）。
+
+**结论**：`SteamSpike`（[`SteamSpike.cs`](../Assets/Scripts/Net/SteamSpike.cs)）验证 mod 运行时能直接调 `SteamUser.GetSteamID()` / `SteamNetworkingSockets`；`SteamTransport`（[`SteamTransport.cs:21`](../Assets/Scripts/Net/SteamTransport.cs:21)）实现 `IMpTransport`：房主 `CreateListenSocketP2P` + 客户端 `ConnectP2P` + 每帧 `RunCallbacks()`；`MpNetworkManager.Transport` 默认即 `SteamTransport`（[`MpNetworkManager.cs:35`](../Assets/Scripts/Net/MpNetworkManager.cs:35)），`SteamJoinLobby <hostSteamId>` 加入。
+
+**经验教训**：
+
+1. **先 spike 再铺路**：一行直调脚本先验证 Steamworks.NET 运行时可用，再写传输类，避免方向性返工。
+2. **游戏已 `SteamAPI.Init()`，mod 不重复 Init**：直接复用（[`SteamTransport.cs:19`](../Assets/Scripts/Net/SteamTransport.cs:19) 注释），用 `SteamAPI.IsSteamRunning()` 判断即可。
+3. **FishNet 高层 API 被 codegen 否决是放弃框架的根因**（mod DLL 运行时加载无序列化器）→ 传输层自建，房间 / 状态 / XML 逻辑全部自持。
+4. **Steamworks.NET 复用游戏自带 DLL**（`SimpleRockets2_Data/Managed/com.rlabrecque.steamworks.net.dll`），无需自带 / 打包。
+5. **`MpPeer.EndPoint`（IPEndPoint）在 Steam 下不适用** → 新增 `MpPeer.SteamId`（`ulong`），传输层内部维护 `SteamId ↔ MpPeer` 映射。
+
+**✅ 实测完成（2026-08，用户确认）**：双 Steam 账号公网联机可行——零 frp、零端口转发；日志链（`OnPlayerJoin` → `OnCraftXmlResponse` → 飞船互见）、断线/重连、大 XML 传输均确认通过。
 
 ---
 
@@ -86,25 +104,25 @@ flowchart LR
 
 ## 四、实施步骤
 
-### Step 1：可行性 spike（先做，1 次会话）
-- [ ] 在 [`aMptest.asmdef`](../Assets/aMptest.asmdef) references 加 `"com.rlabrecque.steamworks.net"`（若编译不过，改用 `"Packages"` 或反射）；
-- [ ] 写临时脚本（如 `SteamSpike.cs`）：`SteamAPI.Init()` 返回值、`SteamUser.GetSteamID()`、`SteamFriends.GetPersonaName()`，验证 mod 运行时能拿到 Steam 身份；
-- [ ] 结论：能拿 SteamId → 继续；拿不到 → 评估走 `SocialExt` 或自带 Steamworks.NET。
+### Step 1：可行性 spike（✅ 完成）
+- [x] 在 [`aMptest.asmdef`](../Assets/aMptest.asmdef) references 加 `"com.rlabrecque.steamworks.net"`（编译通过，走直调路线）；
+- [x] 写临时脚本（[`SteamSpike.cs`](../Assets/Scripts/Net/SteamSpike.cs)）：`SteamUser.GetSteamID()` / `SteamFriends.GetPersonaName()` / `SteamNetworkingSockets` 初始化，验证 mod 运行时能拿到 Steam 身份；
+- [x] 结论：能拿 SteamId + SteamNetworkingSockets 可初始化 → 继续直调路线。
 
-### Step 2：实现 SteamTransport
-- [ ] 新增 `Assets/Scripts/Net/SteamTransport.cs`（接口同 TcpTransport，含 `MpPeer.SteamId` 映射）；
-- [ ] 实现房主 ListenSocket + 客户端 ConnectP2P + 每帧 RunCallbacks；
-- [ ] 可靠/不可靠通道按消息类型选择（复用 [`MpMessage`](../Assets/Scripts/Net/MpMessage.cs) 首字节判断）。
+### Step 2：实现 SteamTransport（✅ 完成）
+- [x] 新增 `Assets/Scripts/Net/SteamTransport.cs`（接口同 TcpTransport，含 `MpPeer.SteamId` 映射）；
+- [x] 实现房主 ListenSocket（`CreateListenSocketP2P`）+ 客户端 `ConnectP2P` + 每帧 `RunCallbacks()`；
+- [x] 可靠/不可靠通道按消息类型选择（复用 [`MpMessage`](../Assets/Scripts/Net/MpMessage.cs) 首字节判断）。
 
-### Step 3：房间接入（MVP 手动 SteamId → 后续 Lobby）
-- [ ] UI：Host 时显示本机 SteamId；Join 时输入房主 SteamId；
-- [ ] （进阶）`SteamMatchmaking` Lobby 创建/加入/邀请，UI 显示好友列表或邀请链接。
+### Step 3：房间接入（✅ MVP 完成；Lobby【决策:不做】）
+- [x] MVP：`SteamJoinLobby <hostSteamId>` 手动输入房主 SteamId；房主 `SteamHostLobby` 显示本机 SteamId；
+- [~] （**【决策 2026-08】不做**）`SteamMatchmaking` Lobby 创建/加入/邀请 —— 维持手动 SteamId 方案。
 
-### Step 4：验证
-- [ ] 回 Unity 编译无报错；
-- [ ] **双 Steam 账号**（两台机器或同机双开两个账号）公网联机：零 frp、零端口转发；
-- [ ] 确认日志链：`OnPlayerJoin: requested craft xml` → `OnCraftXmlResponse: received craft xml` → 飞船互见；
-- [ ] 断线/重连、大 XML 传输。
+### Step 4：验证（✅ 全部完成）
+- [x] 回 Unity 编译无报错；
+- [x] **双 Steam 账号**（两台机器或同机双开两个账号）公网联机：零 frp、零端口转发 —— **✅ 已实测可行（2026-08 用户确认）**；
+- [x] 确认日志链：`OnPlayerJoin: requested craft xml` → `OnCraftXmlResponse: received craft xml` → 飞船互见（公网实测确认）；
+- [x] 断线/重连、大 XML 传输（公网实测确认）。
 
 ---
 
@@ -131,4 +149,5 @@ flowchart LR
 ## 七、决策记录
 
 - 2026-08-13：FishNet 高层 API 被 codegen 否决；frp 不支持 UDP → 决定引入 Steam API 实现零端口转发穿透，效仿 SP2 的 FishySteamworks；
-- 2026-08-13：确认 JNO（AppID 870200）已集成 Steam，游戏 Managed 自带 `com.rlabrecque.steamworks.net.dll`，mod 可复用；游戏 `ModManagerScript` 证明 mod 代码路径可调 Steam API。
+- 2026-08-13：确认 JNO（AppID 870200）已集成 Steam，游戏 Managed 自带 `com.rlabrecque.steamworks.net.dll`，mod 可复用；游戏 `ModManagerScript` 证明 mod 代码路径可调 Steam API；
+- 2026-08-15：SteamTransport 按本文落地并设为默认传输（[`MpNetworkManager.cs:35`](../Assets/Scripts/Net/MpNetworkManager.cs:35)）；`SteamJoinLobby <hostSteamId>` 手动输入房主 SteamId（Lobby 未做）；TCP 保留为 VM debug 通道（见 [`tcp-transport-for-vm-debug.md`](tcp-transport-for-vm-debug.md)）。

@@ -12,4 +12,22 @@
     <s id="MultiPlayer.MultiPlayerUI.EnterHostSteamId">Enter Host SteamId</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidSteamId">Invalid SteamId: '{0}'\nMust be 17 digits</s>
     <s id="MultiPlayer.Mod.HostLobbyError">Unable to host lobby: SteamId not obtained (Steam not initialized or not logged in)</s>
+    <s id="MultiPlayer.MultiPlayerUI.ConnectionStatus">Connection</s>
+    <s id="MultiPlayer.MultiPlayerUI.NotConnected">Not connected</s>
+    <s id="MultiPlayer.MultiPlayerUI.HostingStatus">Hosting as {0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.Players">Players</s>
+    <s id="MultiPlayer.MultiPlayerUI.NoPlayers">No players online</s>
+    <s id="MultiPlayer.MultiPlayerUI.PlayersConnected">Players connected ({0})</s>
+    <s id="MultiPlayer.MultiPlayerUI.HostTag">(Host)</s>
+    <s id="MultiPlayer.MultiPlayerUI.TickRateLabel">Tick Rate</s>
+    <s id="MultiPlayer.MultiPlayerUI.TickRate">{0} Hz</s>
+    <s id="MultiPlayer.MultiPlayerUI.HostSettings">Host Settings</s>
+    <s id="MultiPlayer.MultiPlayerUI.TickRateSlider">Tick Rate (Hz)</s>
+    <s id="MultiPlayer.MultiPlayerUI.TickRateHint">Applies to all connected clients</s>
+    <s id="MultiPlayer.MultiPlayerUI.DebugGroup">Debug (TCP)</s>
+    <s id="MultiPlayer.MultiPlayerUI.TcpHostLobbyButton">TCP Host Lobby</s>
+    <s id="MultiPlayer.MultiPlayerUI.TcpJoinLobbyButton">TCP Join Lobby</s>
+    <s id="MultiPlayer.MultiPlayerUI.TcpHostStarted">TCP lobby started on port {0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">Enter host IP (e.g. 192.168.56.1:25555)</s>
+    <s id="MultiPlayer.MultiPlayerUI.InvalidTcpHost">Invalid host: '{0}'</s>
 </Strings>
