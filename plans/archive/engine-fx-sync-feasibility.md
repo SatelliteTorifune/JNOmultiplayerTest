@@ -2,14 +2,35 @@
 
 > 项目:JNOmultiplayerTest(aMptest)
 > 反编译参考:`C:/renko/shitProgram/jnoCode`
-> 定位:[`multi-craft-sync.md`](multi-craft-sync.md) 的补充分析——回答"幽灵船的引擎尾焰/烟雾/热畸变能否同步、怎么同步、代价多大"
+> 状态:**✅ 已归档**。尾焰(液体+航发两段加力)、烟雾(速度注入)、过膨胀(膨胀比)同步均已实现并实测通过(2026-08)。本文档为开发经验存档,细节以代码内注释为准。
+> 定位:~~[`multi-craft-sync.md`](../multi-craft-sync.md) 的补充分析~~ → 已由「尾焰/烟雾/过膨胀同步」实测闭环,移入 `plans/archive/`。回答"幽灵船的引擎尾焰/烟雾/热畸变能否同步、怎么同步、代价多大"
 > 结论先行:**火焰(尾焰)可同步且成本几乎为零;烟雾/热畸变/RCS 只能做"输入同步 + 本地仿真"(形态一致、非逐粒子一致);粒子级精确同步不可行;幽灵重开物理不可取。**
+
+---
+
+## 〇、经验教训(归档修订)
+
+> 本文方案已按 §3~§10 落地(尾焰 Route A/B、烟雾 `InjectGhostMotion`、过膨胀 `ExpansionRatio` 同步),归档为开发经验记录。
+
+**经验教训**:
+
+1. **「无副作用」要分面看**:写 kinematic 刚体的 `velocity` 对**物理**无副作用(不积分),但 Unity 会对**每次 setter 调用打告警**——幽灵全 kinematic + 每帧每 body 写一次会刷爆 `Player.log`(单会话 ~1.3M 条)。修法:值变化阈值门控 + 写入时临时 `isKinematic=false`→写→改回(调用点在 `Update`、物理步在帧末,刚体不会被真正积分),见 §10.3.1。
+2. **幽灵引擎的"每帧更新"路径会静默失效**,且各有各的失效方式:
+   - 航发:`JetEngineGhostPatch` 跳过 `FlightFixedUpdate`/`FlightUpdate` → 膨胀比(过膨胀)冻结;
+   - 液体火箭:`UpdateExhaustExpansionRatio` 被 `Data.Activated` 门控,幽灵上 false → 永不更新。
+   - 排查要**反编译定位"这个视觉量由哪个方法、在什么门控下更新"**,而不是只驱动 throttle。
+3. **让游戏自己算最稳**:火箭过膨胀最终用「幽灵引擎置 `Data.Activated=true`」让游戏自身的 `UpdateExhaustExpansionRatio` 跑(物理已禁用 → 不会真点火/耗燃料),再以公式写入作冗余兜底——不依赖反射/找对象。
+4. **`AltitudeCompensation>0` 的高度补偿引擎 `ExitPressure` 会被置 0**,本来就不该有过膨胀,不是 bug。
+5. **调试日志要节流 + 带删除标记**:过膨胀验证阶段加了 Setup/每 5s 的 `MP engineVisual ...` 日志,验证通过后已删除。
+6. **注意幽灵大气压** `CraftScript.AtmosphereSample.AirPressure`(结构体,不可判空;由 CraftFlightData 按位置刷新)——所有大气相关视觉(膨胀比/烟雾/热畸变)都依赖它正确。
+
+**✅ 实测完成(2026-08,用户确认)**:航发(非加力+加力两段)与液体火箭的尾焰、拖尾、过膨胀在联机中与发送端一致;诊断日志已移除,`dotnet build` exit 0 / 0 警告 / 0 错误。
 
 ---
 
 ## 0. 现状(plan 已认定的限制)
 
-- [`multi-craft-sync.md`](multi-craft-sync.md) 8.2-5 决策:**燃料/资源/部件状态 MVP 不同步**,并记为"幽灵物理关 → 引擎视觉本来不跑"。
+- [`multi-craft-sync.md`](../multi-craft-sync.md) 8.2-5 决策:**燃料/资源/部件状态 MVP 不同步**,并记为"幽灵物理关 → 引擎视觉本来不跑"。
 - 幽灵船 = `AllowPlayerControl=false` + `SetPhysicsEnabled(false, Warp)` + 全 body kinematic + `DisableCraftPhysicCalculation`(清全部碰撞体)。
 
 > 本文不推翻 8.2-5:同步的是"视觉驱动值"(throttle),不是燃料数值;顺带能在视觉上反映"油尽熄火"(throttle→0)。
@@ -71,13 +92,14 @@
 - 做法:反射取 `_engineCommon`,设 `ExhaustThrottleOverride = () => syncThrottle[i]` → 火焰随同步值渲染;
 - ⚠️ RocketEngine 特有:`FlightUpdate` 传 `smokeOpacity = num²·num`(num=`AdjustedThrottle()`,幽灵上=0)→ **烟雾 opacity=0 不发射**。火焰 MVP 不受影响;做烟雾时需额外 shim 或直接注入。
 
-**航发加力(`JetEngineScript`):必须先中和它自己的 `FlightFixedUpdate`**
+**航发尾焰(`JetEngineScript`):两段 —— 非加力 + 加力,必须先中和它自己的 `FlightFixedUpdate`**
 - 幽灵的 JetEngineScript `FlightFixedUpdate` 每 FixedUpdate:性能分支失败 → `_afterburnerThrottle=0`([JetEngineScript.cs:401](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/JetEngineScript.cs:401))+ `_rocketExhaustSystem.UpdateExhaust(0)`([JetEngineScript.cs:441](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/JetEngineScript.cs:441))→ **每帧反打**,不能只注入 `_afterburnerThrottle`(会被重置);
 - 做法:用 Harmony prefix 跳过幽灵 JetEngineScript 的 `IFlightFixedUpdate`(与 8.1-3 拦总入口同套路),然后 mod 每帧直接驱动:
-  - `_rocketExhaustSystem.UpdateExhaust(syncAfterburnerThrottle)`(反射取字段);
-  - 主 nozzle 的 `ExhaustSystemScript`(加力态主火焰也由 afterburner 驱动);
-  - 可选同值 `_engineCommon.ExhaustThrottleOverride`,避免 Update 阶段干扰。
-- **发送端采样**:jet 用 `_afterburnerThrottle`(加力尾焰精确驱动值,幽灵上恒 0,必须显式同步);液体用 `_engineCommon.EngineThrottle`。
+  - **非加力段**(主喷嘴火焰/烟雾门控)= 同步 `EngineThrottle`,经 `ExhaustThrottleOverride=()=>sync[i]` + `EngineCommon.FlightUpdate(1f,1f)` 驱动(主 nozzle 的 ExhaustSystemScript);
+  - **加力段** = 接收端用幽灵自身 `JetEngineData`(`hasAfterburner`/`afterburnerThrottleStart`,双端同 XML)从同步 `EngineThrottle` 推导
+    `ab = Clamp01((t-start)/(1-start))`,再以 `flame = ab>0 ? Lerp(t,1,ab) :  t` 作为**最后一笔**写入同一 `ExhaustSystemScript`(它与主 nozzle 的 exhaust 是同一对象:`Nozzle/ExhaustSystem`;发送端 `_afterburnerThrottle` 正是这个式子)。
+- **发送端采样**:jet 用 `_engineCommon.EngineThrottle`(非加力段;加力段接收端本地推导,不额外占带宽);液体用 `_engineCommon.EngineThrottle`。
+- **库存部件事实**(自游戏资源 resources.assets 提取):Whiplash `hasAfterburner=true`、`afterburnerThrottleStart` 默认 0.8(另一 0.6+LOX 变体);Wheesley/Goliath 无 `hasAfterburner`(非加力段火焰也要显示,驱动随同步 throttle 即可)。
 
 ---
 
@@ -113,7 +135,8 @@
    - 但 [`ExhaustDamageScript`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/ExhaustDamageScript.cs:74) 仍会每 FixedUpdate 跑(发地形尘 `_dust`) → 建议把其 MonoBehaviour `enabled=false`。
 3. **烟雾速度**(关键细节):
    - 幽灵 body 全 kinematic,而 `RecalculateFrameState` 只对非 kinematic 刚体累加速度([CraftUtils.cs:63](../Assets/Scripts/CraftUtils.cs:63)) → 幽灵 `rigidbody.velocity≈0` → 烟迹不拖尾;
-   - 解决:每帧把同步 `recdata.Velocity`(转帧空间)写入幽灵 kinematic rigidbody 的 `velocity`(无副作用),`SmokeTrailScript.LateUpdate` 即会发出正确拖尾。
+   - 解决:每帧把同步 `recdata.Velocity`(转帧空间)写入幽灵 kinematic rigidbody 的 `velocity`,`SmokeTrailScript.LateUpdate` 即会发出正确拖尾。
+     ⚠️ 写入方式有讲究:Unity 对 kinematic 刚体写 velocity 每次打告警,曾刷爆 Player.log —— 2026-08 已修(值不变跳过 + 临时切非 kinematic),详见 §10.3.1。
 4. **尾焰朝向**:无 gimbal 时火焰沿机轴;需要时**只复制 `UpdateNozzle` 的旋转计算(转视觉 nozzle,绝不施加力)**,用同步 `Pitch/Yaw/Roll`。
 5. **平滑**:`recdata.Throttle` 已走现有插值缓冲 → 松油门时火焰平滑收小,不阶跃。
 6. **LOD**:低频残骸(plan MC2 慢发对象)可只做火焰不做烟雾,或距离外跳过,省粒子预算。
@@ -131,10 +154,10 @@
 
 ## 7. 风险与开放问题
 
-1. ~~幽灵引擎 modifier 是否真的收到 `IFlightUpdate`?~~ **✅ 已定论:收到**(见 §3.5 证据链)。液体走 Route A;jet 加力需先中和其 `FlightFixedUpdate`(见 §3.6)。仍建议首次联机时加一行打点,确认与静态结论一致。
+1. ~~幽灵引擎 modifier 是否真的收到 `IFlightUpdate`?~~ **✅ 已定论:收到**(见 §3.5 证据链)。液体走 Route A;jet 需先中和其 `FlightFixedUpdate`(见 §3.6)。仍建议首次联机时加一行打点,确认与静态结论一致。
 2. **`ExhaustDamageScript` 残留行为**(地形尘/加热)需禁用后回归验证。
 3. **`smokeOpacity` / `light` 输入在幽灵上陈旧**(读 `AtmosphereSample`/`FlightData`)→ 烟雾透明度/亮度轻微差异,可接受或显式覆盖。
-4. **加力喷气**:JetEngine 的 `ExhaustThrottleOverride` 已被加力逻辑占用 → 幽灵上覆盖后以同步值(发送端 `EngineThrottle` 已含加力)为准,正确。
+4. **加力喷气**:JetEngine 的 `ExhaustThrottleOverride` 已被加力逻辑占用 → 幽灵上覆盖为同步**非加力段** `EngineThrottle`,加力段由接收端本地推导并作最后一笔写入(见 §3.6/§9.2-2),正确。
 5. **热畸变受本地画质设置**(HeatDistortion On/Off)影响——跨端可能一个开一个关,这本来就属于画质差异,无需同步。
 
 ---
@@ -156,7 +179,7 @@
 
 ## 9. 实施状态(尾焰 MVP 已落地)
 
-已按"液体尾焰 + 航发加力尾焰"优先实现(2025 落地,见代码内注释 `plans/engine-fx-sync-feasibility.md §3.5/§3.6`):
+已按"液体尾焰 + 航发尾焰(非加力 + 加力两段)"实现(2025 落地,见代码内注释 `plans/archive/engine-fx-sync-feasibility.md §3.5/§3.6`):
 
 ### 9.1 已实现文件
 
@@ -170,18 +193,26 @@
 
 ### 9.2 实现要点(含与 §3.6 的修正)
 
-1. **发送端采样**(`SampleEngineThrottles`):确定顺序 = `Data.Assembly.Parts` → 每部件 `Modifiers`;液体取 `_engineCommon.EngineThrottle`,航发取 `_afterburnerThrottle`(加力驱动值,构造函数 `ExhaustThrottleOverride=()=>_afterburnerThrottle` 同源)。
+1. **发送端采样**(`SampleEngineThrottles`):确定顺序 = `Data.Assembly.Parts` → 每部件 `Modifiers`;液体与航发都取 `_engineCommon.EngineThrottle`。航发的**加力段不单独占带宽**,接收端用幽灵自身 `JetEngineData`(`hasAfterburner`/`afterburnerThrottleStart`,双端同 XML)从该值推导。
 2. **接收端三档驱动**(`EngineVisualDriver.DriveDirectly`):
    - **`EngineScript`(基础液体)** → `DriveDirectly=false`:Route A,游戏自身 `IFlightUpdate` 每帧**无条件**调 `EngineCommon.FlightUpdate`,经 override 驱动;MP 层不重复调(避免 `_textureShiftSpeed` 双倍滚动)。
    - **`RocketEngineScript`** → `DriveDirectly=true`:**新增修正**——其 `IFlightUpdate.FlightUpdate` 被 `(Activated && throttle>0) || _hasBeenActivated` 门控,幽灵上 `AdjustedThrottle()==0` 时游戏**不调** `EngineCommon.FlightUpdate`,必须由 MP 层每帧直接调。
-   - **`JetEngineScript`** → `DriveDirectly=true`:自身 `FlightFixedUpdate`(每 FixedUpdate 归零 `_afterburnerThrottle` 并 `UpdateExhaust(0)` 反打)与 `FlightUpdate` 均被 Harmony patch 跳过;MP 层每帧驱动 `_rocketExhaustSystem.UpdateExhaust(t)`(加力大尾焰)+ `EngineCommon.FlightUpdate(1f,1f)`(主喷嘴火焰)。
-3. **幽灵副作用抑制**:`SetupGhostEngineVisuals` 把每部件下 `SmokeTrailScript` GO 置 inactive(烟雾先行,LateUpdate 不再发粒子)+ `ExhaustDamageScript.enabled=false`(防地形尘/加热)。
+   - **`JetEngineScript`** → `DriveDirectly=true`:**航发尾焰分两段**——自身 `FlightFixedUpdate`(每 FixedUpdate 归零 `_afterburnerThrottle` 并 `UpdateExhaust(0)` 反打)与 `FlightUpdate` 均被 Harmony patch 跳过;MP 层先 `EngineCommon.FlightUpdate(1f,1f)`(override=同步非加力值 → 主喷嘴火焰/烟雾门控),再以加力 boost 值(本地推导)`UpdateExhaust(flame)` 作最后一笔写入同一 `ExhaustSystemScript`(它与主 nozzle 的 exhaust 是同一对象 `Nozzle/ExhaustSystem`)。修正前只同步 `_afterburnerThrottle` → 非加力态(油门<afterburnerThrottleStart)幽灵无火焰无烟,已修。
+   - **航发烟雾颜色 / SpeedOverride**(`ApplyJetSmokeVisuals`,每帧补):发送端在 jet 自身 `FlightUpdate` 里设(加力→`_afterburnerSmokeColor` + `1.0×SmokeSpeed`;非加力→近白 `alpha=0.1×throttle` + `0.75×SmokeSpeed`;有自定义烟色 `TryGetSmokeColor` 时 RGB 取自定义;`EmissionEnabled=HasSmoke && throttle>0`),幽灵已被 patch 跳过 → 由 MP 层按同公式重写 `SmokeTrailScript.Color/SpeedOverride/EmissionEnabled/Throttle`。Setup 时把 `HasSmoke`/`SmokeSpeed`/自定义烟色/`_afterburnerSmokeColor`(反射)缓存进驱动表。
+3. **幽灵副作用抑制**:`SetupGhostEngineVisuals` 把每部件下 `ExhaustDamageScript.enabled=false`(防地形尘/加热)。**烟雾不再禁用**:`SmokeTrailScript` GO 保持 active,拖尾由 `InjectGhostMotion` 注入的 rigidbody.velocity 驱动(见 §10)。
 4. **顺序契约**:两端同 XML 构建 → parts/modifiers 顺序一致,index 一一对应;读取端越界兜底 0。
 5. **平滑**:throttle 跟随现有插值缓冲,`ApplyRemoteState` 时快照进 `rc.SyncedThrottles`,override 闭包与驱动都读它。
 6. **航发 patch 选目标**:显式接口实现的 `MethodInfo.Name` 是带接口前缀的 `"IFoo.Bar"`(**不是**简单名 `"Bar"`)——只比简单名会匹配不上,`TargetMethod()` 返回 null 导致 Harmony `Patching exception`(首次联机实测报错 `[MpTest] Init failed: HarmonyException ... TargetMethod() returned an unexpected result: null`)。已独立 dotnet 测试复现(显式接口实现 `Name='IFoo.Bar'`)。修正两处:
    - 用 `IsNamed`(简单名 或 `EndsWith(".方法名")`)匹配 + `GetMethods` 兜底;
    - **改用手动打补丁**:去掉 `[HarmonyPatch]` 自动发现,由 `Mod.OnModInitialized` 在 `PatchAll()` 后调 `JetEngineGhostPatch.Apply(harmony)`,目标方法找不到时静默跳过(液体尾焰仍可用),不再抛异常打断整个 mod 初始化。
    (实测 `GetInterfaceMap(typeof(IFlightUpdate))` 只含自身方法,不把继承的 `IGameLoopItem` 成员放进 TargetMethods。)
+7. **过膨胀(尾焰膨胀比)同步**(✅ 已实现,2026-08):幽灵引擎的 `ExhaustSystemScript.ExpansionRatio` 更新路径全部失效——航发被 `JetEngineGhostPatch` 跳过(`JetEngineScript.FlightFixedUpdate` 的 `81060/pressure` 公式不跑),液体火箭被 `Data.Activated` 门控(`RocketEngineScript.FlightUpdate` 幽灵上不跑)→ 尾焰形状冻结(高空该膨胀不膨胀)。修法:`DriveGhostEngineVisuals` 每帧按发送端同式用**幽灵自身大气压**(`CraftScript.AtmosphereSample.AirPressure`,已由 CraftFlightData 按位置刷新)补算写入:
+   - **航发**:`81060.0012 / max(1,p)` → clamp `[ExhaustExpansionRange.x, MaxExpansionRatio]`(MaxExpansionRatio 幽灵 FlightStart 已算);
+   - **液体火箭**:`sqrt(ExitPressure/max(p,15)) × (1-0.85×AltComp)` → clamp `[ExhaustExpansionRange.x, .y]`。**双保险**:
+     ①主机制 = Setup 时把幽灵引擎置 `Data.Activated=true`(物理已禁用 → `OnActivated` 不会真正点火/耗燃料,只让游戏自身 `FlightUpdate` 里的 `UpdateExhaustExpansionRatio` 每帧按幽灵大气压跑,用**真实** `_params.Dynamic.ExitPressure`);②冗余兜底 = `SyncRocketExpansionRatio` 按同式写入(`ExitPressure` 反射自 `_params.Dynamic.ExitPressure`,Setup 时缓存)。两处值同源,幂等。
+   - 注意:`AltitudeCompensation>0` 的高度补偿引擎 `CalculateStaticPerformance` 会把 `ExitPressure` 置 0 → 本来就不该过膨胀(与真实一致,不是 bug)。
+   - 诊断:验证阶段加了 Setup 一条 + `SyncRocketExpansionRatio` 每 5s 一条的 `MP engineVisual ...` 日志;实测通过(2026-08)后**已删除**。
+   写入时机在 `EngineCommon.FlightUpdate`(主喷嘴)与 `UpdateExhaust`(加力段)之前,熄火跳过。改动文件 `EngineVisualSync.cs`(`EngineVisualDriver` + `SetupGhostEngineVisuals` + `DriveGhostEngineVisuals` + `SyncJetExpansionRatio`/`SyncRocketExpansionRatio`/`GetRocketExitPressure`)。
 
 ### 9.3 已知留白 / 后续
 
@@ -223,7 +254,7 @@
 | `AtmosphereSample`(AirDensity 门槛/透明度) | ✅ 正确 | `CraftFlightData.Update` 每帧按当前位置 `SampleAltitude` 刷新([CraftFlightData.cs:570](file:///C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/FlightData/CraftFlightData.cs:570)) |
 | `ExhaustSystemScript.ExpansionRatio`(烟雾门槛 num>5) | ✅ 正确 | 由 `UpdateExhaust` 从幽灵自身大气/throttle 计算 |
 | `ExhaustDamageScript`(地形尘/加热) | ✅ 已禁用 | §9 已处理 |
-| **`rigidBody.velocity`(拖尾)** | ❌ ≈0 | **唯一缺口,见 §10.3** |
+| **`rigidBody.velocity`(拖尾)** | ❌ ≈0(写入会触发 Unity kinematic velocity 告警,见 §10.3.1) | **唯一缺口,见 §10.3** |
 
 ### 10.3 设计:逐帧注入同步速度(核心,已实现)
 
@@ -232,10 +263,14 @@
 
 ```
 frameVel = frame.PlanetToFrameVelocity( planet.SurfaceVectorToPlanetVector(data.Velocity) )
-foreach body in ghost.Assembly.Bodies:
-    if body.RigidBody.isKinematic:
-        body.RigidBody.velocity = frameVel
-        body.RigidBody.angularVelocity = (本次朝向 - 上次朝向) 的轴角 / 帧时长   # §10.4-1
+needWrite = 速度/角速度相比上次注入变化超过阈值        # 2026-08:值不变则跳过(见 §10.3.1)
+if needWrite:
+    foreach body in ghost.Assembly.Bodies:
+        if body.RigidBody.isKinematic:
+            body.RigidBody.isKinematic = false         # 2026-08:临时切回非 kinematic,消除 Unity 告警
+            body.RigidBody.velocity = frameVel
+            body.RigidBody.angularVelocity = (本次朝向 - 上次朝向) 的轴角 / 帧时长   # §10.4-1
+            body.RigidBody.isKinematic = true
 ```
 
 - **空间自洽**:发送端 `recdata.Velocity = PlanetVectorToSurfaceVector(craft.Velocity)`([MpNetworkManager.cs:1891](file:///C:/renko/unityProjects/JNOmultiplayerTest/Assets/Scripts/Net/MpNetworkManager.cs:1891)),
@@ -246,16 +281,31 @@ foreach body in ghost.Assembly.Bodies:
   **调用点约束**:必须在 `ApplyRemoteState` 里、写 `rc.LastAppliedHeading = headingFrame` **之前**调用,才能读到上一次朝向。
 - **无副作用**:kinematic 刚体不把 velocity/angularVelocity 积分进位置;幽灵摆放走 `GroundedSurface*` + `SetStateVectors`(mod 每帧写),
   不读 rigidbody.velocity → 不会双重移动。附带好处:幽灵 `MachNumber`(读 velocity)也随之正确。
+  ⚠️ 这里的"无副作用"仅指**物理面**;**日志面**有例外(Unity 对 kinematic 写 velocity 打告警、曾刷爆 Player.log),见 §10.3.1。
 - **烟雾放开**:`SetupGhostEngineVisuals` 不再把 `SmokeTrailScript` GO `SetActive(false)`
   (飞行场景下默认 active;发射由 `EmissionEnabled=throttle>0` 门控,熄火无烟)。
 - **抽帧/带宽**:无需新增字段,直接用现有 `recdata.Velocity`。
 - **时序**:MpNetworkManager `DefaultExecutionOrder(1000)`,`InjectGhostMotion` 在 Update 末尾写入,`SmokeTrailScript.LateUpdate`
   在其后发射 → 当帧生效。EngineScript 走游戏 Route A(顺序 0)时 `_smoothedCraftVelocity` 滞后一帧(≈16ms),不可感知。
 
+### 10.3.1 修正记录(2026-08):Unity kinematic velocity 告警刷屏
+
+§10.3「无副作用」只讲了**物理面**(kinematic 刚体不积分 velocity、不移动位置)——这没错,但漏了**日志面**:
+Unity 2022.3 对 kinematic 刚体**每次**写 `Rigidbody.velocity` / `angularVelocity` 都会打告警
+`Setting linear velocity of a kinematic body is not supported.`(及 angular 版)。
+
+- **现象**:幽灵船全 kinematic + 每帧每 body 写一次 → `Player.log` 单会话刷出 **~131.98 万条 linear + 15.2 万条 angular**,占日志 **99.8%**(1,474,400 行里只有 2,813 行非告警)。
+- **根因链路**:`InitializeRemoteCraft` 把所有 body 设 `isKinematic=true` → `UpdateRemoteCrafts` 每帧 `ApplyRemoteState` → `InjectGhostMotion` 特意只写 kinematic body(`if (!rb.isKinematic) continue;`)→ 每帧每 body 触发 Unity 告警,从首个幽灵初始化一路刷到退出。
+- **修法**(2026-08,已 `dotnet build aMptest.csproj` 编译通过 exit 0 / 0 警告 / 0 错误):
+  1. **值不变则跳过**:`RemoteCraft` 新增 `LastInjectedVelocity` / `LastInjectedAngularVelocity` 缓存;线性变化阈值 ~0.1 m/s、角速度 ~0.03 rad/s → 平稳飞行时几乎零写入,点火/变向时才写;
+  2. **写入时临时切回非 kinematic**:`rb.isKinematic=false → 写 velocity/angularVelocity → rb.isKinematic=true`。所有调用点都在 `Update`(物理步在帧末),刚体永远不会被真正积分;velocity 数据照常存储,`SmokeTrailScript` 读 `rigidbody.velocity` 不受影响,物理行为不变。
+- **改动文件**:`Assets/Scripts/Net/EngineVisualSync.cs`(`InjectGhostMotion`)、`Assets/Scripts/Net/MpNetworkManager.cs`(`RemoteCraft` 缓存字段)。
+- **回归注意**:修的是"写入方式",不改变发送/插值/烟雾逻辑;验证时除看日志归零外,还要确认幽灵船尾焰拖尾与翻滚烟迹仍正常——那才是注入还活着的证据。
+
 ### 10.4 可选精修(按需)
 
 1. **角速度注入**:`_smoothedCraftVelocity` 还含 `Cross(angularVelocity, offset)`(翻滚时排气口切向速度)。
-   从每帧朝向旋转增量算 `rigidBody.angularVelocity` 写入(kinematic 无副作用);不做则翻滚中的幽灵烟迹略"呆"。
+   从每帧朝向旋转增量算 `rigidBody.angularVelocity` 写入(物理面无副作用;日志面告警按 §10.3.1 的临时切非 kinematic 处理);不做则翻滚中的幽灵烟迹略"呆"。
 2. **发射率精确化**:`num5` 用 `FlightData.SurfaceVelocityFrame`([CraftFlightData.cs:582](file:///C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/FlightData/CraftFlightData.cs:582))
    = `_craftScript.FrameVelocity + FrameSurfaceVelocity`,而幽灵 `FrameVelocity` 可能陈旧 → 发射率偏差。
    可反射写 `CraftScript._frameVelocity` 或用 `num5` 兜底(`_smoothedCraftVelocity.magnitude`)。

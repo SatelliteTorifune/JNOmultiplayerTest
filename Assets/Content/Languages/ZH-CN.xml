@@ -32,6 +32,7 @@
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpPort">无效端口：'{0}'</s>
     <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">输入房主 IP（如 192.168.56.1:25555）</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpHost">无效地址：'{0}'</s>
+    <s id="MultiPlayer.MultiPlayerUI.RebuildPanelButton">强制重建面板</s>
     <s id="MultiPlayer.MultiPlayerUI.PlayerList">玩家列表</s>
     <s id="MultiPlayer.MultiPlayerUI.YouTag">(本机)</s>
     <s id="MultiPlayer.MultiPlayerUI.KickButton">踢出 {0}</s>

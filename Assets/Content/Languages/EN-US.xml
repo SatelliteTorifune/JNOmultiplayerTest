@@ -32,6 +32,7 @@
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpPort">Invalid port: '{0}'</s>
     <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">Enter host IP (e.g. 192.168.56.1:25555)</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpHost">Invalid host: '{0}'</s>
+    <s id="MultiPlayer.MultiPlayerUI.RebuildPanelButton">Force Rebuild Panel</s>
     <s id="MultiPlayer.MultiPlayerUI.PlayerList">Players</s>
     <s id="MultiPlayer.MultiPlayerUI.YouTag"> (You)</s>
     <s id="MultiPlayer.MultiPlayerUI.KickButton">Kick {0}</s>

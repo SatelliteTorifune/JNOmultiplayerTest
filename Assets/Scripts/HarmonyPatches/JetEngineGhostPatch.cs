@@ -11,7 +11,7 @@ namespace Assets.Scripts
 {
 	/// <summary>
 	/// 幽灵(远程)航发:跳过 JetEngineScript 自身的 IFlightFixedUpdate / IFlightUpdate。
-	/// 反编译定论(plans/engine-fx-sync-feasibility.md §3.5):幽灵引擎 modifier 确实收到游戏飞行循环回调;
+	/// 反编译定论(plans/archive/engine-fx-sync-feasibility.md §3.5):幽灵引擎 modifier 确实收到游戏飞行循环回调;
 	/// 对液体这正好让 Route A(ExhaustThrottleOverride)生效,但对航发是个坑 —— 其 FlightFixedUpdate 每 FixedUpdate
 	/// 会把 _afterburnerThrottle 归零并调 _rocketExhaustSystem.UpdateExhaust(0) 反打(§3.6),故必须跳过,
 	/// 尾焰改由 EngineVisualSync.DriveGhostEngineVisuals 用同步值直接驱动。

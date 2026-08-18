@@ -1042,6 +1042,12 @@ namespace Assets.Scripts.Net
 			public float LastVisualLogTime; // 可见性诊断日志计时
 			public Quaternion LastAppliedHeading; // ApplyRemoteState 最近一次写入的帧空间朝向(诊断用)
 
+			// --- 烟雾速度注入(EngineVisualSync.InjectGhostMotion):上次注入的帧空间速度/角速度缓存 ---
+			// 值未变化时跳过写入:Unity 对 kinematic 刚体每次写 velocity 都打告警(见 InjectGhostMotion),
+			// 幽灵全 kinematic + 每帧每 body 写一次会把 Player.log 刷爆(~1.3M 条/会话)。
+			public Vector3? LastInjectedVelocity;
+			public Vector3? LastInjectedAngularVelocity;
+
 			// --- 引擎尾焰同步(EngineVisualSync):最近应用状态中的每引擎视觉 throttle + 幽灵驱动表 ---
 			public List<float> SyncedThrottles = new List<float>();
 			public List<EngineVisualSync.EngineVisualDriver> EngineDrivers;
@@ -1745,7 +1751,7 @@ namespace Assets.Scripts.Net
 			// 注(2026-08 反编译复查):幽灵的引擎/部件 modifier 实际仍收 IFlightUpdate/IFlightFixedUpdate
 			// (MonoBehaviourBase.OnEnable 注册只看 enabled,无物理过滤;CraftScript.EnablePhysics(false) 不禁用 MonoBehaviour)。
 			// FlightData 仍可能因"游戏 FlightUpdate 读 CenterOfMass 先于本帧状态写入"而滞后,
-			// 故此反射立即刷新保留(参见 plans/engine-fx-sync-feasibility.md §3.5)。
+			// 故此反射立即刷新保留(参见 plans/archive/engine-fx-sync-feasibility.md §3.5)。
 			if (frame != null && rc.Node.CraftScript.CenterOfMass != null)
 			{
 				try

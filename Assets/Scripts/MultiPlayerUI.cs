@@ -146,6 +146,8 @@ namespace Assets.Scripts
             };
             debugGroup.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.TcpHostLobbyButton"), (b) => OnTcpHostLobbyClick()));
             debugGroup.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.TcpJoinLobbyButton"), (b) => OnTcpJoinLobbyClick()));
+            //调试：强制整体重建 inspector 窗口（更新玩家分组 + RebuildModelElements），用于排查 UI 刷新问题
+            debugGroup.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.RebuildPanelButton"), (b) => ForceRebuildPanel()));
             inspectorModel.AddGroup(debugGroup);
 
             inspectorPanel = Game.Instance.UserInterface.CreateInspectorPanel(inspectorModel,
@@ -404,15 +406,17 @@ namespace Assets.Scripts
             // 确保走 Steam 传输（若之前切到过 TCP debug，先切回，避免"Steam 按钮实际走 TCP"）
             MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
             if (mgr != null && !(mgr.Transport is Net.SteamTransport)) mgr.SetTransport(new Net.SteamTransport());
-            // 端口已无意义（Steam 无真实端口/端口转发），直接开房
             bool ok = LobbyManager.Instance.HostLobby(0);
             if (ok)
             {
                 ulong steamId = 0UL;
                 var m =  MpNetworkManager.Instance;
                 if (m != null && m.Transport is Net.SteamTransport st) steamId = st.LocalSteamId;
-                global::ModApi.Ui.MessageDialogScript msg = Game.Instance.UserInterface.CreateMessageDialog(global::ModApi.Ui.MessageDialogType.Okay, null, true);
-                msg.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyStarted", steamId);
+                global::ModApi.Ui.InputDialogScript idDialog = Game.Instance.UserInterface.CreateInputDialog(null);
+                idDialog.MessageText =Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyStarted", steamId);
+                idDialog.InputText = steamId.ToString();
+                idDialog.OkayClicked += delegate(global::ModApi.Ui.InputDialogScript d) {d.Close(); };
+
             }
         }
 
