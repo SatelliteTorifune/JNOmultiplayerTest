@@ -461,15 +461,30 @@ namespace Assets.Scripts.Net
 			{
 				rc.Node.CraftScript.CenterOfMass.rotation = headingFrame;
 			}
-			if (data.BodyRotations != null)
+			ApplyRemoteBodyPoses(rc, data, rc.Node.CraftScript.CenterOfMass);
+		}
+
+		/// <summary>
+		/// 应用远程飞船的每 body 姿态:旋转(相对 comRot,既有 BodyRotations)+ 位置(相对 comRot,body-sync P0 BodyPositions)。
+		/// 位置用"绝对写" body.Transform.position = comRot.TransformPoint(relPos),解决转轴/关节连接的
+		/// 子装配"整体移动"(摆动主要是位置变化,枢轴不在 comRot,旋转同步覆盖不了)。
+		/// 两列表(BodyRotations/BodyPositions)同长度同索引(发送端同循环采样),此处各自取 Mathf.Min 兜底。
+		/// 见 plans/body-sync.md。
+		/// </summary>
+		private static void ApplyRemoteBodyPoses(RemoteCraft rc, Mod.RemoteDataPack data, Transform comRot)
+		{
+			if (data.BodyRotations == null || data.BodyRotations.Count == 0) return;
+			IReadOnlyList<BodyData> bodies = rc.Node.CraftScript.Data.Assembly.Bodies;
+			if (bodies == null) return;
+			int n = Mathf.Min(bodies.Count, data.BodyRotations.Count);
+			for (int i = 0; i < n; i++)
 			{
-				IReadOnlyList<BodyData> bodies = rc.Node.CraftScript.Data.Assembly.Bodies;
-				int n = Mathf.Min(bodies.Count, data.BodyRotations.Count);
-				for (int i = 0; i < n; i++)
+				if (bodies[i].BodyScript != null && bodies[i].BodyScript.Transform != null)
 				{
-					if (bodies[i].BodyScript != null && bodies[i].BodyScript.Transform != null)
+					bodies[i].BodyScript.Transform.localRotation = Quaternion.Euler(data.BodyRotations[i]);
+					if (comRot != null && data.BodyPositions != null && i < data.BodyPositions.Count)
 					{
-						bodies[i].BodyScript.Transform.localRotation = Quaternion.Euler(data.BodyRotations[i]);
+						bodies[i].BodyScript.Transform.position = comRot.TransformPoint(data.BodyPositions[i]);
 					}
 				}
 			}
@@ -1727,18 +1742,7 @@ namespace Assets.Scripts.Net
 				rc.Node.CraftScript.CenterOfMass.rotation = headingFrame;
 			}
 			rc.LastAppliedHeading = headingFrame; // 记录本次写入值(诊断:对比 transformRot 判断是否被覆盖)
-			if (data.BodyRotations != null && data.BodyRotations.Count > 0)
-			{
-				IReadOnlyList<BodyData> bodies = rc.Node.CraftScript.Data.Assembly.Bodies;
-				int n = Mathf.Min(bodies.Count, data.BodyRotations.Count);
-				for (int i = 0; i < n; i++)
-				{
-					if (bodies[i].BodyScript != null && bodies[i].BodyScript.Transform != null)
-					{
-						bodies[i].BodyScript.Transform.localRotation = Quaternion.Euler(data.BodyRotations[i]);
-					}
-				}
-			}
+			ApplyRemoteBodyPoses(rc, data, rc.Node.CraftScript.CenterOfMass);
 
 			// ④ 刷新帧状态（Transform.position 跟随逻辑位置）
 			if (frame != null)
@@ -1783,6 +1787,14 @@ namespace Assets.Scripts.Net
 
 			// 引擎尾焰:快照最近应用状态的每引擎视觉 throttle(液体 override 闭包与航发驱动都读它)
 			if (data.EngineThrottles != null) rc.SyncedThrottles = data.EngineThrottles;
+
+			// 部件开关/展开状态(方案 B + P3):变沿 + 白名单应用(起落架/货舱/腿/太阳能/灯/SubPartRotator + 输入驱动部件),
+			// 其余部件只记录不处理(引擎→EngineVisualSync;分离器/整流罩/对接→body 同步;伞→专用驱动 P2;InputBasedActivator→不触发)
+			PartVisualSync.ApplyRemotePartActivated(rc, data);
+
+			// 控制输入应用(P3):把同步的 Pitch/Yaw/Roll/Brake/Throttle/Slider1-4/Translate*/激活组写进幽灵活动舱 Controls,
+			// 驱动输入驱动部件(舵面/Rotator/活塞/螺旋桨/RCS/gimbal 等)的远程姿态(机制见 plans §11)
+			ControlVisualSync.ApplyRemoteControls(rc, data);
 		}
 
 		private static readonly PropertyInfo _groundedSurfacePositionProp =
@@ -1924,12 +1936,18 @@ namespace Assets.Scripts.Net
 				// 每引擎视觉 throttle(尾焰同步):按确定枚举顺序,与接收端一一对应
 				data.EngineThrottles = EngineVisualSync.SampleEngineThrottles(craft);
 
+				// 每部件开关/展开状态(方案 B):按 Data.Assembly.Parts 确定顺序,与接收端一一对应
+				data.PartActivated = PartVisualSync.SamplePartActivated(craft);
+
 				// 同步每个 body 的局部姿态。关键：BodyRotations 必须存"相对质心(comRot)"的旋转，
 				// 因为接收端根=comRot（发送的 heading），且 XML 的 body/part 是质心坐标系。
 				// 若采样"相对根"的 localRotation，而发送端根≠comRot（座椅朝向，实测差~17°），
 				// 接收端按 comRot 摆放 body 时会整体转错 → "分裂/散架 + 朝向不一致"。
 				Quaternion comRotUnity = craft.CraftScript.CenterOfMass != null
 					? craft.CraftScript.CenterOfMass.rotation : craft.CraftScript.Transform.rotation;
+				// body-sync P0:相对 comRot 位置采样需要 comRot 的 Transform(与接收端 TransformPoint 精确互逆,含 scale)
+				Transform comRotTransform = craft.CraftScript.CenterOfMass != null
+					? craft.CraftScript.CenterOfMass : craft.CraftScript.Transform;
 				// LunaMultiplayer 方案:传输"相对行星地表"朝向 SrfRel。
 				// comRot 是帧空间;表面锁定帧 θ_frame = θ_planet + const(常量)。
 				// 相对地表朝向 = RotateY(θ_frame - θ_planet) * comRot(与行星自转无关)。
@@ -1949,6 +1967,9 @@ namespace Assets.Scripts.Net
 							// 相对质心 = comRot⁻¹ * body世界旋转（帧空间）
 							Quaternion relCom = Quaternion.Inverse(comRotUnity) * bodyList[bi].BodyScript.Transform.rotation;
 							data.BodyRotations.Add(relCom.eulerAngles);
+							// body-sync P0:相对 comRot 的位置(转轴/关节连接的子装配"整体移动"主要就是位置变化)。
+							// 与 BodyRotations 同循环同索引,接收端 body.Transform.position = comRot.TransformPoint(relPos)。
+							data.BodyPositions.Add(comRotTransform.InverseTransformPoint(bodyList[bi].BodyScript.Transform.position));
 						}
 					}
 				}

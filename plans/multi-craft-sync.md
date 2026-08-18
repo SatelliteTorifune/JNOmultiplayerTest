@@ -3,7 +3,7 @@
 > 项目:JNOmultiplayerTest(SimpleRockets 2 / JNO 联机 mod aMptest)
 > 反编译参考:`C:/renko/shitProgram/jnoCode`
 > KSP 参考:`C:/renko/unityProjects/LunaMultiplayer`
-> 状态:📋 方案研究阶段(已整理候选方案,待定具体实现与难度评估)
+> 状态:📋 方案研究阶段(已整理候选方案,待定具体实现与难度评估;2026-08-18 **body 级姿态同步已拆分为独立 plan [`body-sync.md`](body-sync.md)**,本文件只专注多 craft)
 > 定位:**当前唯一活跃 plan**(索引见 [`README.md`](README.md));已完成/历史文档见 `archive/`
 
 ---
@@ -256,7 +256,7 @@ Luna 不自己实现切换动作,而是挂钩 KSP `onVesselChange`(玩家按 `[`
 2. **轨道残骸**:需 `Situation`(地面/轨道)字段,接收端用 `LaunchLocationType.Orbital` 或直接 `SetStateVectors`,不能固定 `SurfaceLockedGround`(对应 MC2)。
 3. **过滤策略(可选,MC4)**:残骸只在"距任一玩家较近 / 部件数>阈值"时生成完整幽灵船;超远/极小跳过。
 4. **超时清理**:低频下 5~10s 无状态包(>3 周期)→ 远端删幽灵船,兜住"owner 侧已毁但 CraftRemove 丢 / owner 掉线"。
-5. **已知缺口**:同 craft 内 `IsDebris` 小碎片只同步旋转不同步位置(`BodyRotations` 限制),MC2 可选补 body 级位置。
+5. **已知缺口(已转出)**:同 craft 内 `IsDebris` 小碎片只同步旋转不同步位置(`BodyRotations` 限制)→ **已由独立 plan [`body-sync.md`](body-sync.md) 的 BodyPoses 覆盖**(位置+旋转相对 comRot)。
 6. **最高优先级场景 C**:"玩家分离掉唯一 pod" → `SplitCraftNode` 自动 `ChangePlayersActiveCommandPodImmediate` 切走控制权([`CraftSplitter.cs:133`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/Sim/CraftSplitter.cs:133)),原 craft 变无 pod 残骸、`FlightSceneScript.Instance.CraftNode` 自动换节点 → mod 必须 **`RefreshLocalCraft()`** 且把原 craft 从"活动船"降级为"残骸(低频)"继续上报。
 
 ---
@@ -300,3 +300,9 @@ Luna 不自己实现切换动作,而是挂钩 KSP `onVesselChange`(玩家按 `[`
 9. **Vizzy 状态**:程序状态不同步,幽灵不跑 Vizzy;MVP 外。
 10. **合约生成的 craft** —**【决策:不适用,不考虑生涯】**:`SpawnCraftRequirement` 可在飞行中 spawn **无主 craft**(无玩家可上报)。既然不做生涯/合约(见 8.1-1 决策),此场景不处理;若将来开生涯再定(约定"合约 spawn 的船仅房主同步"或忽略)。
 11. **地图显示**:[`MapViewScript.AddCraft`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/MapView/MapViewScript.cs:789) `IsPlayer || IsLoadedInGameView` → 动态图标,幽灵已加载会显示;配合 8.1-3 需限制选择/接管。
+
+### 8.4 body 级姿态同步 —— 已拆分为独立 plan
+
+> **2026-08-18**:body 级姿态同步(转轴/关节连接部件的"整体移动",BodyRotations→BodyPoses 方案 + SP2 参考可抄性结论)与 multi-craft 是两个独立目标,**已移至 [`body-sync.md`](body-sync.md)**。本文件只保留多 craft(身份/生命周期/对接/残骸/切换)内容。
+>
+> 与本文件相关的接口:原 §7.7.5 "IsDebris 小碎片只同步旋转不同步位置"缺口 → 由 [`body-sync.md`](body-sync.md) 的 BodyPoses 覆盖;分离/对接后 body 数量与顺序变化 → 由本文件 MC1/MC3 生命周期对账解决(body-sync 的索引契约依赖它)。

@@ -503,10 +503,24 @@ namespace Assets.Scripts.Net
 				w.Write(br.x); w.Write(br.y); w.Write(br.z);
 			}
 
+			// body 局部位置(相对 comRot,body-sync P0):与 BodyRotations 平行同索引;远程端据此复现转轴/关节连接的子装配"整体移动"
+			int bpCount = d.BodyPositions == null ? 0 : d.BodyPositions.Count;
+			w.Write(bpCount);
+			for (int i = 0; i < bpCount; i++)
+			{
+				Vector3 bp = d.BodyPositions[i];
+				w.Write(bp.x); w.Write(bp.y); w.Write(bp.z);
+			}
+
 			// 每引擎视觉 throttle(尾焰同步)：与发送端引擎枚举顺序一一对应
 			int etCount = d.EngineThrottles == null ? 0 : d.EngineThrottles.Count;
 			w.Write(etCount);
 			for (int i = 0; i < etCount; i++) w.Write(d.EngineThrottles[i]);
+
+			// 每部件开关状态(方案 B)：与发送端 Data.Assembly.Parts 顺序一一对应
+			int paCount = d.PartActivated == null ? 0 : d.PartActivated.Count;
+			w.Write(paCount);
+			for (int i = 0; i < paCount; i++) w.Write(d.PartActivated[i]);
 		}
 
 		public static Mod.RemoteDataPack ReadRecdata(BinaryReader r)
@@ -541,10 +555,22 @@ namespace Assets.Scripts.Net
 				d.BodyRotations.Add(new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
 			}
 
+			int bpCount = r.ReadInt32();
+			for (int i = 0; i < bpCount; i++)
+			{
+				d.BodyPositions.Add(new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
+			}
+
 			int etCount = r.ReadInt32();
 			for (int i = 0; i < etCount; i++)
 			{
 				d.EngineThrottles.Add(r.ReadSingle());
+			}
+
+			int paCount = r.ReadInt32();
+			for (int i = 0; i < paCount; i++)
+			{
+				d.PartActivated.Add(r.ReadBoolean());
 			}
 
 			return d;

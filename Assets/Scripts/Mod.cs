@@ -141,11 +141,28 @@ namespace Assets.Scripts
 			public List<Vector3> BodyRotations;
 
 			/// <summary>
+			/// 每个 body 相对 comRot(CenterOfMass)的"局部位置"(与 BodyRotations 平行、同长度同索引,body-sync P0)。
+			/// 发送端采样 comRot.InverseTransformPoint(body.Transform.position),接收端写 body.Transform.position = comRot.TransformPoint(relPos)。
+			/// 解决"转轴/关节连接的子装配随转轴整体移动"(摆动主要是位置变化)以及残骸小碎片位置缺口。
+			/// 见 plans/body-sync.md。
+			/// </summary>
+			public List<Vector3> BodyPositions;
+
+			/// <summary>
 			/// 每台引擎的"视觉 throttle"(0..1)，按确定顺序(Data.Assembly.Parts 顺序→每部件 modifiers 顺序)
 			/// 与接收端一一对应：液体引擎=EngineThrottle，航发=AfterburnerThrottle(加力尾焰驱动值)。
 			/// 接收端据此驱动幽灵船尾焰(液体走 ExhaustThrottleOverride;航发加力由 MP 层直接驱动)。
 			/// </summary>
 			public List<float> EngineThrottles;
+
+			/// <summary>
+			/// 每部件"开关/展开状态"(PartData.Activated)，按 Data.Assembly.Parts 确定顺序与接收端一一对应(方案 B)。
+			/// 接收端只对白名单部件(起落架/货舱门/着陆腿/太阳能/灯·信标/SubPartRotator)应用 Activate()/Deactivate()
+			/// 让游戏自身 FlightUpdate/动画器驱动本地视觉;引擎走 EngineVisualSync(不在此应用);
+			/// 分离器/整流罩/对接 = 只记录不处理(归 body 同步);降落伞 = 专用视觉驱动(P2)。
+			/// 见 plans/part-switch-sync-feasibility.md §3/§4/§9。
+			/// </summary>
+			public List<bool> PartActivated;
 
 			public RemoteDataPack(Vector3d position, Vector3d velocity, Quaterniond heading)
 			{
@@ -173,7 +190,9 @@ namespace Assets.Scripts
 				ActivationGroupStates = new List<bool>();
 				Stage = 0;
 				BodyRotations = new List<Vector3>();
+				BodyPositions = new List<Vector3>();
 				EngineThrottles = new List<float>();
+				PartActivated = new List<bool>();
 			}
 
 		}

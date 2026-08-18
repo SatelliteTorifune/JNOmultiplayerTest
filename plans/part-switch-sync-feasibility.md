@@ -3,7 +3,7 @@
 > 项目:JNOmultiplayerTest(aMptest)
 > 反编译参考:`C:/renko/shitProgram/jnoCode`
 > 定位:[`multi-craft-sync.md`](multi-craft-sync.md) 的补充分析——回答"幽灵船的起落架收放/货舱门/太阳能板/灯等**开关与展开状态**能否同步、怎么同步、代价多大"
-> 状态:**方案研究(已确认方案 B,待实施)**——2026-08-18 已拍板:① **方案 B**(per-part `Activated` 位);② **分离器/级间、整流罩、对接等涉及 body 改动的部件只记录、不处理**(归后续 body 同步);③ **降落伞等特殊部件先反编译定原理**(见 §9),走专用视觉驱动。正文「【决策:…】」为最终结论,实施待排期。
+> 状态:**方案 B(P0)已实现并实测通过(起落架/货舱同步 OK,2026-08-18)**;P3 控制输入应用机制已调研确认(见 §11),待实施。① 方案 B(per-part `Activated` 位);② 分离器/级间、整流罩、对接等**涉及 body 改动的部件只记录、不处理**(归后续 body 同步);③ 降落伞等特殊部件**先反编译确定原理**(见 §9),走专用视觉驱动(P2);④ 输入驱动部件(rotator/舵面等)**靠"开关+输入"双驱动**,由 P3 控制输入应用解决(§11,用户 2026-08-18 指出)。实现记录见 §10;P1(相位对齐)/P2(伞专用驱动)/P3(控制输入应用)待排期。
 > 结论先行:**同步"开关状态"可行且成本近零**——机制是同步每个部件的 `Part.Activated`(开关位),幽灵端**复用游戏自己的 FlightUpdate/动画器做本地仿真**(与 engine-fx 尾焰的 L1"输入/状态同步 + 本地仿真"完全同套路)。不推翻 8.2-5"燃料/资源不同步",只把"部件展开状态"从 8.2-5 的限制里摘出来。
 
 ---
@@ -45,7 +45,17 @@
 - **持续应用的自愈好处**:幽灵本地任何偏差(如伞按本地大气密度自切断)下一包(50ms)即被纠正。
 - 进阶(可选):起落架额外同步 `ExtensionPercent`(float)用 `SnapToExtensionPercent` 对齐动画相位;货舱 `OpenAmount`、SubPartRotator `CurrentEnabledPercent` 同理。MVP 可省(4s 动画自愈)。
 
-**【决策(2026-08-18):采用方案 B per-part `Activated` 位**,覆盖完整、带宽可忽略。**接收端应用过滤(只记录不处理 / 特殊处理)见 §4/§9**:`Detacher`、`Fairing`、`DockingPort` 位照常传输但**不应用**;`Parachute` 不应用 `Activated`,走专用视觉驱动。**应用位清单(白名单驱动):起落架 / 货舱门 / 着陆腿 / 太阳能 / 灯·信标 / SubPartRotator。** 阶段可用 `PartScript.Data.Activated` 直接驱动(不依赖激活组)。**
+**【决策(2026-08-18):采用方案 B per-part `Activated` 位——P0 已实现,见 §10】**,覆盖完整、带宽可忽略。**接收端应用过滤(只记录不处理 / 特殊处理)见 §4/§9**:`Detacher`、`Fairing`、`DockingPort` 位照常传输但**不应用**;`Parachute` 不应用 `Activated`,走专用视觉驱动。**应用位清单(白名单驱动):起落架 / 货舱门 / 着陆腿 / 太阳能 / 灯·信标 / SubPartRotator。** 阶段可用 `PartScript.Data.Activated` 直接驱动(不依赖激活组)。**
+
+**为什么不用 SP2 式"整机控制输入位/激活组位"(2026-08-18 决策依据,反编译对比)**:
+- SP2 起落架 = 整机输入 `AircraftControls.LandingGearDown`,收放动画统一 `AnimateLandingGear(Controls.LandingGearDown)`([sp2 `NetworkAircraftControls.cs:89/116/149`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/NetworkAircraftControls.cs:89)),控制包 1 bit + `SetInputOverride` 即可带动全部起落架本地动画——**能这么做是因为 SP2 起落架被设计成"纯整机输入驱动",部件层没有第二条驱动路径**;
+- **SR2 的 `Part.Activated` 有三条入口**:激活组(`ActivatePartsInActivationGroup`)、Stage(`ActivateStage`)、**飞行检查器手动 override**(`PartScript.cs:830-831` 的 Activate/Deactivate 按钮 → `PartScript.Activate()/Deactivate()` [`PartScript.cs:521/666`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/PartScript.cs:521))。手动 override **不产生激活组位变化、不产生 Stage 变化** → SP2 式输入位/激活组位抓不到 → **必须 per-part 位才能全覆盖**;
+- 附带稳健性:幽灵端游戏自身也可能驱动 `Part.Activated`(如 `PartScript.cs:714` 的 `AutoActivateIfNoStageOrActivationGroup`),per-part **持续每包应用自带自愈**,SP2 的输入覆盖没有这个(但 SP2 无手动 override 所以也不需要)。
+
+**应用前提(2026-08-18 补,防"开关≠姿态"的穿模)**:
+- **白名单只收"开关确定性"部件**:视觉姿态是 `Part.Activated` 的确定性函数(收放/开合/展开动画),**无输入依赖、无 body 结构依赖**;
+- **输入驱动部件一律不进白名单**:Rotator/JointRotator(UI 名 "Rotator",`_controller = GetInputController()`)、控制舵面、gimbal、活塞、螺旋桨桨距、车轮转向/电机、RCS —— 这些"开关+输入"部件靠 `Activated` 不够,需 **P3 控制输入应用**(把同步的 Pitch/Yaw/Roll/Throttle/Brake/Sliders/Translate 写进幽灵 `CraftControls`;SP2 已验证此路,`ModApi.Craft.CraftControls` 是纯 public 可写属性);
+- **已知穿模风险(记录,P0 不阻断)**:展开状态可能**穿过未同步的 body 结构**——整流罩投弃/分级/分离器"只记录不处理"、`Stage` 未应用 → 发送端已投弃整流罩并展开其内太阳能,幽灵仍显示整流罩未投弃 → 太阳能穿整流罩。归 body 同步里程碑(MC2 §8.1-4)解决。
 
 ## 4. "相似逻辑"部件分级(反编译逐一确认)
 
@@ -141,3 +151,63 @@
 
 - **对接 DockingPort**:body merge(已在 multi-craft-sync §8.1-4),record-only;
 - 其它激活时新建物理/改 body 图的部件(若有新发现):一律归入"只记录不处理,由 body 同步处理"这条线。
+
+## 10. 实现记录(2026-08-18,P0 方案 B 已落地,编译通过待实测)
+
+**改动文件**(均在本工程):
+1. [`Mod.cs`](../Assets/Scripts/Mod.cs):`RemoteDataPack` 新增 `List<bool> PartActivated` 字段 + 构造初始化;
+2. [`MpMessage.cs`](../Assets/Scripts/Net/MpMessage.cs):`WriteRecdata/ReadRecdata` 序列化 `PartActivated`(count + N bool,与 EngineThrottles 同风格);
+3. [`PartVisualSync.cs`](../Assets/Scripts/Net/PartVisualSync.cs)(**新增**):`SamplePartActivated`(发送端采样)+ `ApplyRemotePartActivated`(接收端变沿 + 白名单应用);
+4. [`MpNetworkManager.cs`](../Assets/Scripts/Net/MpNetworkManager.cs):`TrySampleLocalCraft` 接入采样;`ApplyRemoteState` 末尾接入应用。
+
+**实现要点**:
+- **顺序契约**:发送/接收同按 `Data.Assembly.Parts` 顺序,index 一一对应;接收端 `Mathf.Min` 越界兜底;
+- **白名单**(`PartVisualSync._applyModifierTypes`):`LandingGearScript` / `CargoBayScript` / `LandingLegScript` / `SolarPanelScript` / `SolarPanelArrayScript` / `LightScript` / `BeaconLightScript` / `SubPartRotatorScript` —— 命中任一 modifier 才应用 `Activate()/Deactivate()`;
+- **只记录不处理**:引擎(EngineVisualSync 管,火箭引擎还被强制 Activated=true 刷新膨胀比,不能在此应用)、Detacher/Fairing/DockingPort(body 改动)、Parachute(专用驱动 P2)——位照常进包,接收端 `ShouldApply` 返回 false 跳过;
+- **变沿 + 幂等**:`PartScript.Activate()/Deactivate()` 内部有 `if(Activated)` 守卫;每包调用无变化即空操作,幽灵本地偏差下一包自愈;
+- **首包即校正**:`InitializeRemoteCraft` 里首次 `ApplyRemoteState` 已含本应用,加入瞬间起落架/货舱等即对齐发送端;
+- 构建:`dotnet build aMptest.csproj -c Debug` → **0 警告 0 错误**(新增文件已手工加入 csproj `<Compile>`;Unity 重新导入后会自动包含)。
+
+**未做(后续)**:
+- P1:起落架 `ExtensionPercent` 相位对齐(4s 动画自愈,可不做);
+- P2:降落伞专用视觉驱动(§9.3 方案)+ 发生器/灯回归;
+- **P3:控制输入应用**——✅ **已实现**(2026-08-18,见 §11):把同步的控制输入(Pitch/Yaw/Roll/Throttle/Brake/Sliders/Translate,recdata 已传但从未应用)写进幽灵 `CraftControls`;输入驱动部件(舵面/Rotator/活塞/螺旋桨/车轮/RCS/电机)的 `Activated` 应用已放开;物理操纵杆绑定轴的特例未覆盖(§11.4);
+- **已知限制(P0 记录)**:展开可能穿过未同步 body 结构(整流罩/stage/分离器未应用),归 body 同步里程碑解决;
+- 实测待办:双 Steam 账号 或 TCP VM 实测起落架/货舱/太阳能收放同步、幽灵本地偏差自愈、分离器不触发(回归清单见 §5)。
+
+## 11. P3 控制输入应用 —— 已实现(2026-08-18)
+
+**结论**:P3 可行且干净,已落地。幽灵 `CraftControls`(活动舱)**游戏从不刷新**,每包直接写同步控制值即可驱动所有**绑定 CraftControls 的输入驱动部件**(舵面/gimbal/Rotator/活塞/螺旋桨桨距/车轮转向/RCS);配合方案 B 的 per-part `Activated` 位**放开输入驱动部件**,完整复现"开关+输入"姿态(这正是用户 2026-08-18 指出的 `rotator 等还需开启 + inputController 输入才会动` 的正确解法)。
+
+**11.1 幽灵 Controls 无人写(唯一写者是玩家 FlightControls)**
+- 飞行中每帧写 `Controls.X` 的只有 `FlightControls.Update`([`FlightControls.cs:302-388`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/FlightControls.cs:302)):`Controls.Pitch/Yaw/Roll/Brake/Sliders = 原始输入 + Offset*`(原始输入为玩家键鼠/杆);
+- 它是**单例**:`FlightSceneScript` 只 `new FlightControls` 一个([`FlightSceneScript.cs:907`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/FlightSceneScript.cs:907)),`SetCraftNode`([`:1551`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/FlightSceneScript.cs:1551))只绑定玩家 craft;远程幽灵 **永远不是目标** → 幽灵 Controls 恒为 XML 初值、可自由写;
+- 其余写点均不碰非玩家 craft:设计师(`DesignerControls.cs`)、UI 滑杆(`InputSliderPanelController`/`ThrottleInputScript`,绑玩家 FlightControls)、地图导航(`NodeNavigator`,玩家)、EVA 乘组舱复制(`EvaScript.cs:1789`,仅带乘组舱的 craft);
+- 舱间复制:活动舱 → 其余舱 `CraftControls.CopyControls`([`CommandPodScript.cs:329`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/CommandPodScript.cs:329))→ **单点写 `ActiveCommandPod.Controls` 即全舱生效**。
+
+**11.2 输入链(读 Controls 的路径)**
+- `GetInputController((CraftControls x)=>x.Pitch)` 找不到部件上的输入 modifier 时,回退 **`SimpleInputController`**([ModApi `SimpleInputController.cs:74-85`](../C:/renko/shitProgram/jnoCode/ModApi/Craft/Parts/Input/SimpleInputController.cs:74)):`Value = getValue(commandPod.Controls)`,**门控 `partData.Activated || IgnorePartActivated`**(未激活返回 0);
+- 部件上的 **`InputControllerScript`**(操纵杆/滑块/自定义轴,`Assets/Scripts/Craft/Parts/Modifiers/Input/`):从 `_primaryInput`(物理轴或 CraftControls 属性)算 `Value`([`InputControllerScript.cs:135-219`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Input/InputControllerScript.cs:135)),并受 `Activated` / **`ActivationGroup` 门控**([`:158-164`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Input/InputControllerScript.cs:158),`commandPod.Controls.GetActivationGroup(组)`)。
+
+**11.3 落地路径(✅ 已实现)**
+1. **每帧写幽灵 Controls**:在 `ApplyRemoteState`(与 PartActivated 同处)写 `ActiveCommandPod.Controls.Pitch/Yaw/Roll/Brake/Throttle/Slider1-4/TranslateForward/Right/Up`(recdata 已传,现为死字段);
+2. **放开输入驱动部件的 Activated 应用**:方案 B 已对所有部件传 `PartActivated` 位,只是 `ShouldApply` 白名单过滤;P3 把输入驱动部件(舵面/gimbal/JointRotator/Rotator/活塞/螺旋桨/车轮转向等)加入应用集合 → 激活门控满足 → 配合写入的 Controls 完整复现姿态("开关≠姿态"不再成立);
+3. **激活组门控**:`InputControllerScript` 受激活组门控时,应用 recdata 的 `ActivationGroupStates` → `Controls.SetActivationGroup(i, state)`([`CraftControls.cs:422-426`](../C:/renko/shitProgram/jnoCode/ModApi/Craft/CraftControls.cs:422) 已存在);
+4. **Throttle**:写 `Controls.Throttle` 也生效(幽灵无 FlightControls/油门 UI),驱动航发推力与推进器视觉;火箭尾焰/引擎仍走 EngineVisualSync,不冲突。
+
+**11.4 已知边界/风险**
+- **物理操纵杆绑定的部件**(`InputControllerScript._primaryInput` 是本地物理轴):读本地玩家输入 → 跨端不同,特例不覆盖(后续需单独同步该输入控制器部件的输出值);
+- **AutoActivate**:多数输入部件 `AutoActivateIfNoStageOrActivationGroup=true`(`PartScript.cs:714` FlightPostStart 自动激活)→ 幽灵天然 Activated、`SimpleInputController` 可用;但发送端靠激活组/手动激活的部件幽灵端未激活 → 必须靠 11.3.2 补;
+- **写时机**:与 PartActivated 同帧(ApplyRemoteState 内,游戏更新后),输入驱动部件读最新同步值;
+- **带宽**:控制标量 ~13 float/包 @20Hz ≈ 1KB/s,可忽略;
+- 与现有"引擎尾焰/推力"解耦:EngineVisualSync 已管引擎视觉,Controls.Throttle 只补充航发推进器/推力杆视觉,无冲突。
+
+**11.5 实现记录(2026-08-18,P3 已落地,编译通过待实测)**
+- 改动文件:
+  1. [`ControlVisualSync.cs`](../Assets/Scripts/Net/ControlVisualSync.cs)(**新增**):`ApplyRemoteControls(rc, data)` —— 写幽灵 `ActiveCommandPod.Controls` 的 12 个控制标量 + 10 个激活组(`SetActivationGroup`,幂等变沿),异常兜底;
+  2. [`PartVisualSync.cs`](../Assets/Scripts/Net/PartVisualSync.cs):`_applyModifierTypes` 新增输入驱动部件 —— `ControlSurfaceScript`/`JointRotatorScript`(Rotator)/`PistonScript`/`PropellerAssemblyScript`/`ResizableWheelScript`/`ReactionControlNozzleScript`/`ElectricMotorScript`/`ElectricMotorOldScript`/`LightPartScript`;
+  3. [`MpNetworkManager.cs`](../Assets/Scripts/Net/MpNetworkManager.cs):`ApplyRemoteState` 在 PartVisualSync 之后接入 `ControlVisualSync.ApplyRemoteControls`(与 PartActivated 同帧);
+  4. [`aMptest.csproj`](../aMptest.csproj):Unity 自动加入新文件。
+- **安全排除(仍只记录不处理)**:引擎(EngineVisualSync 冲突)、分离器/整流罩/对接/伞(body 改动/专用驱动)、**InputBasedActivator**(会 `ActivateStage`/`ExplodePart`,绝不在本机触发)、舱/Cockpit/Vizzy(FlightProgram)/TestPilot;
+- 构建:`dotnet build aMptest.csproj -c Debug` → **0 错误**(FishNet 第三方 3 个既有 warning 与本改动无关);
+- 实测待办:双端验证 Rotator/舵面/RCS/车轮随远程输入显示;激活组门控部件(激活组绑定的输入部件)状态同步;确认幽灵 Controls 不被任何路径覆盖(理论已证,实测复核)。
