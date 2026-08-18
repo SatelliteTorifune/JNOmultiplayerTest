@@ -3,7 +3,7 @@
 > 项目:JNOmultiplayerTest(aMptest)
 > 反编译参考:`C:/renko/shitProgram/jnoCode`
 > 定位:[`multi-craft-sync.md`](multi-craft-sync.md) 的补充分析——回答"幽灵船的起落架收放/货舱门/太阳能板/灯等**开关与展开状态**能否同步、怎么同步、代价多大"
-> 状态:**方案研究(待审核)**——本文为分析与建议,尚未实施;文中「【决策(待审核):…】」为建议待拍板项。
+> 状态:**方案研究(已确认方案 B,待实施)**——2026-08-18 已拍板:① **方案 B**(per-part `Activated` 位);② **分离器/级间、整流罩、对接等涉及 body 改动的部件只记录、不处理**(归后续 body 同步);③ **降落伞等特殊部件先反编译定原理**(见 §9),走专用视觉驱动。正文「【决策:…】」为最终结论,实施待排期。
 > 结论先行:**同步"开关状态"可行且成本近零**——机制是同步每个部件的 `Part.Activated`(开关位),幽灵端**复用游戏自己的 FlightUpdate/动画器做本地仿真**(与 engine-fx 尾焰的 L1"输入/状态同步 + 本地仿真"完全同套路)。不推翻 8.2-5"燃料/资源不同步",只把"部件展开状态"从 8.2-5 的限制里摘出来。
 
 ---
@@ -45,7 +45,7 @@
 - **持续应用的自愈好处**:幽灵本地任何偏差(如伞按本地大气密度自切断)下一包(50ms)即被纠正。
 - 进阶(可选):起落架额外同步 `ExtensionPercent`(float)用 `SnapToExtensionPercent` 对齐动画相位;货舱 `OpenAmount`、SubPartRotator `CurrentEnabledPercent` 同理。MVP 可省(4s 动画自愈)。
 
-**【决策(待审核):采用方案 B per-part `Activated` 位**,覆盖完整、带宽可忽略;若只想最快落地,可先做方案 A(复用已有字段,零代码改包),再补 B。**
+**【决策(2026-08-18):采用方案 B per-part `Activated` 位**,覆盖完整、带宽可忽略。**接收端应用过滤(只记录不处理 / 特殊处理)见 §4/§9**:`Detacher`、`Fairing`、`DockingPort` 位照常传输但**不应用**;`Parachute` 不应用 `Activated`,走专用视觉驱动。**应用位清单(白名单驱动):起落架 / 货舱门 / 着陆腿 / 太阳能 / 灯·信标 / SubPartRotator。** 阶段可用 `PartScript.Data.Activated` 直接驱动(不依赖激活组)。**
 
 ## 4. "相似逻辑"部件分级(反编译逐一确认)
 
@@ -58,15 +58,16 @@
 | **灯/信标** Light/Beacon | `Activated && HasPower`([`LightScript.cs:308`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Lights/LightScript.cs:308)) | ⚠️ 幽灵电池可能空/陈旧 → 需强制 HasPower 或接受 | ⚠️ 小坑 |
 | **SubPartRotator** | `Part.Activated`,自带 `SyncActivationGroup`([`SubPartRotatorScript.cs:84`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/SubPartRotatorScript.cs:84)) | 反向写激活组,方案 A/B 都覆盖 | ⚠️/✅ |
 | **轮子转向/刹车** | 控制输入驱动 | 控制输入接收端未应用(死字段);视觉转向会读幽灵本地输入 | ⚠️ 另一条线,视觉小偏差 |
-| **分离器/级间** Detacher | `OnActivated → Detach()`([`DetacherScript.cs:150`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/DetacherScript.cs:150)) | **不受物理门控**:销毁关节+施加冲量+相机震动+声音([`DetacherScript.cs:37`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/DetacherScript.cs:37)) | ⛔ **必须排除** |
-| **降落伞** Parachute | `Part.Activated` → DeployParachute([`ParachuteScript.cs:260`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:260)) | 创建 joint+子刚体(物理惰性)+自切断(本地大气密度) | ⚠️ 需测试/守卫 |
+| **分离器/级间** Detacher | `OnActivated → Detach()`([`DetacherScript.cs:150`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/DetacherScript.cs:150)) | **不受物理门控**:销毁关节+施加冲量+相机震动+声音([`DetacherScript.cs:37`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/DetacherScript.cs:37)) → **body 图改动**(body 分离) | 🔒 **只记录,不处理**(归 body 同步) |
+| **整流罩** Fairing | `OnActivated → _jettisonNextFrame → InitiateJettison`([`FairingScript.cs:89`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/FairingScript.cs:89)) | `QueuePartGroupForDestruction` + 新建 `FairingDebris` body + 声音([`FairingScript.cs:151`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/FairingScript.cs:151)) → **body 图改动** | 🔒 **只记录,不处理**(归 body 同步) |
+| **对接** DockingPort | `Activated` 使能对接 collider([`DockingPortScript.cs:152`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/DockingPortScript.cs:152)) | 对接 = body merge(走 `CraftNodeRemoved` + 重发 dominant XML,见 multi-craft-sync §8.1-4),幽灵不模拟 | 🔒 **只记录,不处理**(归 body 同步) |
+| **降落伞** Parachute | `Activated → DeployParachute`([`ParachuteScript.cs:262`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:262)) | **激活时新建 collider+rigidbody+SpringJoint** + 密度/高度门控 + 自动切伞(详见 §9) | 🎯 **专用视觉驱动**(不应用 `Activated`,见 §9) |
 | **引擎** | `Part.Activated` | OnActivated 被 `IsPhysicsEnabled` 门控 | ✅ 安全(尾焰已由 EngineVisualSync 管) |
 | **发生器/陀螺仪/RCS** | `Activated` | 幽灵电池副作用/无物理意义 | ⚠️ 低风险 |
-| **整流罩** Fairing | OnActivated 只是 base,分离走 stage/joint | 需验证 | ⚠️ 建议测试 |
 
 ## 5. 风险清单(幽灵特定)
 
-1. **Detacher 排除是硬要求**(否则幽灵船分裂 + 接收端相机震动)——实现时按部件类型过滤(有 `DetachOnActivated` 的部件不应用);
+1. **Detacher / Fairing / DockingPort 排除是硬要求**(否则幽灵船 body 分裂/被销毁部件组/相机震动)——应用循环按部件类型白名单过滤(见 §3 决策)。
 2. 动画相位:不传相位时 ~4s 内自愈,可接受;
 3. 收放完成触发 `InitiateDragRecalculation`(动画器 428 行):幽灵 `IncludeInDrag=false` → 无害,建议回归验证;
 4. 幽灵电池副作用(generator/灯):只影响幽灵自身视觉,不影响远程真实船;测试后决定是否屏蔽;
@@ -99,12 +100,44 @@
 | 灯/信标 | ✅ 可 | 低 | 做(需处理 HasPower/电池) |
 | SubPartRotator | ✅ 可 | 低 | 做(方案 B 顺带覆盖) |
 | 引擎点火 | ✅ 已由尾焰覆盖 | — | 无需额外 |
-| 降落伞 | ⚠️ 可,需守卫 | 中 | 单测后定 |
-| 分离器/级间 | ⛔ 不同步 | — | **显式排除** |
+| 降落伞 | 🎯 专用视觉驱动(见 §9) | 中 | 反编译已定原理,P2 单做 |
+| 分离器/级间、整流罩、对接 | 🔒 只记录不处理 | 0 | 归 body 同步(记录位,不应用) |
 | 粒子/逐帧展开相位 | ❌ 不值得 | — | 不做(4s 自愈) |
 
 **排期建议**:
-1. **P0** 方案 B:recdata 加 per-part `Activated` 位(复用 EngineThrottles 顺序枚举)+ 接收端应用(排除 Detacher)→ 起落架/货舱/腿/太阳能/灯一次到位;
+1. **P0** 方案 B:recdata 加 per-part `Activated` 位(复用 EngineThrottles 顺序枚举)+ 接收端**白名单应用**(起落架/货舱/腿/太阳能/灯/SubPartRotator;**Detacher/Fairing/DockingPort 只记录不应用**;Parachute 不应用)→ 起落架/货舱/腿/太阳能/灯一次到位;
 2. **P1** 起落架 `ExtensionPercent` 相位对齐(可选);
-3. **P2** 伞/发生器/灯逐个回归;
+3. **P2** 降落伞专用视觉驱动(按 §9 方案)+ 发生器/灯逐个回归;
 4. 回归:双 Steam 账号 或 TCP VM 实测收放动画同步(同 engine-fx §9 套路)。
+
+## 9. 降落伞等特殊部件(反编译定原理,2026-08-18)
+
+### 9.1 降落伞工作原理(`ParachuteScript`)
+
+| 环节 | 行为 | 反编译证据 |
+|---|---|---|
+| **展开触发** | `FlightUpdate`:若 `Part.Activated && !_deployed` → `DeployParachute()` | [`ParachuteScript.cs:262`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:262) |
+| **展开门控** | `SurfaceVelocity < MaxDeploymentSpeed` 且 高度/大气密度 满足(`ASLDeployment`/`DeploymentDensity`)才展开 | [`ParachuteScript.cs:110`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:110) |
+| **DeployParachute** | 置 `_deployed=true`;缩放 base collider;**新建 SphereCollider**(chutePackage 上)+ **新建 Rigidbody `_chuteBody`**(质量/无重力)+ **新建 SpringJoint** 连部件 body Rigidbody;置 chuteBody 位置/速度;激活 chute mesh | [`ParachuteScript.cs:108-150`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:108) |
+| **充气+阻力** | `FlightFixedUpdate`:充气动画 `_chute.localScale` 按 `_inflateTime` 涨;`_chuteCollider.radius` 同步;**对部件 body 与 chuteBody `AddForce` 施加阻力** | [`ParachuteScript.cs:165-257`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:165) |
+| **自动切伞** | 本地 `AirDensity < CutDensity`(或高度)时 `Part.Activated=false` | [`ParachuteScript.cs:190`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:190) |
+| **拉断** | 阻力超阈值时 `Activated=false` + 日志 | [`ParachuteScript.cs:235`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:235) |
+| **收起** | `FlightUpdate`:若 `!Activated && _deployTime>0` → 销毁 joint + 销毁 chuteBody + 禁用 collider + 隐藏 chute | [`ParachuteScript.cs:267-279`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:267) |
+
+### 9.2 为什么不能走通用 `Activated` 应用(幽灵上)
+
+1. **DeployParachute 在激活瞬间新建物理组件**(SphereCollider + 非 kinematic Rigidbody + SpringJoint),幽灵初始化时的 `DisableCraftPhysicCalculation` **不覆盖这些后加组件** → 幽灵上会留一个活的 collider 和一个被弹簧拖拽的非 kinematic chuteBody,不干净、可能乱动;
+2. **密度/高度门控是本地量**:幽灵 `FlightData.AltitudeAboveSeaLevel`/`AtmosphereSample.AirDensity` 与发送端不同(且 mod 只刷新 PositionNormalized/CraftForward)→ 可能出现"发送端已展开、幽灵因本地条件不满足而不展开"或"幽灵自动切伞"的错位;
+3. 阻力 `AddForce` 在幽灵 kinematic body 上无效、在非 kinematic chuteBody 上会漂。
+
+### 9.3 处理方案:专用"视觉-only"驱动(不入通用应用)
+
+- **发送端采样**:反射取 `_deployed`(权威真实状态,已含全部门控/切伞判定)→ recdata 加 `List<bool> ParachuteDeployed`(或并入 per-part 位 + 单独相位字段);可选 `_inflateTime` 归一化做充气相位;
+- **接收端**:**不应用**伞部件的 `Part.Activated`(伞自己的 `FlightUpdate` 见 `Activated=false && _deployTime==0` 时是 **no-op**,`FlightFixedUpdate` 见 `_deployed=false` 也是 no-op → **天然安全,无需 Harmony patch**,与航发加力情况不同);
+- **专用驱动**(可挂 `EngineVisualSync` 同层或独立 `PartVisualSync`):按同步值驱动视觉——`_chute.gameObject.SetActive(deployed)` + `_chute.localScale` 充气动画(本地 `_inflateTime` 推进,参数与游戏公式一致)+ 收起时复位 `_chutePackage`;**不创建任何 collider/rigidbody/joint**;
+- 不传相位时退化为"展开瞬间直接全尺寸"(可接受,MVP 先这样)。
+
+### 9.4 其余"特殊"部件(同型确认)
+
+- **对接 DockingPort**:body merge(已在 multi-craft-sync §8.1-4),record-only;
+- 其它激活时新建物理/改 body 图的部件(若有新发现):一律归入"只记录不处理,由 body 同步处理"这条线。

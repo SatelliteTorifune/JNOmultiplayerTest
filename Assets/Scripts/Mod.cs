@@ -99,7 +99,7 @@ namespace Assets.Scripts
 		}
 
 		/// <summary>联机状态包数据结构。</summary>
-		public struct remoteDataPack
+		public struct RemoteDataPack
 		{
 			public Vector3d Position;
 			public Vector3d Velocity;
@@ -147,7 +147,7 @@ namespace Assets.Scripts
 			/// </summary>
 			public List<float> EngineThrottles;
 
-			public remoteDataPack(Vector3d position, Vector3d velocity, Quaterniond heading)
+			public RemoteDataPack(Vector3d position, Vector3d velocity, Quaterniond heading)
 			{
 				Position = position;
 				Velocity = velocity;

@@ -493,7 +493,7 @@ namespace Assets.Scripts.Net
 		/// 写入时临时切回非 kinematic 再写回(调用点在 Update、物理步在帧末,刚体不会被真正积分,
 		/// velocity 数据照常存储,SmokeTrailScript 读 rigidbody.velocity 不受影响)。
 		/// </summary>
-		public static void InjectGhostMotion(MpNetworkManager.RemoteCraft rc, Mod.remoteDataPack data, IPlanetNode planet, IReferenceFrame frame, Quaternion headingFrame)
+		public static void InjectGhostMotion(MpNetworkManager.RemoteCraft rc, Mod.RemoteDataPack data, IPlanetNode planet, IReferenceFrame frame, Quaternion headingFrame)
 		{
 			if (rc == null || rc.Node == null || rc.Node.CraftScript == null || planet == null ) return;
 

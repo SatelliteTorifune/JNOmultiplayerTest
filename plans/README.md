@@ -12,10 +12,10 @@
 | 文档 | 主题 | 状态 | 一句话摘要 |
 |---|---|---|---|
 | [`multi-craft-sync.md`](multi-craft-sync.md) | **多 Craft 同步**(研究阶段) | 📋 方案研究 + 边界排查 | 多节点身份/生命周期/对接/切换/EVA/无 pod 残骸/边界情况(jnoCode 排查),含 MC1~MC4 里程碑。主活跃文档 |
-| [`part-switch-sync-feasibility.md`](part-switch-sync-feasibility.md) | 起落架开关等部件展开/开关状态同步(**待审核**) | 📋 方案研究(建议待拍板) | 同步 per-part `Part.Activated` + 幽灵本地仿真,覆盖起落架/货舱/着陆腿/太阳能/灯等;**显式排除分离器**;含"1000 起落架"性能分析。方案 A(复用激活组)/B(per-part 位)二选一 |
+| [`part-switch-sync-feasibility.md`](part-switch-sync-feasibility.md) | 起落架开关等部件展开/开关状态同步(**已确认方案 B,待实施**) | 📋 方案研究 | 同步 per-part `Part.Activated` + 幽灵本地仿真,覆盖起落架/货舱/着陆腿/太阳能/灯等;分离器/整流罩/对接**只记录不处理**(归 body 同步);降落伞**专用视觉驱动**(§9 反编译定原理);含"1000 起落架"性能分析 |
 
 > `multi-craft-sync.md` 承接了归档文档里遗留的"下一步"项(如 body 同步、平滑插帧),后续以它为准。
-> `part-switch-sync-feasibility.md` 为"部件开关/展开状态"的补充分析(2026-08 新增,**待审核**)。
+> `part-switch-sync-feasibility.md` 为"部件开关/展开状态"的补充分析(2026-08 新增,**已确认方案 B,待实施**)。
 
 ---
 
@@ -47,8 +47,9 @@
 | MVP 范围(燃料/资源/Vizzy) | **接受不同步**(幽灵物理关,引擎视觉本来不跑) | §8.2-5 |
 | Steam 双账号公网联机 | **✅ 已实测可行**(零 frp/零端口转发) | archive/steam §Step4 |
 | TCP VM debug | **✅ 已实测可行**(`TcpHostLobby`/`TcpJoinLobby`) | archive/tcp §四 |
+| 起落架等部件开关同步 | **✅ 拍板:方案 B(per-part `Activated` 位)**;分离器/整流罩/对接 **只记录不处理**(归 body 同步);降落伞走 **专用视觉驱动**(反编译已定原理) | [part-switch-sync-feasibility.md](part-switch-sync-feasibility.md) §3/§4/§9 |
 
-**当前待定(尚未拍板/未调研)**:A1 方案选型(A+B 混合?)、A2 里程碑顺序、A3 残骸同步策略、A4 观察他人第二艘船、**A5 起落架等部件开关同步方案 A/B(见 [part-switch-sync-feasibility.md](part-switch-sync-feasibility.md),待审核)**;B1 跨机身份(Guid+InitialCraftNodeIds 溯源)、B2 对账参数、B3 轨道残骸 spawn 可行性、B4 未加载节点采样、B5 MapView 多船回归、B6 时钟对齐;D 类已决策项的实现暂缓。
+**当前待定(尚未拍板/未调研)**:A1 方案选型(A+B 混合?)、A2 里程碑顺序、A3 残骸同步策略、A4 观察他人第二艘船(部件开关同步方案 A/B 已于 2026-08-18 拍板,见上表);B1 跨机身份(Guid+InitialCraftNodeIds 溯源)、B2 对账参数、B3 轨道残骸 spawn 可行性、B4 未加载节点采样、B5 MapView 多船回归、B6 时钟对齐;D 类已决策项的实现暂缓。
 
 ---
 
