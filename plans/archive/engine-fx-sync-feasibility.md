@@ -23,6 +23,7 @@
 4. **`AltitudeCompensation>0` 的高度补偿引擎 `ExitPressure` 会被置 0**,本来就不该有过膨胀,不是 bug。
 5. **调试日志要节流 + 带删除标记**:过膨胀验证阶段加了 Setup/每 5s 的 `MP engineVisual ...` 日志,验证通过后已删除。
 6. **注意幽灵大气压** `CraftScript.AtmosphereSample.AirPressure`(结构体,不可判空;由 CraftFlightData 按位置刷新)——所有大气相关视觉(膨胀比/烟雾/热畸变)都依赖它正确。
+7. **加力/普通节流阀不能混绑**:发送端航发可见尾焰 = `_afterburnerThrottle`(JetEngineScript 的 `ExhaustThrottleOverride = () => _afterburnerThrottle`),非加力段(油门<afterburnerThrottleStart)本就无尾焰;若接收端写成 `flame = ab>0 ? Lerp(t,1,ab) : t`(t=普通节流阀)会让幽灵"该熄火时出火、加力段偏亮"(加力/普通节流阀绑定错误)。正确做法:只绑 `ab = Clamp01((t-start)/(1-start))`(EngineVisualSync.ComputeAfterburnerThrottle)。
 
 **✅ 实测完成(2026-08,用户确认)**:航发(非加力+加力两段)与液体火箭的尾焰、拖尾、过膨胀在联机中与发送端一致;诊断日志已移除,`dotnet build` exit 0 / 0 警告 / 0 错误。
 
@@ -198,6 +199,7 @@
    - **`EngineScript`(基础液体)** → `DriveDirectly=false`:Route A,游戏自身 `IFlightUpdate` 每帧**无条件**调 `EngineCommon.FlightUpdate`,经 override 驱动;MP 层不重复调(避免 `_textureShiftSpeed` 双倍滚动)。
    - **`RocketEngineScript`** → `DriveDirectly=true`:**新增修正**——其 `IFlightUpdate.FlightUpdate` 被 `(Activated && throttle>0) || _hasBeenActivated` 门控,幽灵上 `AdjustedThrottle()==0` 时游戏**不调** `EngineCommon.FlightUpdate`,必须由 MP 层每帧直接调。
    - **`JetEngineScript`** → `DriveDirectly=true`:**航发尾焰分两段**——自身 `FlightFixedUpdate`(每 FixedUpdate 归零 `_afterburnerThrottle` 并 `UpdateExhaust(0)` 反打)与 `FlightUpdate` 均被 Harmony patch 跳过;MP 层先 `EngineCommon.FlightUpdate(1f,1f)`(override=同步非加力值 → 主喷嘴火焰/烟雾门控),再以加力 boost 值(本地推导)`UpdateExhaust(flame)` 作最后一笔写入同一 `ExhaustSystemScript`(它与主 nozzle 的 exhaust 是同一对象 `Nozzle/ExhaustSystem`)。修正前只同步 `_afterburnerThrottle` → 非加力态(油门<afterburnerThrottleStart)幽灵无火焰无烟,已修。
+   - **【修正记录 2026-08:加力/普通节流阀绑定错误】**:旧实现把"普通节流阀 t"与"加力 boost ab"用 `flame = ab>0 ? Lerp(t,1,ab) : t` 绑定写入同一 `ExhaustSystemScript`——但发送端可见尾焰只由 `_afterburnerThrottle = ab` 决定(`ExhaustThrottleOverride = () => _afterburnerThrottle`,见 §3.6/§9.2-2),即**非加力段(油门<AfterburnerThrottleStart)发送端本就无尾焰、加力段亮度 = ab**,不是 t 与 ab 的 Lerp。修法:幽灵 override 与最后一笔都只写 `ComputeAfterburnerThrottle` 推导的 ab(普通节流阀 t 只用于烟雾门控 `ApplyJetSmokeVisuals` / 膨胀比 `SyncJetExpansionRatio`);无加力引擎(HasAfterburner=false)恒无尾焰,与发送端一致。改动文件 `EngineVisualSync.cs`(`SetupGhostEngineVisuals` override + `DriveGhostEngineVisuals` 写入 + 新增 `ComputeAfterburnerThrottle`)。
    - **航发烟雾颜色 / SpeedOverride**(`ApplyJetSmokeVisuals`,每帧补):发送端在 jet 自身 `FlightUpdate` 里设(加力→`_afterburnerSmokeColor` + `1.0×SmokeSpeed`;非加力→近白 `alpha=0.1×throttle` + `0.75×SmokeSpeed`;有自定义烟色 `TryGetSmokeColor` 时 RGB 取自定义;`EmissionEnabled=HasSmoke && throttle>0`),幽灵已被 patch 跳过 → 由 MP 层按同公式重写 `SmokeTrailScript.Color/SpeedOverride/EmissionEnabled/Throttle`。Setup 时把 `HasSmoke`/`SmokeSpeed`/自定义烟色/`_afterburnerSmokeColor`(反射)缓存进驱动表。
 3. **幽灵副作用抑制**:`SetupGhostEngineVisuals` 把每部件下 `ExhaustDamageScript.enabled=false`(防地形尘/加热)。**烟雾不再禁用**:`SmokeTrailScript` GO 保持 active,拖尾由 `InjectGhostMotion` 注入的 rigidbody.velocity 驱动(见 §10)。
 4. **顺序契约**:两端同 XML 构建 → parts/modifiers 顺序一致,index 一一对应;读取端越界兜底 0。

@@ -29,9 +29,9 @@ namespace Assets.Scripts
 			try
 			{
 				base.OnModInitialized();
+				//HarmonyPatch部署
 				Harmony harmony = new Harmony("MPTest");
 				harmony.PatchAll();
-				// 航发幽灵 patch:手动按条件打补丁(目标方法缺失时只降级告警,不打断初始化)
 				JetEngineGhostPatch.Apply(harmony);
 
 				// 联机房间管理器（独立类，负责网络管理器创建与场景事件）
@@ -150,7 +150,7 @@ namespace Assets.Scripts
 
 			/// <summary>
 			/// 每台引擎的"视觉 throttle"(0..1)，按确定顺序(Data.Assembly.Parts 顺序→每部件 modifiers 顺序)
-			/// 与接收端一一对应：液体引擎=EngineThrottle，航发=AfterburnerThrottle(加力尾焰驱动值)。
+			/// 与接收端一一对应：液体引擎=EngineThrottle，航发=EngineThrottle(接收端据此推导加力尾焰驱动值 ab)。
 			/// 接收端据此驱动幽灵船尾焰(液体走 ExhaustThrottleOverride;航发加力由 MP 层直接驱动)。
 			/// </summary>
 			public List<float> EngineThrottles;

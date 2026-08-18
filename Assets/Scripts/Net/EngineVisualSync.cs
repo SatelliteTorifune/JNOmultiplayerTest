@@ -20,11 +20,12 @@ namespace Assets.Scripts.Net
 	///   液体(EngineScript/RocketEngineScript):走 Route A —— 给 _engineCommon 设 ExhaustThrottleOverride,
 	///   由游戏自身的 IFlightUpdate 每帧驱动尾焰(幽灵确实收 IFlightUpdate,已反编译定论);
 	///   航发(JetEngineScript):Route B —— 其自身 IFlightFixedUpdate/IFlightUpdate 已被 Harmony patch 跳过,
-	///   本类每帧驱动。航发尾焰分两段:
-	///     非加力段 = 同步 EngineThrottle(经 ExhaustThrottleOverride → EngineCommon.FlightUpdate 驱动主喷嘴);
-	///     加力段 = 接收端用幽灵自身 JetEngineData(afterburnerThrottleStart/hasAfterburner)从非加力值推导
-	///              (与发送端 _afterburnerThrottle = Clamp01((throttle-start)/(1-start)) 同式),
-	///              以 boost 值作为最后一笔写入同一 ExhaustSystemScript。
+	///   本类每帧驱动。航发可见尾焰 = 加力节流阀 ab(与发送端 _afterburnerThrottle 同式):
+	///      ab = Clamp01((EngineThrottle - AfterburnerThrottleStart) / (1 - AfterburnerThrottleStart));
+	///      非加力段(油门<AfterburnerThrottleStart)发送端本就无尾焰;加力段亮度 = ab。
+	///      经 ExhaustThrottleOverride(=ComputeAfterburnerThrottle)→EngineCommon.FlightUpdate 驱动主喷嘴,
+	///      再加力段最后一笔 UpdateExhaust(ab) 写入同一 ExhaustSystemScript;
+	///      烟雾/膨胀比仍按同步 EngineThrottle 处理(ApplyJetSmokeVisuals/SyncJetExpansionRatio)。
 	/// 顺序契约:发送/接收两端用同一枚举顺序,index 一一对应(同 XML 构建,parts 顺序一致)。
 	/// </summary>
 	public static class EngineVisualSync
@@ -161,9 +162,9 @@ namespace Assets.Scripts.Net
 
 		/// <summary>
 		/// 按确定顺序采样本机飞船每台引擎的视觉 throttle:
-		/// 液体=_engineCommon.EngineThrottle;航发=_engineCommon.EngineThrottle(非加力段)。
-		/// 航发的加力段由接收端用幽灵自身 JetEngineData(双端同 XML,afterburnerThrottleStart/hasAfterburner)
-		/// 从该值推导 —— 尾焰=非加力(EngineThrottle)+加力(推导值)两段,见 plans §3.6。
+		/// 液体=_engineCommon.EngineThrottle;航发=_engineCommon.EngineThrottle。
+		/// 航发的可见尾焰由接收端从该值推导加力节流阀 ab(用幽灵自身 JetEngineData:
+		/// afterburnerThrottleStart/hasAfterburner,双端同 XML) —— 尾焰 = ab 单段,见 ComputeAfterburnerThrottle。
 		/// </summary>
 		public static List<float> SampleEngineThrottles(CraftNode craft)
 		{
@@ -245,13 +246,15 @@ namespace Assets.Scripts.Net
 							bool hasCustomSmoke = jd != null && jd.TryGetSmokeColor(out customSmoke);
 							if (ec != null)
 							{
-								// 替换构造函数里 () => _afterburnerThrottle 的闭包,改用同步值(非加力段 EngineThrottle):
+								// 替换构造函数里 () => _afterburnerThrottle 的闭包,改用"从同步 EngineThrottle 推导的加力节流阀 ab"(ComputeAfterburnerThrottle):
+								// 发送端航发可见尾焰只由 _afterburnerThrottle 决定;普通节流阀 EngineThrottle 只用于烟雾门控(ApplyJetSmokeVisuals)。
 								// 航发自身 FlightUpdate 被 patch 跳过,由 DriveGhostEngineVisuals 调用 ec.FlightUpdate。
-								// 加力段在 DriveGhostEngineVisuals 里用下方 HasAfterburner/AfterburnerThrottleStart 推导。
 								EngineCommon captured = ec;
 								MpNetworkManager.RemoteCraft capturedRc = rc;
 								int capturedIdx = idx;
-								captured.ExhaustThrottleOverride = () => GetSyncedThrottle(capturedRc, capturedIdx);
+								bool hasAb = jd != null && jd.HasAfterburner;
+								float abStart = jd != null ? jd.AfterburnerThrottleStart : 0.8f;
+								captured.ExhaustThrottleOverride = () => ComputeAfterburnerThrottle(capturedRc, capturedIdx, hasAb, abStart);
 							}
 							drivers.Add(new EngineVisualDriver
 							{
@@ -364,17 +367,17 @@ namespace Assets.Scripts.Net
 					if (d.DriveDirectly)
 					{
 						// RocketEngine(游戏门控不调)/航发(已 patch 跳过):由 MP 层每帧调 FlightUpdate 驱动主喷嘴火焰。
-						// 航发时 override=同步 EngineThrottle(非加力段)→ 主喷嘴 exhaust 与烟雾门控都走非加力值。
+						// 航发时 override=推导的加力节流阀 ab(ComputeAfterburnerThrottle)→ 主喷嘴 exhaust 走加力值;烟雾门控仍由 ApplyJetSmokeVisuals 按同步 EngineThrottle 重写。
 						d.EngineCommon.FlightUpdate(1f, 1f);
 					}
 					if (d.RocketExhaust != null)
 					{
 						// 航发加力大尾焰:与主喷嘴是同一个 ExhaustSystemScript(Nozzle/ExhaustSystem),
-						// 因此这里在 FlightUpdate 之后以"加力 boost 值"作最后一笔写入,覆盖非加力值。
-						// 加力段用幽灵自身 JetEngineData 从同步非加力值推导(与发送端 _afterburnerThrottle 同式)。
-						float ab = d.HasAfterburner ? Mathf.Clamp01((t - d.AfterburnerThrottleStart) / (1f - d.AfterburnerThrottleStart)) : 0f;
-						float flame = ab > 0f ? Mathf.Lerp(t, 1f, ab) : t;
-						d.RocketExhaust.UpdateExhaust(flame);
+						// 发送端可见尾焰 = _afterburnerThrottle(加力节流阀),见 JetEngineScript.OnModifiersCreated 的
+						// ExhaustThrottleOverride = () => _afterburnerThrottle —— 非加力段(油门<AfterburnerThrottleStart)发送端本就无尾焰,
+						// 且加力段亮度 = ab,不是 t 与 ab 的 Lerp。这里只写 ab,不能把普通节流阀 t 一起算(加力/普通节流阀绑定错误)。
+						float ab = ComputeAfterburnerThrottle(rc, d.ThrottleIndex, d.HasAfterburner, d.AfterburnerThrottleStart);
+						d.RocketExhaust.UpdateExhaust(ab);
 						// 航发烟雾颜色 / SpeedOverride(发送端 JetEngineScript.FlightUpdate 里做,幽灵已被 patch 跳过):
 						// 复制其公式 —— 加力段用加力烟色 + 1.0×SmokeSpeed,非加力段用近白低透明 + 0.75×SmokeSpeed;
 						// 有自定义烟色时 RGB 取自定义值。EmissionEnabled/Throttle 也按发送端口径重写(含 HasSmoke 门控)。
@@ -549,6 +552,22 @@ namespace Assets.Scripts.Net
 		{
 			if (rc == null || rc.SyncedThrottles == null || idx < 0 || idx >= rc.SyncedThrottles.Count) return 0f;
 			return rc.SyncedThrottles[idx];
+		}
+
+		/// <summary>
+		/// 与发送端 JetEngineScript._afterburnerThrottle 同式推导(UpdatePerformance):
+		/// ab = Clamp01((EngineThrottle - AfterburnerThrottleStart) / (1 - AfterburnerThrottleStart));
+		/// 无加力(HasAfterburner=false)时恒 0 —— 发送端非加力航发可见尾焰本就是 0(尾焰=加力火焰)。
+		/// 注意:发送端 JetEngineScript.OnModifiersCreated 的 ExhaustThrottleOverride = () => _afterburnerThrottle,
+		/// 即航发可见尾焰只由加力节流阀决定(普通节流阀 EngineThrottle 只用于烟雾门控/ApplyJetSmokeVisuals),
+		/// 因此幽灵必须绑定 ab,不能把普通节流阀 t 一起 Lerp 进去(旧实现 = 加力/普通节流阀绑定错误)。
+		/// </summary>
+		private static float ComputeAfterburnerThrottle(MpNetworkManager.RemoteCraft rc, int idx, bool hasAfterburner, float afterburnerThrottleStart)
+		{
+			if (!hasAfterburner) return 0f;
+			if (afterburnerThrottleStart >= 1f) return 0f;
+			float t = GetSyncedThrottle(rc, idx);
+			return Mathf.Clamp01((t - afterburnerThrottleStart) / (1f - afterburnerThrottleStart));
 		}
 	}
 }
