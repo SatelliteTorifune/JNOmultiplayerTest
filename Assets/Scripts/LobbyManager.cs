@@ -34,7 +34,9 @@ namespace Assets.Scripts
 
 			// 保护机制：Steam 传输下必须有本机 SteamId（Steam 未初始化/未登录时为 0），否则无法开房。
 			// 非 Steam 传输（如 TCP debug）无 SteamId 概念，跳过此检查。
-			if (mgr.Transport is SteamTransport steamTransport && steamTransport.LocalSteamId == 0)
+			// 注意：必须用静态 GetLocalSteamId() 直接查 Steam，不能用实例属性 LocalSteamId——
+			// 该属性只在 Transport.Start() 成功后才赋值，开房预检时它恒为 0，会把 Steam 正常的情况误判为未登录。
+			if (mgr.Transport is SteamTransport && SteamTransport.GetLocalSteamId() == 0)
 			{
 				Mod.LogLobby("HostLobby FAILED: SteamId=0 (Steam not initialized or not logged in)");
 				ShowHostLobbyError(Locale.GetString("MultiPlayer.Mod.HostLobbyError"));

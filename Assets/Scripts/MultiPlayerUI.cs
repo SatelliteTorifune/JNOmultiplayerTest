@@ -200,7 +200,7 @@ namespace Assets.Scripts
             if (playersDirty)
             {
                 playersDirty = false;
-                RebuildPlayersIfChanged();
+                ForceRebuildPanel(); // 玩家加入/离开（事件驱动）：强制整体重建窗口刷新
                 return;
             }
 
@@ -235,18 +235,7 @@ namespace Assets.Scripts
         /// <summary>玩家集合签名变化时重建"玩家列表"分组（每玩家一行）。签名没变则跳过。</summary>
         private void RebuildPlayersIfChanged()
         {
-            MpNetworkManager m = MpNetworkManager.Instance;
-            string key;
-            if (m == null || !m.IsConnected)
-            {
-                key = "off";
-            }
-            else
-            {
-                List<string> ids = m.GetPlayers().Select(p => p.PlayerId.ToString()).OrderBy(x => x).ToList();
-                ids.Insert(0, m.PlayerId.ToString());
-                key = (m.IsServer ? "S:" : "C:") + string.Join(",", ids);
-            }
+            string key = GetPlayersKey();
             if (key == playersKey) return;
             playersKey = key;
 
@@ -260,6 +249,38 @@ namespace Assets.Scripts
                 Mod.LogLobby("MultiPlayerUI: ReplaceGroup players failed: " + e.Message);
             }
             playersGroup = newGroup;
+        }
+
+        /// <summary>当前玩家集合签名（连接状态 + 是否房主 + 排序后的 PlayerId 列表），用于判断集合是否变化。</summary>
+        private static string GetPlayersKey()
+        {
+            MpNetworkManager m = MpNetworkManager.Instance;
+            if (m == null || !m.IsConnected) return "off";
+            List<string> ids = m.GetPlayers().Select(p => p.PlayerId.ToString()).OrderBy(x => x).ToList();
+            ids.Insert(0, m.PlayerId.ToString());
+            return (m.IsServer ? "S:" : "C:") + string.Join(",", ids);
+        }
+
+        /// <summary>
+        /// 强制整体重建 inspector 窗口（玩家加入/离开且窗口开启时调用）：
+        /// ① 先更新玩家列表分组在 model 中的内容（ReplaceGroup 原位重建该分组）；
+        /// ② 再 RebuildModelElements 全量重建所有元素，保证窗口内动态内容彻底刷新。
+        /// 仅由事件触发（低频），不做每帧/兜底调用，避免滚动/折叠状态频繁丢失。
+        /// </summary>
+        private void ForceRebuildPanel()
+        {
+            try
+            {
+                GroupModel newGroup = BuildPlayersGroup();
+                inspectorPanel.ReplaceGroup(playersGroup, newGroup);
+                playersGroup = newGroup;
+                playersKey = GetPlayersKey(); // 同步签名，避免兜底轮询再次触发
+                inspectorPanel.RebuildModelElements();
+            }
+            catch (Exception e)
+            {
+                Mod.LogLobby("MultiPlayerUI: ForceRebuildPanel failed: " + e.Message);
+            }
         }
 
         /// <summary>构建玩家列表分组：每玩家一行（名字 + 延迟），房主额外每行一个踢人按钮。</summary>

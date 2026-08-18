@@ -78,7 +78,7 @@ namespace Assets.Scripts.Net
 		/// <summary>正在预加载/生成远程飞船的玩家集合（防止状态包在预加载期间重复起协程）。</summary>
 		private readonly HashSet<int> _pendingSpawns = new HashSet<int>();
 		/// <summary>预加载期间收到的最新状态包（生成时用最新位置，减少长时间预加载后的跳变）。</summary>
-		private readonly Dictionary<int, Mod.recdata> _pendingSpawnLatest = new Dictionary<int, Mod.recdata>();
+		private readonly Dictionary<int, Mod.remoteDataPack> _pendingSpawnLatest = new Dictionary<int, Mod.remoteDataPack>();
 		/// <summary>玩家 -> 加载进度框（玩家离开/场景切换/停止时销毁，防残留）。</summary>
 		private readonly Dictionary<int, MpCraftLoadingIndicator> _loadingIndicators = new Dictionary<int, MpCraftLoadingIndicator>();
 		/// <summary>玩家 -> 预加载进度（0..1；供 MultiPlayerUI 玩家列表显示 "⏳ N%"）。</summary>
@@ -89,7 +89,7 @@ namespace Assets.Scripts.Net
 		/// <summary>远程玩家离开/掉线。</summary>
 		public event Action<MpPeer> OnPlayerLeft;
 		/// <summary>收到远程飞船状态（playerId, nodeId, 时间, recdata）。</summary>
-		public event Action<int, int, double, Mod.recdata> OnRemoteState;
+		public event Action<int, int, double, Mod.remoteDataPack> OnRemoteState;
 
 		// FlightUI 提示：已提示过"加入"的玩家（房主可能重发 PlayerJoin，避免重复提示）
 		private readonly HashSet<int> _joinNoticeShown = new HashSet<int>();
@@ -435,7 +435,7 @@ namespace Assets.Scripts.Net
 			}
 		}
 
-		private static void ForceRemoteHeading(RemoteCraft rc, Mod.recdata data)
+		private static void ForceRemoteHeading(RemoteCraft rc, Mod.remoteDataPack data)
 		{
 			if (rc.Node == null || rc.Node.CraftScript == null || rc.Node.Parent == null) return;
 			// 与 ApplyRemoteState 一致:Transform.rotation 是帧空间,
@@ -483,7 +483,7 @@ namespace Assets.Scripts.Net
 			if (_sendTimer < SendIntervalMs) return;
 			_sendTimer = 0f;
 
-			Mod.recdata data;
+			Mod.remoteDataPack data;
 			if (!TrySampleLocalCraft(out data)) return;
 			// 客户端在收到 Welcome（拿到 PlayerId）前不发状态包：
 			// 否则会以 PlayerId=-1 发包，房主无法关联到已登记玩家（"state for player -1"）。
@@ -869,7 +869,7 @@ namespace Assets.Scripts.Net
 
 		private void OnState(byte[] packet)
 		{
-			int playerId, nodeId; double time; Mod.recdata data;
+			int playerId, nodeId; double time; Mod.remoteDataPack data;
 			if (!MpMessages.TryDecodeState(packet, out playerId, out nodeId, out time, out data)) return;
 			if (playerId == PlayerId) return; // 忽略本机状态回显
 			OnRemoteState?.Invoke(playerId, nodeId, time, data);
@@ -1050,18 +1050,18 @@ namespace Assets.Scripts.Net
 			public readonly StateSample[] Buffer = new StateSample[BufferCapacity];
 			public int BufferCount;          // 有效样本数
 			public int BufferHead;           // 最旧样本索引（环形）
-			public Mod.recdata LastApplied;  // 最近一次实际应用的状态（LateUpdate 用，避免"最新包覆盖插值"）
+			public Mod.remoteDataPack LastApplied;  // 最近一次实际应用的状态（LateUpdate 用，避免"最新包覆盖插值"）
 			public bool HasApplied;          // LastApplied 是否已有效
 
 			public struct StateSample
 			{
 				public float ArrivalTime;  // 到达端 Time.unscaledTime（单调）
 				public double PacketTime;  // 发送端 FlightState.Time（诊断用）
-				public Mod.recdata Data;
+				public Mod.remoteDataPack Data;
 			}
 
 			/// <summary>环形追加一条样本；按到达时间天然有序，满则覆盖最旧。</summary>
-			public void PushSample(float arrivalTime, double packetTime, Mod.recdata data)
+			public void PushSample(float arrivalTime, double packetTime, Mod.remoteDataPack data)
 			{
 				int idx = (BufferHead + BufferCount) % BufferCapacity;
 				Buffer[idx] = new StateSample { ArrivalTime = arrivalTime, PacketTime = packetTime, Data = data };
@@ -1071,7 +1071,7 @@ namespace Assets.Scripts.Net
 			}
 
 			/// <summary>取最新样本。</summary>
-			public bool TryGetNewest(out Mod.recdata data)
+			public bool TryGetNewest(out Mod.remoteDataPack data)
 			{
 				data = default;
 				if (BufferCount == 0) return false;
@@ -1098,7 +1098,7 @@ namespace Assets.Scripts.Net
 		/// 飞船一出现就在远程玩家的真实位置，而不是先出现在本机玩家身上。
 		/// CraftData / LaunchLocation / XML 由 SpawnRemoteCraftCoroutine 预加载前构建好（主 prefab 已热缓存）。
 		/// </summary>
-		private void SpawnRemoteCraftAtPosition(MpPeer peer, Mod.recdata data, CraftData craftData, LaunchLocation location, XElement xml)
+		private void SpawnRemoteCraftAtPosition(MpPeer peer, Mod.remoteDataPack data, CraftData craftData, LaunchLocation location, XElement xml)
 		{
 			try
 			{
@@ -1277,7 +1277,7 @@ namespace Assets.Scripts.Net
 		/// 收到远程状态包：若该玩家远程飞船尚未生成，则用首个状态包的真实位置生成；
 		/// 否则更新插值目标。
 		/// </summary>
-		private void ApplyRemoteState(int playerId, int nodeId, double time, Mod.recdata data)
+		private void ApplyRemoteState(int playerId, int nodeId, double time, Mod.remoteDataPack data)
 		{
 			RemoteCraft rc;
 			if (!_remoteCrafts.TryGetValue(playerId, out rc) || rc.Node == null)
@@ -1327,7 +1327,7 @@ namespace Assets.Scripts.Net
 		/// 创建加载进度框（对方位置上方，真实百分比）→ 异步预加载部件 prefab（逐帧）→
 		/// 主 prefab 已热缓存后 SpawnCraft（快，无秒级白屏）→ 走现有登记/表面锁定/幻影模式逻辑。
 		/// </summary>
-		private IEnumerator SpawnRemoteCraftCoroutine(MpPeer peer, Mod.recdata data)
+		private IEnumerator SpawnRemoteCraftCoroutine(MpPeer peer, Mod.remoteDataPack data)
 		{
 			// 先跑完当前帧网络处理，再等 2 帧，让握手/回 Ack/状态包有充足时间流动
 			yield return null;
@@ -1395,8 +1395,8 @@ namespace Assets.Scripts.Net
 			}
 
 			// 用预加载期间的最新状态包（长时间预加载后位置更准，减少跳变）
-			Mod.recdata spawnData = data;
-			if (_pendingSpawnLatest.TryGetValue(peer.PlayerId, out Mod.recdata latest)) spawnData = latest;
+			Mod.remoteDataPack spawnData = data;
+			if (_pendingSpawnLatest.TryGetValue(peer.PlayerId, out Mod.remoteDataPack latest)) spawnData = latest;
 
 			// 清理进度框 + 挂起标记。SpawnRemoteCraftAtPosition 内同步登记 _remoteCrafts（无 yield），
 			// 移除挂起标记到登记之间没有网络帧插入，不会重复起协程。
@@ -1533,7 +1533,7 @@ namespace Assets.Scripts.Net
 				if (rc.HasState)
 				{
 					// 初始状态：位置/速度/朝向一次性应用（含 RecalculateFrameState 刷新 Transform）
-					if (rc.TryGetNewest(out Mod.recdata newest))
+					if (rc.TryGetNewest(out Mod.remoteDataPack newest))
 					{
 						ApplyRemoteState(rc, newest);
 					}
@@ -1570,7 +1570,7 @@ namespace Assets.Scripts.Net
 					// 平滑插帧：renderTime = now - renderDelay，取前后两包插值；
 					// 渲染延迟吸收抖动/乱序，避免"最新包覆盖"导致的橡皮筋/跳变。
 					float renderTime = Time.unscaledTime - RenderDelayMs / 1000f;
-					if (TryGetInterpolatedState(rc, renderTime, out Mod.recdata interp))
+					if (TryGetInterpolatedState(rc, renderTime, out Mod.remoteDataPack interp))
 					{
 						ApplyRemoteState(rc, interp);
 						// 每帧用插值后状态驱动幽灵船尾焰(液体 Route A 经 override、航发直接驱动)
@@ -1604,7 +1604,7 @@ namespace Assets.Scripts.Net
 		}
 
 		/// <summary>直接应用远程状态：位置/速度经行星坐标设置，朝向直接赋值。</summary>
-		private static void ApplyRemoteTransformDirect(RemoteCraft rc, Mod.recdata data)
+		private static void ApplyRemoteTransformDirect(RemoteCraft rc, Mod.remoteDataPack data)
 		{
 			ApplyRemoteState(rc, data);
 		}
@@ -1613,7 +1613,7 @@ namespace Assets.Scripts.Net
 		/// 平滑插帧：从远程飞船环形缓冲中取 renderTime 前后两包做插值（位置/速度线性、朝向球面插值）。
 		/// 缓冲不足时回退为直接应用最新包（冻结），不产生跳变。
 		/// </summary>
-		private static bool TryGetInterpolatedState(RemoteCraft rc, float renderTime, out Mod.recdata result)
+		private static bool TryGetInterpolatedState(RemoteCraft rc, float renderTime, out Mod.remoteDataPack result)
 		{
 			result = default;
 			if (rc.BufferCount == 0) return false;
@@ -1642,14 +1642,14 @@ namespace Assets.Scripts.Net
 
 			int idxA = (rc.BufferHead + i) % RemoteCraft.BufferCapacity;
 			int idxB = (rc.BufferHead + i + 1) % RemoteCraft.BufferCapacity;
-			Mod.recdata a = rc.Buffer[idxA].Data;
-			Mod.recdata b = rc.Buffer[idxB].Data;
+			Mod.remoteDataPack a = rc.Buffer[idxA].Data;
+			Mod.remoteDataPack b = rc.Buffer[idxB].Data;
 			float tA = rc.Buffer[idxA].ArrivalTime;
 			float tB = rc.Buffer[idxB].ArrivalTime;
 			float pct = Mathf.Clamp01((renderTime - tA) / Mathf.Max(tB - tA, 0.0001f));
 
 			// 位置/速度线性、朝向球面插值；body 姿态/激活组沿用最新包（避免欧拉角绕转问题）
-			Mod.recdata interp = b;
+			Mod.remoteDataPack interp = b;
 			interp.Position = Vector3d.Lerp(a.Position, b.Position, pct);
 			interp.Velocity = Vector3d.Lerp(a.Velocity, b.Velocity, pct);
 			interp.Heading = Quaterniond.FromQuaternion(Quaternion.Slerp(a.Heading.ToQuaternion(), b.Heading.ToQuaternion(), pct));
@@ -1666,7 +1666,7 @@ namespace Assets.Scripts.Net
 		///    body 用相对质心的局部旋转（根=质心，故 body.localRotation 直接可写）；
 		/// ④ 刷新 FrameState：让 Transform.position 跟随逻辑位置。
 		/// </summary>
-		private static void ApplyRemoteState(RemoteCraft rc, Mod.recdata data)
+		private static void ApplyRemoteState(RemoteCraft rc, Mod.remoteDataPack data)
 		{
 			if (rc.Node == null || rc.Node.CraftScript == null) return;
 			// 防御:确保远程飞船保持"物理禁用"。游戏可能在 GameView 加载/切换或初始化阶段
@@ -1713,6 +1713,8 @@ namespace Assets.Scripts.Net
 				// 帧未就绪回退:直接乘行星自转(近似,帧角≈行星角时成立)
 				headingFrame = Quaternion.AngleAxis((float)(planet.RotationAngle * Mathf.Rad2Deg), Vector3.up) * data.SrfRel.ToQuaternion();
 			}
+			// 烟雾同步:注入速度+角速度到幽灵 kinematic 刚体(须在写 rc.LastAppliedHeading 之前,以读到上一次朝向)
+			EngineVisualSync.InjectGhostMotion(rc, data, planet, frame, headingFrame);
 			rc.Node.CraftScript.Transform.rotation = headingFrame;
 			if (rc.Node.CraftScript.CenterOfMass != null)
 			{
@@ -1796,7 +1798,7 @@ namespace Assets.Scripts.Net
 		/// 物理禁用 + InContactWithPlanet 的飞船，游戏每帧会按这些值放置飞船（见 CraftNode.Update），
 		/// 所以必须让它们跟随远程状态，否则会被拉回出生点（位置卡住/不更新）。
 		/// </summary>
-		private static void ApplyRemoteGroundedSurface(RemoteCraft rc, Mod.recdata data, IPlanetNode planet)
+		private static void ApplyRemoteGroundedSurface(RemoteCraft rc, Mod.remoteDataPack data, IPlanetNode planet)
 		{
 			try
 			{
@@ -1874,9 +1876,9 @@ namespace Assets.Scripts.Net
 		}
 
 		/// <summary>采样本机飞船状态（recdata 格式，地面坐标）。</summary>
-		private bool TrySampleLocalCraft(out Mod.recdata data)
+		private bool TrySampleLocalCraft(out Mod.remoteDataPack data)
 		{
-			data = new Mod.recdata();
+			data = new Mod.remoteDataPack();
 			try
 			{
 				if (FlightSceneScript.Instance == null) return false;
@@ -1911,7 +1913,7 @@ namespace Assets.Scripts.Net
 				{
 					heading = sendFrame.FrameToPlanetRotation(heading.ToQuaternion());
 				}
-				data = new Mod.recdata(pos, vel, heading);
+				data = new Mod.remoteDataPack(pos, vel, heading);
 
 				// 每引擎视觉 throttle(尾焰同步):按确定枚举顺序,与接收端一一对应
 				data.EngineThrottles = EngineVisualSync.SampleEngineThrottles(craft);

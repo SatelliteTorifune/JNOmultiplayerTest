@@ -2,10 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Assets.Scripts.Craft;
-using Assets.Scripts.Craft.Parts.Modifiers;
 using Assets.Scripts.Craft.Parts.Modifiers.Propulsion;
 using Assets.Scripts.Flight.Sim;
+using ModApi.Craft;
 using ModApi.Craft.Parts;
+using ModApi.Flight.GameView;
+using ModApi.Flight.Sim;
 using UnityEngine;
 
 namespace Assets.Scripts.Net
@@ -136,7 +138,8 @@ namespace Assets.Scripts.Net
 
 		/// <summary>
 		/// 为幽灵船建立引擎驱动表(与发送端同枚举顺序)并挂上 Route A override;
-		/// 同时抑制幽灵船烟雾粒子与 ExhaustDamageScript 的地形尘/加热副作用。
+		/// 同时禁用 ExhaustDamageScript(防地形尘/加热)。烟雾不在此禁用——拖尾由
+		/// InjectGhostMotion 注入的 rigidbody.velocity 驱动(见 plans §10)。
 		/// 幂等:已建立则跳过。CraftScript 未就绪时返回 false,调用方下一帧重试。
 		/// </summary>
 		public static bool SetupGhostEngineVisuals(MpNetworkManager.RemoteCraft rc)
@@ -154,12 +157,8 @@ namespace Assets.Scripts.Net
 					PartData part = parts[pi];
 					if (part == null || part.PartScript == null) continue;
 
-					// 抑制幽灵船该部件下的烟雾粒子(尾焰先行;烟雾拖尾依赖真实速度,后续再做)
-					foreach (SmokeTrailScript st in part.PartScript.GameObject.GetComponentsInChildren<SmokeTrailScript>(true))
-					{
-						st.gameObject.SetActive(false);
-					}
 					// 幽灵船的 ExhaustDamageScript 仍会跑 FixedUpdate 发地形尘/加热,禁用掉
+					// (烟雾不在此禁用:烟雾拖尾由 InjectGhostMotion 注入的 rigidbody.velocity 驱动,见 plans §10)
 					foreach (ExhaustDamageScript eds in part.PartScript.GameObject.GetComponentsInChildren<ExhaustDamageScript>(true))
 					{
 						eds.enabled = false;
@@ -266,6 +265,56 @@ namespace Assets.Scripts.Net
 						Mod.LogError("EngineVisualSync.DriveGhostEngineVisuals error (P" + rc.PlayerId + "): " + e.Message);
 					}
 				}
+			}
+		}
+
+		/// <summary>
+		/// 幽灵船烟雾同步(见 plans/engine-fx-sync-feasibility.md §10):
+		/// 把同步速度注入 kinematic 刚体,并从"最近两次应用的帧空间朝向之差"算角速度注入。
+		/// - SmokeTrailScript 的拖尾读 rigidbody.velocity(反编译定论:不用传入的 surfaceVelocity 参数),
+		///   幽灵 kinematic 刚体 velocity≈0 → 必须注入,否则烟雾原地堆积成一坨;
+		/// - 角速度供 _smoothedCraftVelocity 的 Cross(angularVelocity, offset) 项(翻滚烟迹)。
+		/// 调用点约定:在 ApplyRemoteState 里、写 rc.LastAppliedHeading 之前调用,
+		/// 此时 LastAppliedHeading 仍是"上一次应用"的朝向,用于算旋转增量。
+		/// kinematic 刚体的 velocity/angularVelocity 只作数据,Unity 不积分进位置,无物理副作用;
+		/// 幽灵摆放走 GroundedSurface* + SetStateVectors,不读 rigidbody.velocity,不会双重移动。
+		/// </summary>
+		public static void InjectGhostMotion(MpNetworkManager.RemoteCraft rc, Mod.remoteDataPack data, IPlanetNode planet, IReferenceFrame frame, Quaternion headingFrame)
+		{
+			if (rc == null || rc.Node == null || rc.Node.CraftScript == null || planet == null ) return;
+
+			// 线性速度:表面坐标 → 行星空间 → 接收端帧相对速度(与发送端 rigidbody.velocity 同语义)
+			Vector3d planetVel = planet.SurfaceVectorToPlanetVector(data.Velocity);
+			Vector3 frameVel = frame != null ? frame.PlanetToFrameVelocity(planetVel) : (Vector3)planetVel;
+
+			// 角速度:本次 vs 上次应用的帧空间朝向之差(短路径轴角/帧时长);首次或朝向未变则为 0
+			Vector3 angularVel = Vector3.zero;
+			if (rc.HasApplied)
+			{
+				Quaternion prev = rc.LastAppliedHeading;
+				float deg = Quaternion.Angle(prev, headingFrame);
+				if (deg > 0.001f)
+				{
+					Vector3 axis;
+					Quaternion delta = headingFrame * Quaternion.Inverse(prev);
+					delta.ToAngleAxis(out deg, out axis);
+					float dt = Time.deltaTime;
+					if (dt > 0f && deg > 0.001f)
+					{
+						angularVel = axis * (deg * Mathf.Deg2Rad / dt);
+					}
+				}
+			}
+
+			IReadOnlyList<BodyData> bodies = rc.Node.CraftScript.Data.Assembly.Bodies;
+			for (int i = 0; i < bodies.Count; i++)
+			{
+				BodyData b = bodies[i];
+				if (b == null || b.BodyScript == null || b.BodyScript.RigidBody == null) continue;
+				Rigidbody rb = b.BodyScript.RigidBody;
+				if (!rb.isKinematic) continue; // 只写 kinematic(幽灵全 kinematic;真实/他人飞船不碰)
+				rb.velocity = frameVel;
+				if (angularVel != Vector3.zero) rb.angularVelocity = angularVel;
 			}
 		}
 

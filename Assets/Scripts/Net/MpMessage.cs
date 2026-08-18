@@ -217,7 +217,7 @@ namespace Assets.Scripts.Net
 		/// 状态包格式：PlayerId(int) + NodeId(int) + FlightState.Time(double) + recdata。
 		/// PlayerId 由房主分配，全局唯一，用于寻址；NodeId 为发送方本机飞船节点号（各机之间可重复）。
 		/// </summary>
-		public static byte[] EncodeState(int playerId, int nodeId, double time, Mod.recdata data)
+		public static byte[] EncodeState(int playerId, int nodeId, double time, Mod.remoteDataPack data)
 		{
 			return Pack(MpMessageType.State, w =>
 			{
@@ -228,9 +228,9 @@ namespace Assets.Scripts.Net
 			});
 		}
 
-		public static bool TryDecodeState(byte[] buffer, out int playerId, out int nodeId, out double time, out Mod.recdata data)
+		public static bool TryDecodeState(byte[] buffer, out int playerId, out int nodeId, out double time, out Mod.remoteDataPack data)
 		{
-			playerId = -1; nodeId = -1; time = 0; data = new Mod.recdata();
+			playerId = -1; nodeId = -1; time = 0; data = new Mod.remoteDataPack();
 			try
 			{
 				using (MemoryStream ms = new MemoryStream(buffer))
@@ -474,7 +474,7 @@ namespace Assets.Scripts.Net
 
 		// ---------------- recdata 序列化 ----------------
 
-		public static void WriteRecdata(BinaryWriter w, Mod.recdata d)
+		public static void WriteRecdata(BinaryWriter w, Mod.remoteDataPack d)
 		{
 			w.Write(d.Position.x); w.Write(d.Position.y); w.Write(d.Position.z);
 			w.Write(d.Velocity.x); w.Write(d.Velocity.y); w.Write(d.Velocity.z);
@@ -509,9 +509,9 @@ namespace Assets.Scripts.Net
 			for (int i = 0; i < etCount; i++) w.Write(d.EngineThrottles[i]);
 		}
 
-		public static Mod.recdata ReadRecdata(BinaryReader r)
+		public static Mod.remoteDataPack ReadRecdata(BinaryReader r)
 		{
-			Mod.recdata d = new Mod.recdata(
+			Mod.remoteDataPack d = new Mod.remoteDataPack(
 				new Vector3d(r.ReadDouble(), r.ReadDouble(), r.ReadDouble()),
 				new Vector3d(r.ReadDouble(), r.ReadDouble(), r.ReadDouble()),
 				new Quaterniond(r.ReadDouble(), r.ReadDouble(), r.ReadDouble(), r.ReadDouble())

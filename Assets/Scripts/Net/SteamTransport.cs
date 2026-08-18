@@ -45,6 +45,21 @@ namespace Assets.Scripts.Net
 		public bool IsRunning => _running;
 		public ulong LocalSteamId { get; private set; } // 本机 SteamId
 
+		/// <summary>
+		/// 查询当前 Steam 登录用户 ID（0 = 未初始化/未登录）。
+		/// 与实例属性 LocalSteamId 不同：后者仅在 Start/StartClient 成功后才赋值，
+		/// 开房前的预检（HostLobby）不能依赖它，否则 Steam 正常时也会被误判为未登录而拒绝开房。
+		/// </summary>
+		public static ulong GetLocalSteamId()
+		{
+			try { return SteamUser.GetSteamID().m_SteamID; }
+			catch (Exception e)
+			{
+				Mod.LogError("SteamTransport.GetLocalSteamId error: " + e.Message);
+				return 0;
+			}
+		}
+
 		/// <summary>毫秒级时间戳（纯 .NET）。</summary>
 		private static long NowMs => DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;
 

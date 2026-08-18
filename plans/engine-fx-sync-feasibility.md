@@ -166,7 +166,7 @@
 | [`MpMessage.cs`](../Assets/Scripts/Net/MpMessage.cs) | `WriteRecdata`/`ReadRecdata` 追加 count+N 个 float |
 | [`EngineVisualSync.cs`](../Assets/Scripts/Net/EngineVisualSync.cs) | 新增:发送端采样、幽灵驱动表、反射访问器 |
 | [`MpNetworkManager.cs`](../Assets/Scripts/Net/MpNetworkManager.cs) | `RemoteCraft` 改 internal + `SyncedThrottles`/`EngineDrivers`;采样/设置/每帧驱动接入;`IsRemoteCraftNode` |
-| [`JetEngineGhostPatch.cs`](../Assets/Scripts/HarmonyPatches/JetEngineGhostPatch.cs) | 新增:幽灵航发跳过 `IFlightFixedUpdate`/`IFlightUpdate` |
+| [`JetEngineGhostPatch.cs`](../Assets/Scripts/HarmonyPatches/JetEngineGhostPatch.cs) | 新增:幽灵航发跳过 `IFlightFixedUpdate`/`IFlightUpdate`(手动 `Apply` 打补丁,无日志) |
 
 ### 9.2 实现要点(含与 §3.6 的修正)
 
@@ -180,12 +180,91 @@
 5. **平滑**:throttle 跟随现有插值缓冲,`ApplyRemoteState` 时快照进 `rc.SyncedThrottles`,override 闭包与驱动都读它。
 6. **航发 patch 选目标**:显式接口实现的 `MethodInfo.Name` 是带接口前缀的 `"IFoo.Bar"`(**不是**简单名 `"Bar"`)——只比简单名会匹配不上,`TargetMethod()` 返回 null 导致 Harmony `Patching exception`(首次联机实测报错 `[MpTest] Init failed: HarmonyException ... TargetMethod() returned an unexpected result: null`)。已独立 dotnet 测试复现(显式接口实现 `Name='IFoo.Bar'`)。修正两处:
    - 用 `IsNamed`(简单名 或 `EndsWith(".方法名")`)匹配 + `GetMethods` 兜底;
-   - **改用手动打补丁**:去掉 `[HarmonyPatch]` 自动发现,由 `Mod.OnModInitialized` 在 `PatchAll()` 后调 `JetEngineGhostPatch.Apply(harmony)`,目标方法找不到时只 `LogError` 降级(液体尾焰仍可用),不再抛异常打断整个 mod 初始化。
+   - **改用手动打补丁**:去掉 `[HarmonyPatch]` 自动发现,由 `Mod.OnModInitialized` 在 `PatchAll()` 后调 `JetEngineGhostPatch.Apply(harmony)`,目标方法找不到时静默跳过(液体尾焰仍可用),不再抛异常打断整个 mod 初始化。
    (实测 `GetInterfaceMap(typeof(IFlightUpdate))` 只含自身方法,不把继承的 `IGameLoopItem` 成员放进 TargetMethods。)
 
 ### 9.3 已知留白 / 后续
 
-- **烟雾拖尾**:幽灵 body 全 kinematic → `rigidbody.velocity≈0` → 烟雾粒子不拖尾;当前先禁用烟雾,后续按 §5.3 做 velocity 注入。
+- **烟雾拖尾**:✅ 已实现(§10.3/§10.5)——`InjectGhostMotion` 逐帧向幽灵 kinematic 刚体注入同步速度+角速度,烟雾 GO 不再禁用。剩余可选项:发射率精确化(§10.4-2)、远处 LOD。
 - **RocketEngine 视觉近似**:发送端真实火焰由 `AdjustedThrottle()`(含推力曲线/MinThrottle)驱动,采样用 `EngineThrottle`,二者通常相等,仅推力曲线/限流例外(可接受)。
 - **`Data.Activated=true && HasFuel=false` 边角**:幽灵 `FlightFixedUpdate` 会调 `OnDeactivated()`→`UpdateExhaust(0)` 每 FixedUpdate 反打(幽灵油箱恒满、无消耗,实际几乎不会触发);若测试出现"火焰闪烁"再给液体补 `IFlightFixedUpdate` patch。
 - **gimbal 尾焰朝向 / 热畸变 / RCS**:未做,见 §5.4/§8 排期。
+
+---
+
+## 10. 引擎烟雾粒子同步(分析与设计)
+
+> 定位:尾焰 MVP(§9)之后的第一优先级增强。沿用"**输入同步 + 本地仿真**"结论(§4/§8):
+> 烟雾不逐粒子传输,把**驱动烟雾的输入**(throttle、速度、朝向、大气)同步过来,由接收端游戏自身的
+> `SmokeTrailScript` 本地发粒子 → 形态一致、带宽≈0(只多算一次速度注入)。
+
+### 10.1 反编译定论:烟雾拖尾到底依赖什么
+
+`SmokeTrailScript` 的发射链,关键两处:
+
+1. **`FlightUpdate(surfaceVelocity)`([SmokeTrailScript.cs:149](file:///C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/SmokeTrailScript.cs:149))**,第 171 行:
+   `_smoothedCraftVelocity = rigidBody.velocity + Cross(rigidBody.angularVelocity, offset)`
+   —— **用的是刚体 velocity,不是传入的 `surfaceVelocity` 参数**。
+2. **`LateUpdate`(发射)([SmokeTrailScript.cs:186](file:///C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/SmokeTrailScript.cs:186))**:
+   - 第 217 行 `vector3 = rigidBody.velocity` → 发射率相对速度、粒子位置回插(第 265 行)都靠它;
+   - 第 213 行 `emissionFrame.Velocity = _smoothedCraftVelocity + 排气方向*(maxParticleSpeed*Throttle*SpeedOverride)`;
+   - 第 268 行粒子速度 = `vector4(-FrameSurfaceVelocity) + (vector6-vector4)*exp(-AirDensity*dt)`(向空气帧拖拽衰减)。
+   - 结论:粒子**速度/位置插值/发射率**全部读 `rigidBody.velocity`。
+
+**幽灵上的后果**:全 kinematic + `RecalculateFrameState` 只对非 kinematic 累加速度([CraftUtils.cs:63](file:///C:/renko/unityProjects/JNOmultiplayerTest/Assets/Scripts/CraftUtils.cs:63))
+→ `rigidbody.velocity≈0` → 即使放开烟雾,粒子也在喷嘴原地堆积成一坨,不拖尾。**必须注入速度。**
+
+### 10.2 其它烟雾输入:当前已就绪(无需额外同步)
+
+| 输入 | 幽灵当前状态 | 说明 |
+|---|---|---|
+| `EmissionEnabled` / `Throttle` / `Intensity` | ✅ 正确 | 由 `EngineNozzleScript.FlightUpdate` 按同步 throttle 设置(尾焰驱动链已带出) |
+| `EmissionOpacity` | ✅ 正确 | `EngineCommon.FlightUpdate(smokeOpacity=1,…)` × 大气密度 |
+| `AtmosphereSample`(AirDensity 门槛/透明度) | ✅ 正确 | `CraftFlightData.Update` 每帧按当前位置 `SampleAltitude` 刷新([CraftFlightData.cs:570](file:///C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/FlightData/CraftFlightData.cs:570)) |
+| `ExhaustSystemScript.ExpansionRatio`(烟雾门槛 num>5) | ✅ 正确 | 由 `UpdateExhaust` 从幽灵自身大气/throttle 计算 |
+| `ExhaustDamageScript`(地形尘/加热) | ✅ 已禁用 | §9 已处理 |
+| **`rigidBody.velocity`(拖尾)** | ❌ ≈0 | **唯一缺口,见 §10.3** |
+
+### 10.3 设计:逐帧注入同步速度(核心,已实现)
+
+在 `ApplyRemoteState` 里(已有 `data`/`planet`/`frame` 上下文)调 `EngineVisualSync.InjectGhostMotion(rc, data, planet, frame, headingFrame)`,
+对每个幽灵 kinematic body 写:
+
+```
+frameVel = frame.PlanetToFrameVelocity( planet.SurfaceVectorToPlanetVector(data.Velocity) )
+foreach body in ghost.Assembly.Bodies:
+    if body.RigidBody.isKinematic:
+        body.RigidBody.velocity = frameVel
+        body.RigidBody.angularVelocity = (本次朝向 - 上次朝向) 的轴角 / 帧时长   # §10.4-1
+```
+
+- **空间自洽**:发送端 `recdata.Velocity = PlanetVectorToSurfaceVector(craft.Velocity)`([MpNetworkManager.cs:1891](file:///C:/renko/unityProjects/JNOmultiplayerTest/Assets/Scripts/Net/MpNetworkManager.cs:1891)),
+  而发送端 `rigidBody.velocity` 是帧相对速度;`PlanetToFrameVelocity` 把行星空间速度转成接收端帧相对速度
+  (与发送端同语义;`FrameSurfaceVelocity` 双端同为帧表面速度,`vector4` 相互抵消)。
+- **角速度**:用 `rc.LastAppliedHeading`(上一次应用的帧空间朝向)与本次 `headingFrame` 之差,
+  短路径轴角 `headingFrame * Inverse(prev)` → `axis * (angle_rad / Time.deltaTime)`。
+  **调用点约束**:必须在 `ApplyRemoteState` 里、写 `rc.LastAppliedHeading = headingFrame` **之前**调用,才能读到上一次朝向。
+- **无副作用**:kinematic 刚体不把 velocity/angularVelocity 积分进位置;幽灵摆放走 `GroundedSurface*` + `SetStateVectors`(mod 每帧写),
+  不读 rigidbody.velocity → 不会双重移动。附带好处:幽灵 `MachNumber`(读 velocity)也随之正确。
+- **烟雾放开**:`SetupGhostEngineVisuals` 不再把 `SmokeTrailScript` GO `SetActive(false)`
+  (飞行场景下默认 active;发射由 `EmissionEnabled=throttle>0` 门控,熄火无烟)。
+- **抽帧/带宽**:无需新增字段,直接用现有 `recdata.Velocity`。
+- **时序**:MpNetworkManager `DefaultExecutionOrder(1000)`,`InjectGhostMotion` 在 Update 末尾写入,`SmokeTrailScript.LateUpdate`
+  在其后发射 → 当帧生效。EngineScript 走游戏 Route A(顺序 0)时 `_smoothedCraftVelocity` 滞后一帧(≈16ms),不可感知。
+
+### 10.4 可选精修(按需)
+
+1. **角速度注入**:`_smoothedCraftVelocity` 还含 `Cross(angularVelocity, offset)`(翻滚时排气口切向速度)。
+   从每帧朝向旋转增量算 `rigidBody.angularVelocity` 写入(kinematic 无副作用);不做则翻滚中的幽灵烟迹略"呆"。
+2. **发射率精确化**:`num5` 用 `FlightData.SurfaceVelocityFrame`([CraftFlightData.cs:582](file:///C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/FlightData/CraftFlightData.cs:582))
+   = `_craftScript.FrameVelocity + FrameSurfaceVelocity`,而幽灵 `FrameVelocity` 可能陈旧 → 发射率偏差。
+   可反射写 `CraftScript._frameVelocity` 或用 `num5` 兜底(`_smoothedCraftVelocity.magnitude`)。
+   不做也能出正确拖尾,只是发射密度略差。
+3. **LOD/预算**:远距离幽灵跳过烟雾注入或直接维持禁用(游戏自带 `ParticleCategory.EngineSmoke` 全局预算自动限流)。
+
+### 10.5 排期与验收
+
+- **① 速度注入 + 放开烟雾**(✅ 已实现):改动在 `EngineVisualSync`(`SetupGhostEngineVisuals` 不再禁用烟雾 GO + 新增 `InjectGhostMotion`)与 `ApplyRemoteState`(每帧调注入)。验收:两架带液体发动机的火箭,油门推满起飞 → 接收端看到尾焰 + 拉出正确拖尾;熄火 → 无烟;高空 → 无烟(大气门槛生效)。
+- **② 角速度注入**(✅ 已实现,§10.4-1):`InjectGhostMotion` 从"最近两次应用的帧空间朝向之差"算 `rigidbody.angularVelocity` 注入(短路径轴角/帧时长),覆盖翻滚烟迹(`Cross(angularVelocity, offset)` 项)。验收:翻滚的幽灵火箭烟迹应带螺旋轨迹。
+- **② 发射率 / LOD**(可选,未做):见 §10.4-2/3。
+- **③ RCS / 热畸变**:仍按 §8 排期(独立于烟雾)。

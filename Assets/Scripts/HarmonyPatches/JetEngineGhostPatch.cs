@@ -17,7 +17,7 @@ namespace Assets.Scripts
 	/// 尾焰改由 EngineVisualSync.DriveGhostEngineVisuals 用同步值直接驱动。
 	///
 	/// 应用方式:不用 [HarmonyPatch] 自动发现,而是由 Mod.OnModInitialized 显式调用 Apply() 手动打补丁
-	/// —— 目标方法找不到时只打日志降级(液体尾焰仍可用),不会像 [HarmonyPatch]+TargetMethod 那样
+	/// —— 目标方法找不到时静默跳过(液体尾焰仍可用),不会像 [HarmonyPatch]+TargetMethod 那样
 	/// 返回 null 直接抛 HarmonyException 打断整个 mod 初始化(实测报错,见 plans §9.2 第 6 条)。
 	/// Prefix 只对"幽灵飞船"返回 false(见 MpNetworkManager.IsRemoteCraftNode),本机/他人真船不受影响。
 	/// </summary>
@@ -35,22 +35,12 @@ namespace Assets.Scripts
 			if (fixedUpdate != null)
 			{
 				harmony.Patch(fixedUpdate, prefix: new HarmonyMethod(prefix));
-				Mod.Log("JetEngineGhostPatch: patched IFlightFixedUpdate.FlightFixedUpdate on JetEngineScript");
-			}
-			else
-			{
-				Mod.LogError("JetEngineGhostPatch: IFlightFixedUpdate.FlightFixedUpdate NOT FOUND on JetEngineScript; ghost jet afterburner flame degraded");
 			}
 
 			MethodInfo update = FindInterfaceMethod(typeof(IFlightUpdate), "FlightUpdate");
 			if (update != null)
 			{
 				harmony.Patch(update, prefix: new HarmonyMethod(prefix));
-				Mod.Log("JetEngineGhostPatch: patched IFlightUpdate.FlightUpdate on JetEngineScript");
-			}
-			else
-			{
-				Mod.LogError("JetEngineGhostPatch: IFlightUpdate.FlightUpdate NOT FOUND on JetEngineScript; ghost jet flame degraded");
 			}
 		}
 
