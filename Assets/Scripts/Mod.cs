@@ -81,17 +81,71 @@ namespace Assets.Scripts
 			DevConsoleApi.RegisterCommand<string>("SteamJoinLobby", new Action<string>(hostSteamId => LobbyManager.Instance.JoinLobby(hostSteamId, 0)));
 			// TCP debug（本地虚拟机联机调试）：先切到 TcpTransport 再开房 / 加入。
 			// 房主监听 IPAddress.Any:port；客户端按宿主局域网 IP:port 连接（如 192.168.56.1:25555）。
+			// 若已启用 NetSim 延迟模拟（NetSimDelay 等），自动包一层 LagSimTransport 模拟公网延迟。
 			DevConsoleApi.RegisterCommand<int>("TcpHostLobby", new Action<int>(port =>
 			{
 				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-				if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
+				if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
 				LobbyManager.Instance.HostLobby(port);
 			}));
 			DevConsoleApi.RegisterCommand<string, int>("TcpJoinLobby", new Action<string, int>((host, port) =>
 			{
 				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-				if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
+				if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
 				LobbyManager.Instance.JoinLobby(host, port);
+			}));
+			// 网络延迟模拟（NetSim）：无需 Steam 好友，在 TCP+本地 VM 上模拟公网延迟/抖动/丢包。
+			// 语义：数值命令(NetSimDelay/Jitter/Loss/Duplicate)只设数值、不开总开关；
+			//      总开关 NetSimOn/NetSimOff（或 UI Toggle）控制是否实际生效——避免其它场景残留延迟。
+			// 会话中改值实时生效；已启用实例改总开关也实时直通/恢复。
+			DevConsoleApi.RegisterCommand<int>("NetSimDelay", new Action<int>(ms =>
+			{
+				Net.LagSimTransport.SetDelay(Mathf.Max(0, ms));
+				LogLobby("NetSimDelay -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + "; 需 NetSimOn 或 UI 开关开启后生效)");
+			}));
+			DevConsoleApi.RegisterCommand<int>("NetSimJitter", new Action<int>(ms =>
+			{
+				Net.LagSimTransport.SetJitter(Mathf.Max(0, ms));
+				LogLobby("NetSimJitter -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + ")");
+			}));
+			DevConsoleApi.RegisterCommand<float>("NetSimLoss", new Action<float>(pct =>
+			{
+				Net.LagSimTransport.SetLoss(Mathf.Clamp(pct, 0f, 100f));
+				LogLobby("NetSimLoss -> " + pct + "% (" + Net.LagSimTransport.DescribeConfig() + ")");
+			}));
+			DevConsoleApi.RegisterCommand<float>("NetSimDuplicate", new Action<float>(pct =>
+			{
+				Net.LagSimTransport.SetDuplicate(Mathf.Clamp(pct, 0f, 100f));
+				LogLobby("NetSimDuplicate -> " + pct + "% (" + Net.LagSimTransport.DescribeConfig() + ")");
+			}));
+			DevConsoleApi.RegisterCommand("NetSimOn", new Action(() =>
+			{
+				Net.LagSimTransport.SetToggle(true);
+				LogLobby("NetSimOn: " + Net.LagSimTransport.DescribeConfig() +
+					(Net.LagSimTransport.Enabled ? "（已生效；开房自动包装，活跃实例实时生效）" : "（数值未设,实为直通）"));
+			}));
+			DevConsoleApi.RegisterCommand("NetSimOff", new Action(() =>
+			{
+				Net.LagSimTransport.SetToggle(false);
+				LogLobby("NetSimOff: 延迟模拟已关闭（直通；后续 TcpHostLobby/TcpJoinLobby 不包装，活跃实例立即直通）");
+			}));
+			DevConsoleApi.RegisterCommand("NetSimReset", new Action(() =>
+			{
+				Net.LagSimTransport.ResetConfig();
+				LogLobby("NetSimReset: 数值与总开关已清空（后续 TcpHostLobby/TcpJoinLobby 不再包装；当前会话若已包装则立即直通）");
+			}));
+			DevConsoleApi.RegisterCommand("NetSim", new Action(() =>
+			{
+				MpNetworkManager mgr = MpNetworkManager.Instance;
+				Net.LagSimTransport lag = mgr != null ? mgr.Transport as Net.LagSimTransport : null;
+				LogLobby("NetSim 配置: " + Net.LagSimTransport.DescribeConfig() +
+					(lag != null ? " | 活跃实例统计: " + lag.DescribeStats() : " | 当前传输未启用延迟模拟(需开房前配置或重启会话)"));
+			}));
+			// 接收端平滑/网络诊断悬浮窗开关（配合 NetSim 观察缓冲余量/抖动/欠载/位置误差）。
+			DevConsoleApi.RegisterCommand<int>("NetStatsUI", new Action<int>(on =>
+			{
+				MpNetworkManager.ShowStatsOverlay = on != 0;
+				LogLobby("NetStatsUI -> " + (on != 0 ? "ON（右上角悬浮窗显示每远程船平滑统计）" : "OFF"));
 			}));
 			// 房主调整状态包发送频率（Hz）：SetTickRate 20 → 50ms（默认）；5 → 200ms；60 → ~16.7ms。
 			// 房主设置后广播给所有客户端（SP2 ServerTickRate 同款思路）。

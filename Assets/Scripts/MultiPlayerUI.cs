@@ -137,18 +137,87 @@ namespace Assets.Scripts
             hostGroup.Add(tickRateSlider);
             inspectorModel.AddGroup(hostGroup);
 
-            // --- 调试（TCP，仅 Debug 模式显示；用于本机/虚拟机联机调试）---
-            GroupModel debugGroup = new GroupModel(Locale.GetString("MultiPlayer.MultiPlayerUI.DebugGroup"), null);
-            debugGroup.DetermineVisibility = () =>
+            // 调试分组仅 Debug 模式显示（TCP 联机 + 网络延迟模拟 NetSim；用于本机/虚拟机联机调试）。
+            Func<bool> debugOnly = () =>
             {
                 try { return ModSettings.Instance != null && ModSettings.Instance.DebugMode.Value; }
                 catch { return false; }
             };
+
+            // --- 调试（TCP + 网络延迟模拟 NetSim，仅 Debug 模式显示）---
+            GroupModel debugGroup = new GroupModel(Locale.GetString("MultiPlayer.MultiPlayerUI.DebugGroup"), null);
+            debugGroup.DetermineVisibility = debugOnly;
             debugGroup.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.TcpHostLobbyButton"), (b) => OnTcpHostLobbyClick()));
             debugGroup.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.TcpJoinLobbyButton"), (b) => OnTcpJoinLobbyClick()));
-            //调试：强制整体重建 inspector 窗口（更新玩家分组 + RebuildModelElements），用于排查 UI 刷新问题
-            debugGroup.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.RebuildPanelButton"), (b) => ForceRebuildPanel()));
+            // --- 网络延迟模拟（NetSim，已并入调试分组）：模拟公网延迟/抖动/丢包，无需 Steam 好友 ---
+            // 状态（实时刷新，分段显示）：
+            //   行1「状态」= 总开关 + 生效方式（OFF直通 / ON·已生效 / ON·待生效需重新开房）；
+            //   行2「投递统计」= 已生效时显示 投递/丢弃/队列 计数，否则 "—(未启用)"。
+            debugGroup.Add(new TextModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimStatus"),
+                GetNetSimStateText, null, null, null));
+            debugGroup.Add(new TextModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimStats"),
+                GetNetSimStatsText, null, null, null));
+            // 总开关：关闭=直通（不延迟不丢包）；开启后才实际生效（已启用的会话实时生效，未启用的下次开房生效）
+            ToggleModel netSimToggle = new ToggleModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimToggle"),
+                () => Net.LagSimTransport.ToggleOn,
+                v =>
+                {
+                    Net.LagSimTransport.SetToggle(v);
+                    Mod.LogLobby("NetSim UI toggle -> " + (v ? "ON" : "OFF") +
+                        (v ? " (" + Net.LagSimTransport.DescribeConfig() + ")" : " (直通,不影响其它 TCP 场景)"));
+                },
+                Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimToggleHint"));
+            debugGroup.Add(netSimToggle);
+            // 延迟(ms)
+            debugGroup.Add(new TextInputModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimDelay"),
+                () => Net.LagSimTransport.DelayMs.ToString(),
+                s =>
+                {
+                    int ms;
+                    if (int.TryParse(s.Trim(), out ms) && ms >= 0)
+                    {
+                        Net.LagSimTransport.SetDelay(ms);
+                        Mod.LogLobby("NetSim UI delay -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + ")");
+                    }
+                }));
+            // 抖动(ms)
+            debugGroup.Add(new TextInputModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimJitter"),
+                () => Net.LagSimTransport.JitterMs.ToString(),
+                s =>
+                {
+                    int ms;
+                    if (int.TryParse(s.Trim(), out ms) && ms >= 0)
+                    {
+                        Net.LagSimTransport.SetJitter(ms);
+                        Mod.LogLobby("NetSim UI jitter -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + ")");
+                    }
+                }));
+            // 丢包(%)
+            debugGroup.Add(new TextInputModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimLoss"),
+                () => Net.LagSimTransport.LossPercent.ToString("F0"),
+                s =>
+                {
+                    float pct;
+                    if (float.TryParse(s.Trim(), out pct) && pct >= 0f)
+                    {
+                        Net.LagSimTransport.SetLoss(pct);
+                        Mod.LogLobby("NetSim UI loss -> " + pct + "% (" + Net.LagSimTransport.DescribeConfig() + ")");
+                    }
+                }));
             inspectorModel.AddGroup(debugGroup);
+
+            // --- 调试工具：强制重建面板（独立于调试分组，仅 Debug 模式显示；排查 UI 刷新问题用）---
+            inspectorModel.Add(new TextButtonModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.RebuildPanelButton"),
+                (b) => ForceRebuildPanel(),
+                null,
+                debugOnly));
 
             inspectorPanel = Game.Instance.UserInterface.CreateInspectorPanel(inspectorModel,
                 new InspectorPanelCreationInfo()
@@ -176,6 +245,36 @@ namespace Assets.Scripts
             MpNetworkManager m = MpNetworkManager.Instance;
             if (m == null || !m.IsConnected) return "0";
             return (m.GetPlayers().Count + 1).ToString();
+        }
+
+        /// <summary>
+        /// NetSim 状态行（实时刷新，分段显示之一）：
+        /// - OFF（直通）：总开关关，不影响其它场景；
+        /// - ON·已生效（实时）：当前传输已包一层 LagSimTransport，改值/改开关实时生效；
+        /// - ON·待生效（需重新开房）：已设数值但当前会话未包装，需重新 TcpHostLobby/TcpJoinLobby 才生效；
+        /// - ON·数值未设（直通）：开关开了但没填数值，实为直通。
+        /// </summary>
+        private static string GetNetSimStateText()
+        {
+            MpNetworkManager m = MpNetworkManager.Instance;
+            Net.LagSimTransport lag = m != null ? m.Transport as Net.LagSimTransport : null;
+            if (lag != null) return "ON·已生效（实时）";
+            if (Net.LagSimTransport.ToggleOn)
+            {
+                return Net.LagSimTransport.Enabled
+                    ? "ON·待生效（需重新开房/加入）"
+                    : "ON·数值未设（直通）";
+            }
+            return "OFF（直通）";
+        }
+
+        /// <summary>NetSim 投递统计行（实时刷新，分段显示之二）；未启用时显示 "—"。</summary>
+        private static string GetNetSimStatsText()
+        {
+            MpNetworkManager m = MpNetworkManager.Instance;
+            Net.LagSimTransport lag = m != null ? m.Transport as Net.LagSimTransport : null;
+            if (lag == null) return "—（未启用）";
+            return "投递=" + lag.Delivered + " 丢弃=" + lag.Dropped + " 队列=" + lag.InFlight;
         }
         
 
@@ -462,7 +561,7 @@ namespace Assets.Scripts
                     return;
                 }
                 MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-                if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
+                if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
                 bool ok = LobbyManager.Instance.HostLobby(port);
                 if (ok)
                 {
@@ -498,7 +597,7 @@ namespace Assets.Scripts
                     return;
                 }
                 MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-                if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
+                if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
                 LobbyManager.Instance.JoinLobby(host, port);
             };
         }

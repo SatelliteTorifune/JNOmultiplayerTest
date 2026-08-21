@@ -2,7 +2,7 @@
 
 > 项目:JNOmultiplayerTest(SimpleRockets 2 / JNO 联机 mod aMptest)
 > **新会话先读:[`AGENT_CONTEXT.md`](AGENT_CONTEXT.md)**(项目路径 / 反编译源码 / ModApi / 已定技术事实 / 开发约定,可直接作为提示词)。
-> 说明:本文档是 `plans/` 的导航页。**当前活跃文档:`multi-craft-sync.md`(多 craft)、`body-sync.md`(body 级姿态同步)、`part-switch-sync-feasibility.md`(部件开关/控制输入)**,其余已完成/历史文档已移入 [`archive/`](archive/)。
+> 说明:本文档是 `plans/` 的导航页。**当前活跃文档:`multi-craft-sync.md`(多 craft)、`body-sync.md`(body 级姿态同步)、`part-switch-sync-feasibility.md`(部件开关/控制输入)、`latency-smoothing.md`(远程船高延迟平滑)**,其余已完成/历史文档已移入 [`archive/`](archive/)。
 > 约定:新 plan 建议单一主题一个文件,写清「状态 + 决策记录」,完成后移入 `archive/` 并在此更新索引。
 
 ---
@@ -14,6 +14,7 @@
 | [`multi-craft-sync.md`](multi-craft-sync.md) | **多 Craft 同步**(研究阶段) | 📋 方案研究 + 边界排查 | 多节点身份/生命周期/对接/切换/EVA/无 pod 残骸/边界情况(jnoCode 排查),含 MC1~MC4 里程碑;**body 级姿态同步已于 2026-08-18 拆分为独立 plan [`body-sync.md`](body-sync.md)** |
 | [`body-sync.md`](body-sync.md) | **Body 级姿态同步**(转轴/关节连接部件"整体移动")(**P0 已实现,待游戏内实测**) | ✅ 方案已定(BodyPoses) | `BodyRotations`→`BodyPoses`(相对 comRot 的位置+旋转),采样 + 两处接收端应用(`BodyPositions` 平行列表 + `ApplyRemoteBodyPoses`);一并覆盖残骸小碎片位置缺口;**SP2 参考(可抄:body 位姿同步层次/Quaternion32/Delta 优先级;不可抄:引擎钩子/ParentBody 树/FishNet/物理平滑)**;P1~P3 可选优化 |
 | [`part-switch-sync-feasibility.md`](part-switch-sync-feasibility.md) | 起落架开关等部件展开/开关状态同步(**方案 B P0 已实测通过;P3 控制输入应用已实现**) | ✅ 方案 B + P3 落地 | 同步 per-part `Part.Activated` + 幽灵本地仿真,覆盖起落架/货舱/着陆腿/太阳能/灯等;分离器/整流罩/对接**只记录不处理**(归 [`body-sync.md`](body-sync.md));降落伞**专用视觉驱动**(§9,P2);**输入驱动部件**(rotator/舵面/活塞/螺旋桨/车轮/RCS/电机)由 **P3 控制输入应用**(§11,写幽灵 Controls)解决;含"1000 起落架"性能分析 |
+| [`latency-smoothing.md`](latency-smoothing.md) | 远程船**高延迟平滑**(延迟>100ms 不"一卡一卡";**分析定稿,P0 待实施**;**调试工具已落地**) | 📋 方案分析(SP2 已核对) | 根因:body 位姿不参与插值(每包整体跳)+ 缓冲欠载冻结-跳变 + 无外推;方案:**P0** BodyPoses 插值(Slerp/Lerp)+ 欠载外推(velocity×延迟);**P1** SP2 速度自适应指数平滑 + <0.01 快照 + >阈值瞬移;P2 RTT/2+jitter 自适应 + per-body velocity + Quaternion32。**调试工具已实现**:`LagSimTransport` 延迟模拟装饰器(包 TCP,无需 Steam 好友;数值与总开关分离,`NetSimDelay/Jitter/Loss` + `NetSimOn/Off`,会话中实时生效)+ **联机 UI 的 NetSim 分组**(延迟/抖动/丢包输入框 + 启用开关 + 实时状态)+ `NetStatsUI` 悬浮窗 + `MP smoothing` 周期日志(缓冲/抖动/欠载/位置误差)。SP2 参考:[`CraftStateSerializer.cs:55-94`](file:///C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:55) 外推/平滑/瞬移、[`BodyScript.cs:660-679`](file:///C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Craft/BodyScript.cs:660) body 位姿平滑 |
 
 > `multi-craft-sync.md` 承接了归档文档里遗留的"下一步"项(如多船身份/生命周期/残骸),后续以它为准;**body 同步已独立成 [`body-sync.md`](body-sync.md)**,不再是 multi-craft 的子项。
 > `part-switch-sync-feasibility.md` 为"部件开关/展开状态"的补充分析(2026-08 新增,**已确认方案 B,待实施**)。
@@ -50,6 +51,7 @@
 | TCP VM debug | **✅ 已实测可行**(`TcpHostLobby`/`TcpJoinLobby`) | archive/tcp §四 |
 | 起落架等部件开关同步 | **✅ 方案 B(P0)已实测通过**(per-part `Activated` 位);分离器/整流罩/对接 **只记录不处理**(归 [`body-sync.md`](body-sync.md));降落伞走 **专用视觉驱动**(P2);**P3 控制输入应用已实现**(写幽灵 Controls + 放开输入驱动部件 Activated:rotator/舵面/活塞/螺旋桨/车轮/RCS/电机) | [part-switch-sync-feasibility.md](part-switch-sync-feasibility.md) §3/§4/§9/§10/§11 |
 | body 级姿态同步(转轴连接部件整体移动) | **✅ 方案定稿:BodyPoses**(`BodyRotations`→相对 comRot 的位置+旋转;SP2 验证方向;**P0 已实现**);残骸小碎片位置缺口一并覆盖;不做 SP2 的 ParentBody 树/物理平滑 | [body-sync.md](body-sync.md) |
+| 远程船高延迟平滑(>100ms 不卡顿) | **📋 方案分析定稿:P0(必做)** BodyPoses 参与插值 + 缓冲欠载外推;P1 SP2 速度自适应指数平滑+近距快照+瞬移阈值;P2 RTT/2+jitter 自适应 + per-body velocity + Quaternion32;不抄 SP2 物理集成(幽灵 kinematic) | [latency-smoothing.md](latency-smoothing.md) |
 
 **当前待定(尚未拍板/未调研)**:A1 方案选型(A+B 混合?)、A2 里程碑顺序、A3 残骸同步策略、A4 观察他人第二艘船(部件开关同步方案 A/B 已于 2026-08-18 拍板,见上表);B1 跨机身份(Guid+InitialCraftNodeIds 溯源)、B2 对账参数、B3 轨道残骸 spawn 可行性、B4 未加载节点采样、B5 MapView 多船回归、B6 时钟对齐;D 类已决策项的实现暂缓。
 

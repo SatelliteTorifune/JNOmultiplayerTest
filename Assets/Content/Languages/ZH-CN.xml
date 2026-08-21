@@ -33,6 +33,14 @@
     <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">输入房主 IP（如 192.168.56.1:25555）</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpHost">无效地址：'{0}'</s>
     <s id="MultiPlayer.MultiPlayerUI.RebuildPanelButton">强制重建面板</s>
+    <s id="MultiPlayer.MultiPlayerUI.NetSimGroup">网络延迟模拟（NetSim）</s>
+    <s id="MultiPlayer.MultiPlayerUI.NetSimStatus">状态</s>
+    <s id="MultiPlayer.MultiPlayerUI.NetSimStats">投递统计</s>
+    <s id="MultiPlayer.MultiPlayerUI.NetSimToggle">启用延迟模拟</s>
+    <s id="MultiPlayer.MultiPlayerUI.NetSimToggleHint">关闭时包直通（不延迟不丢包），保证普通 TCP 测试延迟尽量小</s>
+    <s id="MultiPlayer.MultiPlayerUI.NetSimDelay">延迟（ms）</s>
+    <s id="MultiPlayer.MultiPlayerUI.NetSimJitter">抖动 ±（ms）</s>
+    <s id="MultiPlayer.MultiPlayerUI.NetSimLoss">丢包率（%）</s>
     <s id="MultiPlayer.MultiPlayerUI.PlayerList">玩家列表</s>
     <s id="MultiPlayer.MultiPlayerUI.YouTag">(本机)</s>
     <s id="MultiPlayer.MultiPlayerUI.KickButton">踢出 {0}</s>

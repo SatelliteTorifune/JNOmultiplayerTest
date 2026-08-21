@@ -49,6 +49,8 @@ namespace Assets.Scripts.Net
 		public int TickRate { get; private set; } = 30;
 		/// <summary>本端到对端（房主）的往返延迟（RTT，毫秒），客户端侧显示自己延迟用；-1 = 尚未测得。</summary>
 		public int ClientPingMs { get; private set; } = -1;
+		/// <summary>接收端平滑/网络诊断悬浮窗开关（NetStatsUI 1/0 控制；配合 NetSim 观察缓冲/抖动/欠载/位置误差）。</summary>
+		public static bool ShowStatsOverlay = false;
 		[Tooltip("对端超时判定(ms)。TCP 下连接断开由 read loop 检测，此值仅用于半开连接兜底，应设得较大以容忍主线程卡顿/GC/场景加载/全屏切换")]
 		public long TimeoutMs = 60000;
 
@@ -433,6 +435,42 @@ namespace Assets.Scripts.Net
 				}
 				catch (Exception e) { Mod.LogError("LateUpdate refresh error (P" + rc.PlayerId + "): " + e.Message); }
 			}
+		}
+
+		/// <summary>
+		/// 平滑/网络诊断悬浮窗（NetStatsUI 1/0 开关）。显示每远程船的缓冲余量、包间间隔/抖动 EMA、
+		/// 欠载命中率、插值比例、渲染位置滞后 + NetSim 延迟模拟配置与投递统计。
+		/// 纯调试用 IMGUI，不参与任何同步逻辑。
+		/// </summary>
+		private void OnGUI()
+		{
+			if (!ShowStatsOverlay || !IsConnected) return;
+			try
+			{
+				GUILayout.BeginArea(new Rect(12f, 12f, 480f, 760f));
+				GUILayout.BeginVertical("box");
+				GUILayout.Label("MP NetSim/Smoothing  P" + PlayerId + "  RTT=" + ClientPingMs + "ms  renderDelay=" +
+					RenderDelayMs.ToString("F0") + "ms  tick=" + TickRate + "Hz");
+				LagSimTransport lag = Transport as LagSimTransport;
+				GUILayout.Label(lag != null ? lag.DescribeStats() : LagSimTransport.DescribeConfig());
+				if (_remoteCrafts.Count == 0)
+				{
+					GUILayout.Label("(no remote craft)");
+				}
+				foreach (KeyValuePair<int, RemoteCraft> kv in _remoteCrafts)
+				{
+					RemoteCraft rc = kv.Value;
+					if (rc.Node == null) continue;
+					float underPct = rc.TotalFrames > 0 ? 100f * rc.UnderrunFrames / (float)rc.TotalFrames : 0f;
+					GUILayout.Label("P" + rc.PlayerId + "  buf=" + rc.BufferCount + "/" + RemoteCraft.BufferCapacity +
+						"  gap=" + rc.GapEmaMs.ToString("F0") + "ms  jit=" + rc.JitterEmaMs.ToString("F0") + "ms");
+					GUILayout.Label("   underrun=" + underPct.ToString("F0") + "%(" + rc.UnderrunFrames + ")  " +
+						"interpPct=" + rc.InterpPct.ToString("F2") + "  posErr=" + rc.LastPosErrorM.ToString("F0") + "m");
+				}
+				GUILayout.EndVertical();
+				GUILayout.EndArea();
+			}
+			catch { /* 诊断悬浮窗异常不打断游戏 */ }
 		}
 
 		private static void ForceRemoteHeading(RemoteCraft rc, Mod.RemoteDataPack data)
@@ -1074,6 +1112,17 @@ namespace Assets.Scripts.Net
 			public Mod.RemoteDataPack LastApplied;  // 最近一次实际应用的状态（LateUpdate 用，避免"最新包覆盖插值"）
 			public bool HasApplied;          // LastApplied 是否已有效
 
+			// --- 平滑/网络诊断统计（NetStatsUI 悬浮窗 + 周期日志，debug 用） ---
+			public long TotalFrames;         // UpdateRemoteCrafts 已处理帧数
+			public long UnderrunFrames;      // 命中"缓冲欠载"分支的帧数（冻结，等待新包）
+			public long SnapFrames;          // 欠载中直接返回最新原始包（冻结）的帧数
+			public float InterpPct;          // 最近一次插值比例 0..1（欠载时=1）
+			public float GapEmaMs;           // 包间到达间隔 EMA（ms）
+			public float JitterEmaMs;        // 包间到达间隔抖动 EMA（ms）
+			public double LastPosErrorM;     // 最近渲染位置(插值/外推) vs 最新包位置 的距离（米）
+			public float LastSmoothingLogTime; // 平滑诊断周期日志计时
+			private float _lastPushTime = -1f; // PushSample 上次到达时间（抖动 EMA 用）
+
 			public struct StateSample
 			{
 				public float ArrivalTime;  // 到达端 Time.unscaledTime（单调）
@@ -1089,6 +1138,16 @@ namespace Assets.Scripts.Net
 				if (BufferCount < BufferCapacity) BufferCount++;
 				else BufferHead = (BufferHead + 1) % BufferCapacity;
 				HasState = true;
+
+				// 包间到达间隔与抖动 EMA（诊断：NetSim 注入的抖动应如实反映到这里）
+				if (_lastPushTime >= 0f)
+				{
+					float gapMs = (arrivalTime - _lastPushTime) * 1000f;
+					GapEmaMs = GapEmaMs <= 0f ? gapMs : GapEmaMs * 0.9f + gapMs * 0.1f;
+					float dev = Mathf.Abs(gapMs - GapEmaMs);
+					JitterEmaMs = JitterEmaMs <= 0f ? dev : JitterEmaMs * 0.9f + dev * 0.1f;
+				}
+				_lastPushTime = arrivalTime;
 			}
 
 			/// <summary>取最新样本。</summary>
@@ -1590,12 +1649,35 @@ namespace Assets.Scripts.Net
 
 					// 平滑插帧：renderTime = now - renderDelay，取前后两包插值；
 					// 渲染延迟吸收抖动/乱序，避免"最新包覆盖"导致的橡皮筋/跳变。
+					rc.TotalFrames++;
 					float renderTime = Time.unscaledTime - RenderDelayMs / 1000f;
 					if (TryGetInterpolatedState(rc, renderTime, out Mod.RemoteDataPack interp))
 					{
 						ApplyRemoteState(rc, interp);
 						// 每帧用插值后状态驱动幽灵船尾焰(液体 Route A 经 override、航发直接驱动)
 						EngineVisualSync.DriveGhostEngineVisuals(rc);
+						// 位置误差诊断:当前渲染位置(插值/冻结) vs 最新包位置(最近已知真值)。
+						// 反映"渲染滞后":≈ 速度×(renderDelay + 包间隔),高延迟/抖动下会放大 → 橡皮筋可见度指标。
+						if (rc.TryGetNewest(out Mod.RemoteDataPack newest))
+						{
+							rc.LastPosErrorM = Vector3d.Distance(interp.Position, newest.Position);
+						}
+					}
+
+					// 诊断：周期性记录平滑/网络状态（每 3 秒）：
+					// 缓冲余量、实测包间间隔与抖动 EMA、欠载命中率、插值比例、渲染位置滞后。
+					// 配合 NetSim 延迟模拟：抖动 EMA 应≈NetSim 抖动量；欠载%>0 即说明发生了"冻结-跳变"。
+					if (Time.unscaledTime - rc.LastSmoothingLogTime > 3f)
+					{
+						rc.LastSmoothingLogTime = Time.unscaledTime;
+						float underPct = rc.TotalFrames > 0 ? 100f * rc.UnderrunFrames / (float)rc.TotalFrames : 0f;
+						Mod.LogLobby("MP smoothing P" + rc.PlayerId +
+							": buf=" + rc.BufferCount + "/" + RemoteCraft.BufferCapacity +
+							" renderDelay=" + RenderDelayMs.ToString("F0") + "ms" +
+							" gapEMA=" + rc.GapEmaMs.ToString("F0") + "ms jitterEMA=" + rc.JitterEmaMs.ToString("F0") + "ms" +
+							" frames=" + rc.TotalFrames + " underrun=" + rc.UnderrunFrames +
+							"(" + underPct.ToString("F1") + "%) snap=" + rc.SnapFrames +
+							" interpPct=" + rc.InterpPct.ToString("F2") + " posErr=" + rc.LastPosErrorM.ToString("F1") + "m");
 					}
 
 					// 诊断：周期性记录远程飞船可见性（每 3 秒），用于定位"无法显示对方 craft"。
@@ -1651,12 +1733,18 @@ namespace Assets.Scripts.Net
 			// renderTime 早于最旧样本：冻结在最旧样本（缓冲欠载，等新包）
 			if (i < 0)
 			{
+				rc.UnderrunFrames++;
+				rc.SnapFrames++;
+				rc.InterpPct = 0f;
 				result = rc.Buffer[rc.BufferHead].Data;
 				return true;
 			}
 			// renderTime 晚于/等于最新样本：直接应用最新（缓冲不足，无前瞻样本）
 			if (i >= rc.BufferCount - 1)
 			{
+				rc.UnderrunFrames++;
+				rc.SnapFrames++;
+				rc.InterpPct = 1f;
 				result = rc.Buffer[(rc.BufferHead + rc.BufferCount - 1) % RemoteCraft.BufferCapacity].Data;
 				return true;
 			}
@@ -1668,6 +1756,7 @@ namespace Assets.Scripts.Net
 			float tA = rc.Buffer[idxA].ArrivalTime;
 			float tB = rc.Buffer[idxB].ArrivalTime;
 			float pct = Mathf.Clamp01((renderTime - tA) / Mathf.Max(tB - tA, 0.0001f));
+			rc.InterpPct = pct;
 
 			// 位置/速度线性、朝向球面插值；body 姿态/激活组沿用最新包（避免欧拉角绕转问题）
 			Mod.RemoteDataPack interp = b;
