@@ -49,8 +49,6 @@ namespace Assets.Scripts.Net
 		public int TickRate { get; private set; } = 30;
 		/// <summary>本端到对端（房主）的往返延迟（RTT，毫秒），客户端侧显示自己延迟用；-1 = 尚未测得。</summary>
 		public int ClientPingMs { get; private set; } = -1;
-		/// <summary>接收端平滑/网络诊断悬浮窗开关（NetStatsUI 1/0 控制；配合 NetSim 观察缓冲/抖动/欠载/位置误差）。</summary>
-		public static bool ShowStatsOverlay = false;
 		[Tooltip("对端超时判定(ms)。TCP 下连接断开由 read loop 检测，此值仅用于半开连接兜底，应设得较大以容忍主线程卡顿/GC/场景加载/全屏切换")]
 		public long TimeoutMs = 60000;
 
@@ -435,42 +433,6 @@ namespace Assets.Scripts.Net
 				}
 				catch (Exception e) { Mod.LogError("LateUpdate refresh error (P" + rc.PlayerId + "): " + e.Message); }
 			}
-		}
-
-		/// <summary>
-		/// 平滑/网络诊断悬浮窗（NetStatsUI 1/0 开关）。显示每远程船的缓冲余量、包间间隔/抖动 EMA、
-		/// 欠载命中率、插值比例、渲染位置滞后 + NetSim 延迟模拟配置与投递统计。
-		/// 纯调试用 IMGUI，不参与任何同步逻辑。
-		/// </summary>
-		private void OnGUI()
-		{
-			if (!ShowStatsOverlay || !IsConnected) return;
-			try
-			{
-				GUILayout.BeginArea(new Rect(12f, 12f, 480f, 760f));
-				GUILayout.BeginVertical("box");
-				GUILayout.Label("MP NetSim/Smoothing  P" + PlayerId + "  RTT=" + ClientPingMs + "ms  renderDelay=" +
-					RenderDelayMs.ToString("F0") + "ms  tick=" + TickRate + "Hz");
-				LagSimTransport lag = Transport as LagSimTransport;
-				GUILayout.Label(lag != null ? lag.DescribeStats() : LagSimTransport.DescribeConfig());
-				if (_remoteCrafts.Count == 0)
-				{
-					GUILayout.Label("(no remote craft)");
-				}
-				foreach (KeyValuePair<int, RemoteCraft> kv in _remoteCrafts)
-				{
-					RemoteCraft rc = kv.Value;
-					if (rc.Node == null) continue;
-					float underPct = rc.TotalFrames > 0 ? 100f * rc.UnderrunFrames / (float)rc.TotalFrames : 0f;
-					GUILayout.Label("P" + rc.PlayerId + "  buf=" + rc.BufferCount + "/" + RemoteCraft.BufferCapacity +
-						"  gap=" + rc.GapEmaMs.ToString("F0") + "ms  jit=" + rc.JitterEmaMs.ToString("F0") + "ms");
-					GUILayout.Label("   underrun=" + underPct.ToString("F0") + "%(" + rc.UnderrunFrames + ")  " +
-						"interpPct=" + rc.InterpPct.ToString("F2") + "  posErr=" + rc.LastPosErrorM.ToString("F0") + "m");
-				}
-				GUILayout.EndVertical();
-				GUILayout.EndArea();
-			}
-			catch { /* 诊断悬浮窗异常不打断游戏 */ }
 		}
 
 		private static void ForceRemoteHeading(RemoteCraft rc, Mod.RemoteDataPack data)
@@ -1112,16 +1074,47 @@ namespace Assets.Scripts.Net
 			public Mod.RemoteDataPack LastApplied;  // 最近一次实际应用的状态（LateUpdate 用，避免"最新包覆盖插值"）
 			public bool HasApplied;          // LastApplied 是否已有效
 
-			// --- 平滑/网络诊断统计（NetStatsUI 悬浮窗 + 周期日志，debug 用） ---
+			// --- 平滑/网络诊断统计（周期日志 Mod.LogLobby 用，无悬浮窗） ---
 			public long TotalFrames;         // UpdateRemoteCrafts 已处理帧数
 			public long UnderrunFrames;      // 命中"缓冲欠载"分支的帧数（冻结，等待新包）
 			public long SnapFrames;          // 欠载中直接返回最新原始包（冻结）的帧数
+			public long ExtrapolatedFrames;  // 欠载中按速度外推（不冻结）的帧数
 			public float InterpPct;          // 最近一次插值比例 0..1（欠载时=1）
 			public float GapEmaMs;           // 包间到达间隔 EMA（ms）
 			public float JitterEmaMs;        // 包间到达间隔抖动 EMA（ms）
 			public double LastPosErrorM;     // 最近渲染位置(插值/外推) vs 最新包位置 的距离（米）
 			public float LastSmoothingLogTime; // 平滑诊断周期日志计时
 			private float _lastPushTime = -1f; // PushSample 上次到达时间（抖动 EMA 用）
+
+			// --- 平滑状态（P1：SP2 式指数平滑 + 近距快照 + 瞬移；首帧/body 数量变化时快照为 target） ---
+			public Vector3d SmoothedPos;        // 平滑后位置（地面坐标，与 data.Position 同系）
+			public Quaterniond SmoothedSrfRel;  // 平滑后朝向（相对地表 SrfRel）
+			public Vector3[] SmoothedBodyPos;   // 每 body 平滑后相对位置（相对 comRot，与 BodyPositions 同索引）
+			public Quaternion[] SmoothedBodyRot; // 每 body 平滑后相对旋转（相对 comRot）
+			public bool HasSmoothed;            // 平滑状态是否已初始化
+
+			// --- 每帧复用缓冲（P0/P1 平滑输出；避免热路径每帧分配 List 引发 GC 卡顿） ---
+			public readonly List<Vector3> ReuseInterpBodyPos = new List<Vector3>();
+			public readonly List<Vector3> ReuseInterpBodyRot = new List<Vector3>();
+			public readonly List<Vector3> ReuseSmoothBodyPos = new List<Vector3>();
+			public readonly List<Vector3> ReuseSmoothBodyRot = new List<Vector3>();
+
+			// --- 跳动诊断（定位"0 延迟静止仍跳动"：上一帧已应用位置/每 body 位姿 vs 本帧） ---
+			public Vector3d LastRenderedPos;      // 上一帧实际应用的位置（地面坐标）
+			public double LastMoveDeltaM;          // 本帧已应用位置相对上一帧的位移（米）
+			public float LastBodyPoseDeltaM;       // 本帧每 body 最大位姿位移（米）
+			// 变换漂移诊断:本帧写入 Transform 前,实际 Transform.position 相对上一帧写入值的位移(米)。
+			// 若 moveDelta=0 而 tfDelta 持续>0 → 游戏层在 Update 写入之后移动了 ghost(滑动来自游戏而非我们的写入)。
+			public Vector3 LastWrittenFramePos;    // 上一帧 ApplyRemoteState 后 Transform.position(帧空间)
+			public float LastTfDriftM;             // 本帧写入前实际位置相对 LastWrittenFramePos 的漂移
+			// 高精度漂移诊断(定位"双方静止仍滑动"):F2/F1 精度下 0.1m/s 级慢漂移显示为 0.00,
+			// 必须用 3s 窗口累计量 + F4 位精度才能捕捉。
+			public double MoveSumM;                // 3s 窗口内累计渲染位移(moveDelta 累加;0.1m/s 漂移 3s≈0.3m)
+			public double PktJumpM;                // 3s 窗口内最大单包位置跳变(定位发送端数据跳变)
+			public Vector3d LastPktPos;            // 上一包位置(计算 PktJump)
+			public bool HasLastPktPos;
+			public double HeadDeg3s;               // 3s 窗口内累计朝向(应用 SrfRel)变化(度;慢旋转也会被感知为滑动)
+			public Quaterniond PrevSmoothedSrfRel; // 上一帧平滑朝向(计算 HeadDeg3s)
 
 			public struct StateSample
 			{
@@ -1148,6 +1141,16 @@ namespace Assets.Scripts.Net
 					JitterEmaMs = JitterEmaMs <= 0f ? dev : JitterEmaMs * 0.9f + dev * 0.1f;
 				}
 				_lastPushTime = arrivalTime;
+
+				// 包间位置跳变诊断:相邻两包的位置差(发送端数据是否在缓慢漂移/跳变)。
+				// 双方"静止"时若此值持续>0,说明滑动来自发送端数据,而非接收端平滑层。
+				if (HasLastPktPos)
+				{
+					double d = Vector3d.Distance(data.Position, LastPktPos);
+					if (d > PktJumpM) PktJumpM = d;
+				}
+				LastPktPos = data.Position;
+				HasLastPktPos = true;
 			}
 
 			/// <summary>取最新样本。</summary>
@@ -1443,7 +1446,9 @@ namespace Assets.Scripts.Net
 			IPlanetNode planet = localNode != null ? localNode.Parent : null;
 			if (localNode == null || planet == null) { EndSpawnAttempt(peer.PlayerId); yield break; }
 			Vector3d planetPos = planet.SurfaceVectorToPlanetVector(data.Position);
-			Vector3d planetVel = planet.SurfaceVectorToPlanetVector(data.Velocity);
+			// 与 ApplyRemoteState 一致:data.Velocity 是地表相对速度,生成初始惯性速度需加回行星自转线速度。
+			Vector3d planetVel = planet.SurfaceVectorToPlanetVector(data.Velocity) +
+				planet.SurfaceVectorToPlanetVector(planet.CalculateSurfaceVelocity(data.Position));
 			// data.Heading 已是"行星空间"朝向(发送端采样时已 FrameToPlanet)。
 			// CreateLaunchLocation 内部会做 heading=RotationInverse*heading(把入参当行星空间)，
 			// 再被 SpawnCraft 乘回 planet.Rotation → 最终 Heading=入参(行星空间)，故直接传入即可。
@@ -1647,12 +1652,41 @@ namespace Assets.Scripts.Net
 					if (!rc.IsInitialized) InitializeRemoteCraft(rc);
 					if (!rc.IsInitialized) continue;
 
-					// 平滑插帧：renderTime = now - renderDelay，取前后两包插值；
-					// 渲染延迟吸收抖动/乱序，避免"最新包覆盖"导致的橡皮筋/跳变。
+					// 平滑插帧：renderTime = now - 渲染回看。回看量 = max(固定 renderDelay, 1.5×实测包间隔 EMA)，
+					// 发送端低速(低帧率/高延迟)时实测间隔远超 renderDelay → 固定回看必然欠载 → 冻结/外推接缝跳动。
+					// 自适应放大回看让缓冲始终有前后两包可插值(代价:渲染滞后≈回看量,SP2 同思路)。
+					// 封顶 0.5s：超过则靠外推(封顶 0.25s)兜底,避免长期大滞后。
 					rc.TotalFrames++;
-					float renderTime = Time.unscaledTime - RenderDelayMs / 1000f;
+					// 变换漂移诊断:写入前读实际 Transform.position,对比上一帧写入值。
+					// moveDelta=0 而 tfDelta 持续>0 → 游戏层在我们 Update 写入之后又移动了 ghost
+					// (滑动来自游戏自身层,如地表锁定/轨道推进/相机跟随,而非我们写入的数据)。
+					rc.LastTfDriftM = 0f;
+					if (rc.HasApplied && rc.Node.CraftScript != null && rc.Node.CraftScript.Transform != null)
+					{
+						rc.LastTfDriftM = Vector3.Distance(rc.Node.CraftScript.Transform.position, rc.LastWrittenFramePos);
+					}
+					// 自适应渲染回看:lookback = max(固定 renderDelay, gapEMA + 2×jitterEMA, ≤500ms)。
+					// 旧公式 1.5×gapEMA 忽略了抖动 → 实际间隔可达 gapEMA+jitterEMA → 欠载率奇高(Steam 实测 50~76%)。
+					// 2×jitterEMA 包住 95%+ 的间隔 → 缓冲饱满,插值接管。
+					float gapSec = Mathf.Max(rc.GapEmaMs, SendIntervalMs) / 1000f;
+					float jitterSec = rc.JitterEmaMs / 1000f;
+					float lookbackSec = Mathf.Min(Mathf.Max(RenderDelayMs / 1000f, gapSec + jitterSec * 2f), 0.5f);
+					float renderTime = Time.unscaledTime - lookbackSec;
 					if (TryGetInterpolatedState(rc, renderTime, out Mod.RemoteDataPack interp))
 					{
+						// P1:SP2 式平滑(指数收敛 + 近距快照 + 瞬移),把插值/外推结果作为 Target,
+						// 消除"外推结束→新包到来"接缝的跳变与残差跳。
+						interp = ApplyRemoteSmoothing(rc, interp, Time.unscaledDeltaTime);
+						// 跳动诊断:本帧实际应用位置相对上一帧的位移(0 延迟+静止时应≈0;>0.5m 即跳动)。
+						rc.LastMoveDeltaM = rc.HasApplied ? Vector3d.Distance(interp.Position, rc.LastRenderedPos) : 0.0;
+						rc.LastRenderedPos = interp.Position;
+						rc.MoveSumM += rc.LastMoveDeltaM; // 3s 窗口累计渲染位移(捕捉 F2 精度下不可见的慢漂移)
+						// 朝向累计变化:慢旋转同样会被感知为"滑动"(尤其 body 相对质心有偏移时)
+						if (rc.HasApplied)
+						{
+							rc.HeadDeg3s += Quaternion.Angle(rc.PrevSmoothedSrfRel.ToQuaternion(), rc.SmoothedSrfRel.ToQuaternion());
+						}
+						rc.PrevSmoothedSrfRel = rc.SmoothedSrfRel;
 						ApplyRemoteState(rc, interp);
 						// 每帧用插值后状态驱动幽灵船尾焰(液体 Route A 经 override、航发直接驱动)
 						EngineVisualSync.DriveGhostEngineVisuals(rc);
@@ -1671,13 +1705,35 @@ namespace Assets.Scripts.Net
 					{
 						rc.LastSmoothingLogTime = Time.unscaledTime;
 						float underPct = rc.TotalFrames > 0 ? 100f * rc.UnderrunFrames / (float)rc.TotalFrames : 0f;
+						// 3s 窗口累计量:F2/F1 精度下 0.1m/s 级慢漂移显示为 0.00,必须用累计量+高精度捕捉。
+						double move3s = rc.MoveSumM, pktJump = rc.PktJumpM;
+						double headDeg = rc.HeadDeg3s;
+						rc.MoveSumM = 0; rc.PktJumpM = 0; rc.HeadDeg3s = 0;
+						string newestPos = "?", vel = "?";
+						try
+						{
+							if (rc.TryGetNewest(out Mod.RemoteDataPack nw))
+							{
+								newestPos = nw.Position.x.ToString("F4") + "," + nw.Position.y.ToString("F4") + "," + nw.Position.z.ToString("F4");
+								vel = nw.Velocity.magnitude.ToString("F3");
+							}
+						}
+						catch { }
+						// 朝向:应用 SrfRel 的 Yaw 角(连续日志对比可发现慢旋转——同样会被感知为"滑动")
+						string headYaw = "?";
+						try { headYaw = rc.SmoothedSrfRel.ToQuaternion().eulerAngles.y.ToString("F1"); } catch { }
 						Mod.LogLobby("MP smoothing P" + rc.PlayerId +
 							": buf=" + rc.BufferCount + "/" + RemoteCraft.BufferCapacity +
-							" renderDelay=" + RenderDelayMs.ToString("F0") + "ms" +
+							" renderDelay=" + RenderDelayMs.ToString("F0") + "ms lookback=" + (lookbackSec * 1000f).ToString("F0") + "ms" +
 							" gapEMA=" + rc.GapEmaMs.ToString("F0") + "ms jitterEMA=" + rc.JitterEmaMs.ToString("F0") + "ms" +
 							" frames=" + rc.TotalFrames + " underrun=" + rc.UnderrunFrames +
-							"(" + underPct.ToString("F1") + "%) snap=" + rc.SnapFrames +
-							" interpPct=" + rc.InterpPct.ToString("F2") + " posErr=" + rc.LastPosErrorM.ToString("F1") + "m");
+							"(" + underPct.ToString("F1") + "%) snap=" + rc.SnapFrames + " extrap=" + rc.ExtrapolatedFrames +
+							" interpPct=" + rc.InterpPct.ToString("F2") +
+							" moveDelta=" + rc.LastMoveDeltaM.ToString("F2") + "m bodyDelta=" + rc.LastBodyPoseDeltaM.ToString("F2") + "m" +
+							" tfDrift=" + rc.LastTfDriftM.ToString("F2") + "m" +
+							" move3s=" + move3s.ToString("F3") + "m pktJump=" + pktJump.ToString("F3") + "m" +
+							" vel=" + vel + "m/s headYaw=" + headYaw + "deg head3s=" + headDeg.ToString("F1") + "deg" +
+							" newest=(" + newestPos + ") posErr=" + rc.LastPosErrorM.ToString("F2") + "m");
 					}
 
 					// 诊断：周期性记录远程飞船可见性（每 3 秒），用于定位"无法显示对方 craft"。
@@ -1739,13 +1795,20 @@ namespace Assets.Scripts.Net
 				result = rc.Buffer[rc.BufferHead].Data;
 				return true;
 			}
-			// renderTime 晚于/等于最新样本：直接应用最新（缓冲不足，无前瞻样本）
+			// renderTime 晚于最新样本：缓冲欠载。冻结在最新已知位置(不按速度外推)。
+			// SP2 的 velocity×dt 外推是为 50Hz 物理步设计的(外推量≈0.02s 量级,可忽略);
+			// Steam 环境包间隔 50~100ms,外推 0.25s 封顶相当于 2~5 个包间隔的预测量,
+			// 新包到达后平滑层追回 → 单帧大跳(Steam实测 P2 1~3m/帧,P3 52~74m/帧)。
+			// 改为冻结:自适应 lookback 已保证大部分时间缓冲饱满、欠载罕见;冻结时短暂的
+			// "微停顿"远优于"大幅度瞬移"(且新包到达后平滑层会自然过渡,不会跳变)。
 			if (i >= rc.BufferCount - 1)
 			{
 				rc.UnderrunFrames++;
+				RemoteCraft.StateSample newestS = rc.Buffer[(rc.BufferHead + rc.BufferCount - 1) % RemoteCraft.BufferCapacity];
+				Mod.RemoteDataPack newest = newestS.Data;
 				rc.SnapFrames++;
 				rc.InterpPct = 1f;
-				result = rc.Buffer[(rc.BufferHead + rc.BufferCount - 1) % RemoteCraft.BufferCapacity].Data;
+				result = newest;
 				return true;
 			}
 
@@ -1758,14 +1821,157 @@ namespace Assets.Scripts.Net
 			float pct = Mathf.Clamp01((renderTime - tA) / Mathf.Max(tB - tA, 0.0001f));
 			rc.InterpPct = pct;
 
-			// 位置/速度线性、朝向球面插值；body 姿态/激活组沿用最新包（避免欧拉角绕转问题）
+			// 位置/速度线性、朝向球面插值；body 相对位姿一并插值（位置 Lerp、旋转 Quaternion Slerp 防欧拉绕转），
+			// 消除"每包 body 整体跳"（R1）。注意：interp= b 是浅拷贝，列表共享缓冲样本 → 插值结果必须新建列表。
 			Mod.RemoteDataPack interp = b;
 			interp.Position = Vector3d.Lerp(a.Position, b.Position, pct);
 			interp.Velocity = Vector3d.Lerp(a.Velocity, b.Velocity, pct);
 			interp.Heading = Quaterniond.FromQuaternion(Quaternion.Slerp(a.Heading.ToQuaternion(), b.Heading.ToQuaternion(), pct));
 			interp.SrfRel = Quaterniond.FromQuaternion(Quaternion.Slerp(a.SrfRel.ToQuaternion(), b.SrfRel.ToQuaternion(), pct));
+			// body 相对位姿插值：仅当 a/b 两包 body 列表**数量完全一致**时才按索引插值（发送端按 Assembly.Bodies
+			// 顺序采样，数量一致即索引映射稳定）。数量不一致（对接/分离/残骸变化）时回退为沿用较新包 b 的整体拷贝，
+			// 避免把"不同 body 的位姿"互相插值造成跳动。
+			if (a.BodyPositions != null && b.BodyPositions != null &&
+				a.BodyRotations != null && b.BodyRotations != null &&
+				a.BodyPositions.Count > 0 && a.BodyPositions.Count == b.BodyPositions.Count &&
+				a.BodyRotations.Count == b.BodyRotations.Count)
+			{
+				int bn = b.BodyPositions.Count;
+				rc.ReuseInterpBodyPos.Clear();
+				rc.ReuseInterpBodyRot.Clear();
+				for (int bi = 0; bi < bn; bi++)
+				{
+					rc.ReuseInterpBodyPos.Add(Vector3.Lerp(a.BodyPositions[bi], b.BodyPositions[bi], pct));
+					Quaternion trot = Quaternion.Slerp(Quaternion.Euler(a.BodyRotations[bi]), Quaternion.Euler(b.BodyRotations[bi]), pct);
+					rc.ReuseInterpBodyRot.Add(trot.eulerAngles);
+				}
+				interp.BodyPositions = rc.ReuseInterpBodyPos;
+				interp.BodyRotations = rc.ReuseInterpBodyRot;
+			}
 			result = interp;
 			return true;
+		}
+
+		/// <summary>
+		/// P1:SP2 式平滑——把 P0 的插值/外推结果(Target)做指数收敛 + 近距快照 + 大误差瞬移,
+		/// 返回新的 RemoteDataPack(位置/朝向/每 body 位姿已平滑;BodyPositions/BodyRotations 为新建列表,
+		/// 不改动 target/缓冲样本)。参考:SP2 CraftStateSerializer.cs:78-94(速度自适应 k + 瞬移 + Slerp)、
+		/// BodyScript.cs:660-679(10·dt 平滑 + 近距快照)。首帧/body 数量变化时快照为 target。
+		/// </summary>
+		private static Mod.RemoteDataPack ApplyRemoteSmoothing(RemoteCraft rc, Mod.RemoteDataPack target, float dt)
+		{
+			// 防御:目标位姿含非有限值(坏包/越界)时直接快照,防 NaN 传播到 Transform 造成瞬移/消失。
+			if (!IsFinite(target.Position) || !IsFinite(target.Velocity))
+			{
+				rc.SmoothedPos = target.Position;
+				rc.SmoothedSrfRel = target.SrfRel;
+				SnapSmoothedBodies(rc, target);
+				rc.HasSmoothed = true;
+				return target;
+			}
+
+			// 首帧/无平滑状态:直接快照为初始平滑值(避免从原点/上一艘船位置滑过来)
+			if (!rc.HasSmoothed || dt <= 0f)
+			{
+				rc.SmoothedPos = target.Position;
+				rc.SmoothedSrfRel = target.SrfRel;
+				SnapSmoothedBodies(rc, target);
+				rc.HasSmoothed = true;
+				return target;
+			}
+
+			// --- 位置:静止锁定 + 速度自适应指数平滑(SP2 :84-85),大误差直接瞬移自愈(SP2 :78-81) ---
+			float speed = (float)target.Velocity.magnitude;
+			Vector3d smoothedPos;
+			// 极低速且误差微小:直接锁到目标,杜绝指数平滑的缓慢蠕动(肉眼可见的"位置滑动")。
+			// 判定放宽:speed<0.5 m/s(容忍发送端残余速度)且误差<0.05 m → 快照。
+			// (旧判定 speed<0.05 && 误差<0.01m 过严:发送端残余速度稍>0.05 即永不锁死 → 平滑层永远在蠕动,
+			//  且收敛时间常数≈1s,任何残差都被拖成肉眼可见的持续滑动,而 moveDelta<0.005m/帧 在 F2 日志里显示 0.00)
+			if (speed < 0.5f && (target.Position - rc.SmoothedPos).sqrMagnitude < 0.0025f)
+			{
+				smoothedPos = target.Position;
+			}
+			else
+			{
+				float k = Mathf.Lerp(0.1f, 1f, Mathf.Min(1f, speed * 0.02f));
+				// SP2 是"逐物理步(50Hz) Lerp(position, target, k)" → 等价帧率无关收敛速率 dt*50:
+				// k=0.1 时时间常数≈0.2s(旧 dt*10 是≈1s,慢 5 倍 → 残差蠕动拖出可见滑动)。
+				float alpha = 1f - Mathf.Pow(1f - k, dt * 50f);
+				smoothedPos = Vector3d.Lerp(rc.SmoothedPos, target.Position, alpha);
+			}
+			if (Vector3d.Distance(smoothedPos, target.Position) > 100.0) smoothedPos = target.Position;
+			rc.SmoothedPos = smoothedPos;
+
+			// --- 朝向:Slerp 平滑(SP2 :94 用 2.5*dt) ---
+			float alphaRot = Mathf.Clamp01(2.5f * dt);
+			Quaternion smoothedSrf = Quaternion.Slerp(rc.SmoothedSrfRel.ToQuaternion(), target.SrfRel.ToQuaternion(), alphaRot);
+			rc.SmoothedSrfRel = Quaterniond.FromQuaternion(smoothedSrf);
+
+			// --- 每 body 相对位姿:10·dt 平滑 + <0.01 近距快照(SP2 BodyScript.cs:660-679);数量变化时重对齐并快照 ---
+			// 结果写进 rc.ReuseSmooth* 复用缓冲(ApplyRemoteState→LastApplied→LateUpdate 同帧读取,无跨帧别名问题),
+			// 避免热路径每帧分配 List 引发 GC 卡顿。
+			int n = target.BodyPositions != null ? target.BodyPositions.Count : 0;
+			Mod.RemoteDataPack result = target;
+			if (n > 0)
+			{
+				if (rc.SmoothedBodyPos == null || rc.SmoothedBodyPos.Length != n)
+				{
+					SnapSmoothedBodies(rc, target); // 重对齐
+				}
+				rc.ReuseSmoothBodyPos.Clear();
+				rc.ReuseSmoothBodyRot.Clear();
+				float alphaBody = Mathf.Clamp01(10f * dt);
+				float maxBodyDelta = 0f;
+				for (int i = 0; i < n; i++)
+				{
+					Vector3 tpos = (target.BodyPositions != null && i < target.BodyPositions.Count) ? target.BodyPositions[i] : rc.SmoothedBodyPos[i];
+					Quaternion trot = (target.BodyRotations != null && i < target.BodyRotations.Count) ? Quaternion.Euler(target.BodyRotations[i]) : rc.SmoothedBodyRot[i];
+					Vector3 prevSp = rc.SmoothedBodyPos[i];
+					Vector3 sp = prevSp;
+					Quaternion sr = rc.SmoothedBodyRot[i];
+					if ((tpos - sp).sqrMagnitude < 0.01f) sp = tpos;
+					else sp = Vector3.Lerp(sp, tpos, alphaBody);
+					if (Quaternion.Angle(sr, trot) < 0.01f) sr = trot;
+					else sr = Quaternion.Slerp(sr, trot, alphaBody);
+					float bd = (sp - prevSp).magnitude;
+					if (bd > maxBodyDelta) maxBodyDelta = bd;
+					rc.SmoothedBodyPos[i] = sp;
+					rc.SmoothedBodyRot[i] = sr;
+					rc.ReuseSmoothBodyPos.Add(sp);
+					rc.ReuseSmoothBodyRot.Add(sr.eulerAngles);
+				}
+				rc.LastBodyPoseDeltaM = maxBodyDelta;
+				result.BodyPositions = rc.ReuseSmoothBodyPos;
+				result.BodyRotations = rc.ReuseSmoothBodyRot;
+			}
+
+			// 组装结果(结构体拷贝;只替换平滑后的字段,其余沿用 target;列表用复用缓冲,不分配、不污染缓冲样本)
+			result.Position = smoothedPos;
+			result.SrfRel = Quaterniond.FromQuaternion(smoothedSrf);
+			return result;
+		}
+
+		/// <summary>Vector3d 是否全为有限值(NaN/Inf 视为非法,防坏包污染平滑状态)。</summary>
+		private static bool IsFinite(Vector3d v)
+		{
+			return !double.IsNaN(v.x) && !double.IsNaN(v.y) && !double.IsNaN(v.z) &&
+				!double.IsInfinity(v.x) && !double.IsInfinity(v.y) && !double.IsInfinity(v.z);
+		}
+
+		/// <summary>把 target 的 body 位姿快照进平滑数组(首帧 / body 数量变化时调用)。</summary>
+		private static void SnapSmoothedBodies(RemoteCraft rc, Mod.RemoteDataPack target)
+		{
+			int n = target.BodyPositions != null ? target.BodyPositions.Count : 0;
+			if (rc.SmoothedBodyPos == null || rc.SmoothedBodyPos.Length != n)
+			{
+				rc.SmoothedBodyPos = new Vector3[Mathf.Max(0, n)];
+				rc.SmoothedBodyRot = new Quaternion[Mathf.Max(0, n)];
+			}
+			for (int i = 0; i < n; i++)
+			{
+				rc.SmoothedBodyPos[i] = (target.BodyPositions != null && i < target.BodyPositions.Count) ? target.BodyPositions[i] : Vector3.zero;
+				rc.SmoothedBodyRot[i] = (target.BodyRotations != null && i < target.BodyRotations.Count) ? Quaternion.Euler(target.BodyRotations[i]) : Quaternion.identity;
+			}
 		}
 
 		/// <summary>
@@ -1793,7 +1999,11 @@ namespace Assets.Scripts.Net
 			ApplyRemoteGroundedSurface(rc, data, planet);
 
 			Vector3d planetPos = planet.SurfaceVectorToPlanetVector(data.Position);
-			Vector3d planetVel = planet.SurfaceVectorToPlanetVector(data.Velocity);
+			// 发送端 data.Velocity 是"地表相对速度"(见 TrySampleLocalCraft)。SurfaceVectorToPlanetVector 是
+			// 纯逆旋转(不减自转项),直接转会得到 V_inertial−ω×r(静止船=-158.85m/s),一旦地表锁定被清
+			// 游戏会按此速度推进轨道 → 幽灵漂移/掉地。必须加回行星自转线速度恢复正确的惯性速度。
+			Vector3d planetVel = planet.SurfaceVectorToPlanetVector(data.Velocity) +
+				planet.SurfaceVectorToPlanetVector(planet.CalculateSurfaceVelocity(data.Position));
 			CraftUtils.SetStateVectorsAtDefaultTime(planetPos, planetVel, rc.Node);
 
 			// ③ 视觉朝向(LunaMultiplayer 方案)：根=质心旋转；body=相对质心的局部旋转。
@@ -1873,6 +2083,11 @@ namespace Assets.Scripts.Net
 			// 保证写回的是"插值后"状态而非"最新包"，避免朝向跳变）。
 			rc.LastApplied = data;
 			rc.HasApplied = true;
+			// 变换漂移诊断:记录本帧写入后的实际 Transform.position,供下一帧写入前对比。
+			if (rc.Node.CraftScript != null && rc.Node.CraftScript.Transform != null)
+			{
+				rc.LastWrittenFramePos = rc.Node.CraftScript.Transform.position;
+			}
 
 			// 引擎尾焰:快照最近应用状态的每引擎视觉 throttle(液体 override 闭包与航发驱动都读它)
 			if (data.EngineThrottles != null) rc.SyncedThrottles = data.EngineThrottles;
@@ -1997,7 +2212,14 @@ namespace Assets.Scripts.Net
 				// 用地面坐标传输：PlanetVectorToSurfaceVector(craft.Position) 是网格固定坐标，
 				// 跨端不变（craft.Position 是惯性坐标，随行星自转变化，不能直接传）。
 				Vector3d pos = craft.Parent.PlanetVectorToSurfaceVector(craft.Position);
-				Vector3d vel = craft.Parent.PlanetVectorToSurfaceVector(craft.Velocity);
+				// 速度必须换算成"地表相对速度"：PlanetVectorToSurfaceVector 只是纯旋转
+				// (PlanetNode.cs:445 只 RotateVectorAroundYAxis,不减行星自转 ω×r 项)。
+				// 直接用它转惯性速度 → 落地/静止船会得到恒定的行星自转线速度(本测试 158.85 m/s),
+				// 接收端欠载外推 Position+Velocity*dt 把它放大成数十米瞬移(移动日志 move3s 高达 0.3~83m/3s 的元凶)。
+				// 正确公式(与游戏 GroundedSurfaceVelocity/CraftNode.cs:1367 一致):
+				//   地表相对速度 = 惯性速度转地表 − 该位置自转线速度(CalculateSurfaceVelocity)。
+				Vector3d vel = craft.Parent.PlanetVectorToSurfaceVector(craft.Velocity) -
+					craft.Parent.CalculateSurfaceVelocity(pos);
 				// 朝向：传输"质心(CenterOfMass)的帧空间旋转"作为根朝向。
 				// 依据（反编译+日志）：对方飞船 craft XML 的 body/part 是"质心坐标系"（GenerateXml 前
 				// RecenterTransformOnCoM 把根移到质心），接收端根必须=质心(comRot)才能让 part 正确摆放

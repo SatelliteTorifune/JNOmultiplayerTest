@@ -79,7 +79,7 @@ namespace Assets.Scripts.Net
 			DuplicatePercent = 0;
 		}
 
-		/// <summary>当前静态配置摘要(日志/悬浮窗用)。</summary>
+		/// <summary>当前静态配置摘要(NetSim 命令/日志用)。</summary>
 		public static string DescribeConfig()
 		{
 			if (!ToggleOn) return "net-sim OFF";
@@ -174,7 +174,7 @@ namespace Assets.Scripts.Net
 			}
 		}
 
-		/// <summary>投递统计摘要(悬浮窗/日志用)。</summary>
+		/// <summary>投递统计摘要(NetSim 命令/日志用)。</summary>
 		public string DescribeStats()
 		{
 			return DescribeConfig() + " | delivered=" + Delivered + " dropped=" + Dropped + " inFlight=" + InFlight;

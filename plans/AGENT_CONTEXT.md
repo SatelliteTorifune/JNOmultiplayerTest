@@ -1,7 +1,7 @@
 # JNO 联机 Mod 项目 —— 会话启动上下文(通用提示词)
 
 > 用法:每次开新会话做本项目前,把本文档(或下面"0. 一句话定位 + 1. 关键路径"起的内容)作为首条上下文交给 AI,可省去大量重复调研。
-> 本文件是**只读参考**,不是 plan;方案/决策类内容一律写进 [`multi-craft-sync.md`](multi-craft-sync.md) 并同步 [`README.md`](README.md)。
+> 本文件是**只读参考**,不是 plan;方案/决策类内容一律写进 [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) 并同步 [`README.md`](README.md)。
 
 ---
 
@@ -19,7 +19,7 @@
 | **ModApi 源码** | `C:\renko\shitProgram\jnoCode\ModApi\`(即 `ModApi.sln`,只读参考) |
 | KSP 联机参考 | `C:\renko\unityProjects\LunaMultiplayer` |
 | 设计文档索引 | `plans/README.md` |
-| 当前活跃 plan | `plans/multi-craft-sync.md` |
+| 当前活跃 plan | `plans/multi-craft-sync-2026-08-16.md` |
 | 参考程序集(编译期) | `Assets/ModTools/Assemblies/`(含 `SimpleRockets2.dll`、`ModApi.dll`、`Jundroo.ModTools.dll`、`com.rlabrecque.steamworks.net.dll`、`0Harmony.dll` 等) |
 | 游戏本体(本地) | `C:\Program Files (x86)\Steam\steamapps\common\SimpleRockets 2\SimpleRockets2.exe` |
 
@@ -62,11 +62,11 @@
 - `CraftNode`: `NodeId` / `AllowPlayerControl` / `HasCommandPod` / `IsDebris` / `InContactWithPlanet` / `DestroyCraft` / `TransitionToNewSoi`
 - `CraftSplitter`: `SplitCraftNode` / `MergeCraftNode` / `ProcessDisconnectedBody` / `DetermineCraftNodeEligibility`
 - `EvaScript` / `CommandPodScript.IsEva` / `CrewCompartmentScript`(Drood EVA)
-- 详见 `multi-craft-sync.md` §七(切换/对接/EVA 研究)、§八(边界排查,含 Harmony 拦 `ChangePlayersActiveCommandPodImmediate` 防劫持、无 pod 残骸处理)。
+- 详见 `multi-craft-sync-2026-08-16.md` §七(切换/对接/EVA 研究)、§八(边界排查,含 Harmony 拦 `ChangePlayersActiveCommandPodImmediate` 防劫持、无 pod 残骸处理)。
 
 ## 5. 开发流程约定
 
-1. **研究有明确结论 → 直接写进 `plans/multi-craft-sync.md`**(加「【决策:…】」标记),并同步 `README.md` 的决策速查表。
+1. **研究有明确结论 → 直接写进 `plans/multi-craft-sync-2026-08-16.md`**(加「【决策:…】」标记),并同步 `README.md` 的决策速查表。
 2. 完成主题 → 移入 `plans/archive/`(已修订为最终状态 + 经验教训),并更新索引。
 3. 改代码前先 `read` 目标文件;新 Harmony patch 放 `Assets/Scripts/HarmonyPatches/`。
 4. 传输层改动需**双路径回归**:默认 Steam + TCP debug 命令。
@@ -77,5 +77,7 @@
 - 日志:`Mod.LogLobby`(联机流程日志)。
 - 游戏内 DevConsole 命令:`HostLobbyPort <port>` / `JoinLobbyPort <ip> <port>` / `StopLobby` / `SteamHostLobby` / `SteamJoinLobby <hostSteamId>` / `TcpHostLobby <port>` / `TcpJoinLobby <ip> <port>` / `SetTickRate <hz>`。
 - 本地 VM debug:本机 `TcpHostLobby 25555`(防火墙放行入站);VM `TcpJoinLobby <宿主IP> 25555`——**✅ 已实测可行(2026-08)**。
-- Steam 双账号公网联机:**✅ 已实测可行(2026-08)**,零 frp/零端口转发(见 [`archive/steam-multiplayer-integration.md`](archive/steam-multiplayer-integration.md) Step 4)。Lobby 邀请不做,维持手动 SteamId。
+- Steam 双账号公网联机:**✅ 已实测可行(2026-08)**,零 frp/零端口转发(见 [`archive/steam-integration-2026-08-13.md`](archive/steam-integration-2026-08-13.md) Step 4)。Lobby 邀请不做,维持手动 SteamId。
 - 反编译源码用 Rider/VS 打开 `.sln` 浏览;`jnoCode` 是只读参考,不要改动。
+
+(End of file - total 81 lines)

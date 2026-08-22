@@ -51,13 +51,16 @@ namespace Assets.Scripts.Net
 				c.TranslateRight = data.TranslateRight;
 				c.TranslateUp = data.TranslateUp;
 
-				// 激活组状态:InputControllerScript 等受 Controls.GetActivationGroup 门控;写入使门控与发送端一致
+				// 激活组状态:InputControllerScript 等受 Controls.GetActivationGroup 门控;写入使门控与发送端一致。
+				// 注意:激活组是 1-indexed(CommandPodScript.GetActivationGroupState: num=group-1,范围 1..10);
+				// 发送端按 i=1..10 采样入列表索引 0..9,此处必须 i=1..10 对应列表 [i-1] —— 旧实现 i=0..9 调
+				// SetActivationGroup(0)→ActivationGroupStates[-1]→IndexOutOfRange 每帧异常(激活组同步实际从未生效)。
 				if (data.ActivationGroupStates != null)
 				{
 					int n = Mathf.Min(data.ActivationGroupStates.Count, 10);
-					for (int i = 0; i < n; i++)
+					for (int i = 1; i <= n; i++)
 					{
-						bool synced = data.ActivationGroupStates[i];
+						bool synced = data.ActivationGroupStates[i - 1];
 						if (synced != c.GetActivationGroup(i)) c.SetActivationGroup(i, synced);
 					}
 				}

@@ -141,12 +141,7 @@ namespace Assets.Scripts
 				LogLobby("NetSim 配置: " + Net.LagSimTransport.DescribeConfig() +
 					(lag != null ? " | 活跃实例统计: " + lag.DescribeStats() : " | 当前传输未启用延迟模拟(需开房前配置或重启会话)"));
 			}));
-			// 接收端平滑/网络诊断悬浮窗开关（配合 NetSim 观察缓冲余量/抖动/欠载/位置误差）。
-			DevConsoleApi.RegisterCommand<int>("NetStatsUI", new Action<int>(on =>
-			{
-				MpNetworkManager.ShowStatsOverlay = on != 0;
-				LogLobby("NetStatsUI -> " + (on != 0 ? "ON（右上角悬浮窗显示每远程船平滑统计）" : "OFF"));
-			}));
+			// 接收端平滑/网络诊断仅通过 Mod.LogLobby 写 Player.log（3s 周期行 "MP smoothing P#"），不设悬浮窗。
 			// 房主调整状态包发送频率（Hz）：SetTickRate 20 → 50ms（默认）；5 → 200ms；60 → ~16.7ms。
 			// 房主设置后广播给所有客户端（SP2 ServerTickRate 同款思路）。
 			DevConsoleApi.RegisterCommand<int>("SetTickRate", new Action<int>(hz => LobbyManager.Instance.SetTickRate(hz)));
