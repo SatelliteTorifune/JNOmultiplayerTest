@@ -49,4 +49,11 @@
     <s id="MultiPlayer.MultiPlayerUI.Cancel">Cancel</s>
     <s id="MultiPlayer.MultiPlayerUI.Kicked">You have been kicked by the host</s>
     <s id="MultiPlayer.MultiPlayerUI.LoadingCraft">Loading craft</s>
+    <!-- Update Reminder -->
+    <s id="MultiPlayer.MultiPlayerUI.UpdateAvailable">A new version of aMptest is available!</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateNewVersion">New version: {0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateCurrentVersion">Your version: {0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateDownload">Download</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateLater">Later</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateDismiss">Don't Remind Again</s>
 </Strings>

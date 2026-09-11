@@ -38,5 +38,15 @@ namespace Assets.Scripts
         {
             UnityEngine.Debug.Log("[Mptest][Lobby] " + message);
         }
+
+        /// <summary>
+        /// 更新检查日志：不受 DebugMode 限制，始终输出到控制台。
+        /// 更新检查含网络"总看门狗"超时 / 主动中断等诊断（防卡死机制），需要始终可见，
+        /// 便于确认"最多等 15s 必放弃"确实生效。
+        /// </summary>
+        public static void LogUpdate(object message)
+        {
+            UnityEngine.Debug.Log("[Mptest][Update] " + message);
+        }
     }
 }

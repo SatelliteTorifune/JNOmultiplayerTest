@@ -49,4 +49,11 @@
     <s id="MultiPlayer.MultiPlayerUI.Cancel">取消</s>
     <s id="MultiPlayer.MultiPlayerUI.Kicked">你已被房主踢出</s>
     <s id="MultiPlayer.MultiPlayerUI.LoadingCraft">正在加载飞船</s>
+    <!-- Update Reminder -->
+    <s id="MultiPlayer.MultiPlayerUI.UpdateAvailable">aMptest 有新版本可用！</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateNewVersion">新版本：{0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateCurrentVersion">当前版本：{0}</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateDownload">下载更新</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateLater">稍后再说</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateDismiss">不再提醒</s>
 </Strings>

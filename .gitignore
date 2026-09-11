@@ -10,3 +10,9 @@ Assets/_ModAssets_.meta
 *.csproj
 Assets/ModTools/*
 *.meta
+/.idea
+UserSettings/Layouts/default-2022.dwlt
+/UserSettings
+.kilo
+.idea
+.vscode

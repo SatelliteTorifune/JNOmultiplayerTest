@@ -934,10 +934,17 @@ namespace Assets.Scripts.Net
 			{
 				// 轻微平滑，避免显示跳动
 				peer.PingMs = peer.PingMs < 0 ? (int)rttMs : (int)(peer.PingMs * 0.7 + rttMs * 0.3);
+				// 同步到该玩家的 RemoteCraft:单向延迟 ≈ RTT/2(幽灵连续外推用,修正 gapEMA 低估真实网络延迟的问题)
+				if (_remoteCrafts.TryGetValue(peer.PlayerId, out RemoteCraft rc))
+				{
+					rc.LatencyMs = peer.PingMs / 2f;
+				}
 			}
 			else
 			{
 				ClientPingMs = ClientPingMs < 0 ? (int)rttMs : (int)(ClientPingMs * 0.7 + rttMs * 0.3);
+				// 客户端所有远端飞船都经房主转发,单向延迟 ≈ 自己到房主 RTT/2(缺少对端→房主一段,近似处理)
+				foreach (RemoteCraft rc in _remoteCrafts.Values) rc.LatencyMs = ClientPingMs / 2f;
 			}
 		}
 
@@ -1082,6 +1089,8 @@ namespace Assets.Scripts.Net
 			public float InterpPct;          // 最近一次插值比例 0..1（欠载时=1）
 			public float GapEmaMs;           // 包间到达间隔 EMA（ms）
 			public float JitterEmaMs;        // 包间到达间隔抖动 EMA（ms）
+			public float LatencyMs = -1f;    // 到该发送端的单向网络延迟估计(RTT/2,房主按 peer.PingMs,客户端按 ClientPingMs);-1=未测得
+			public float NewestArrivalTime;  // 最新包到达时刻(Time.unscaledTime,连续外推用)
 			public double LastPosErrorM;     // 最近渲染位置(插值/外推) vs 最新包位置 的距离（米）
 			public float LastSmoothingLogTime; // 平滑诊断周期日志计时
 			private float _lastPushTime = -1f; // PushSample 上次到达时间（抖动 EMA 用）
@@ -1131,6 +1140,7 @@ namespace Assets.Scripts.Net
 				if (BufferCount < BufferCapacity) BufferCount++;
 				else BufferHead = (BufferHead + 1) % BufferCapacity;
 				HasState = true;
+				NewestArrivalTime = arrivalTime;
 
 				// 包间到达间隔与抖动 EMA（诊断：NetSim 注入的抖动应如实反映到这里）
 				if (_lastPushTime >= 0f)
@@ -1652,50 +1662,50 @@ namespace Assets.Scripts.Net
 					if (!rc.IsInitialized) InitializeRemoteCraft(rc);
 					if (!rc.IsInitialized) continue;
 
-					// 平滑插帧：renderTime = now - 渲染回看。回看量 = max(固定 renderDelay, 1.5×实测包间隔 EMA)，
-					// 发送端低速(低帧率/高延迟)时实测间隔远超 renderDelay → 固定回看必然欠载 → 冻结/外推接缝跳动。
-					// 自适应放大回看让缓冲始终有前后两包可插值(代价:渲染滞后≈回看量,SP2 同思路)。
-					// 封顶 0.5s：超过则靠外推(封顶 0.25s)兜底,避免长期大滞后。
 					rc.TotalFrames++;
-					// 变换漂移诊断:写入前读实际 Transform.position,对比上一帧写入值。
-					// moveDelta=0 而 tfDelta 持续>0 → 游戏层在我们 Update 写入之后又移动了 ghost
-					// (滑动来自游戏自身层,如地表锁定/轨道推进/相机跟随,而非我们写入的数据)。
-					rc.LastTfDriftM = 0f;
-					if (rc.HasApplied && rc.Node.CraftScript != null && rc.Node.CraftScript.Transform != null)
+					// SP2 式:不用插值缓冲,始终拿最新包,按速度连续外推(dead-reckoning),再 per-frame 平滑。
+					// 插值缓冲在 Steam 突发间隔下 gapEMA 滞后→lookback 过小→频繁欠载→幽灵跳到最新包
+					// →"一卡一卡"。SP2 直接拿最新包,Lerp 平滑过渡,不发散不抖动,不依赖缓冲(CraftStateSerializer.cs:76-86)。
+					if (rc.TryGetNewest(out Mod.RemoteDataPack latest))
 					{
-						rc.LastTfDriftM = Vector3.Distance(rc.Node.CraftScript.Transform.position, rc.LastWrittenFramePos);
-					}
-					// 自适应渲染回看:lookback = max(固定 renderDelay, gapEMA + 2×jitterEMA, ≤500ms)。
-					// 旧公式 1.5×gapEMA 忽略了抖动 → 实际间隔可达 gapEMA+jitterEMA → 欠载率奇高(Steam 实测 50~76%)。
-					// 2×jitterEMA 包住 95%+ 的间隔 → 缓冲饱满,插值接管。
-					float gapSec = Mathf.Max(rc.GapEmaMs, SendIntervalMs) / 1000f;
-					float jitterSec = rc.JitterEmaMs / 1000f;
-					float lookbackSec = Mathf.Min(Mathf.Max(RenderDelayMs / 1000f, gapSec + jitterSec * 2f), 0.5f);
-					float renderTime = Time.unscaledTime - lookbackSec;
-					if (TryGetInterpolatedState(rc, renderTime, out Mod.RemoteDataPack interp))
-					{
-						// P1:SP2 式平滑(指数收敛 + 近距快照 + 瞬移),把插值/外推结果作为 Target,
-						// 消除"外推结束→新包到来"接缝的跳变与残差跳。
-						interp = ApplyRemoteSmoothing(rc, interp, Time.unscaledDeltaTime);
+						// 连续外推(dead-reckoning):外推量 = 单向延迟(RTT/2) + 距最新包到达已过的时间(age)。
+						// 目标随时间持续以最新速度前进 → 包到达/丢失/突发都不再让目标跳变 → 消除"一卡一卡"。
+						// 旧逻辑外推量固定为 gapEMA(仅≈发包间隔,500ms+ 真实网络延迟下严重低估→幽灵恒滞后→大跳)。
+						// SP2 用 physicsTime-senderTime 测单向延迟;我们没有时钟同步,用 RTT/2 近似(OnPong 更新)。
+						float latencySec = (rc.LatencyMs > 0f ? rc.LatencyMs : rc.GapEmaMs) / 1000f;
+						float age = Time.unscaledTime - rc.NewestArrivalTime;
+						float ext;
+						if (age > Mathf.Max(rc.GapEmaMs * 3f / 1000f, 0.25f))
+						{
+							// 发送端长时间无包(断连/暂停):冻结在最新已知位置+固定外推,不再随 age 前进(防幽灵飞走)
+							ext = latencySec;
+						}
+						else
+						{
+							ext = latencySec + age; // 正常:持续外推
+						}
+						if (ext > 1.0f) ext = 1.0f; // 安全上限 1s
+						latest.Position = latest.Position + latest.Velocity * ext;
+						rc.ExtrapolatedFrames++; // 计数(SP2 风格:每帧按速度外推)
+						rc.InterpPct = 1f;       // 始终在最新包(无缓冲插值)
+
+						// P1:SP2 式平滑(指数收敛 + 近距快照 + 瞬移)
+						latest = ApplyRemoteSmoothing(rc, latest, Time.unscaledDeltaTime);
 						// 跳动诊断:本帧实际应用位置相对上一帧的位移(0 延迟+静止时应≈0;>0.5m 即跳动)。
-						rc.LastMoveDeltaM = rc.HasApplied ? Vector3d.Distance(interp.Position, rc.LastRenderedPos) : 0.0;
-						rc.LastRenderedPos = interp.Position;
-						rc.MoveSumM += rc.LastMoveDeltaM; // 3s 窗口累计渲染位移(捕捉 F2 精度下不可见的慢漂移)
+						rc.LastMoveDeltaM = rc.HasApplied ? Vector3d.Distance(latest.Position, rc.LastRenderedPos) : 0.0;
+						rc.LastRenderedPos = latest.Position;
+						rc.MoveSumM += rc.LastMoveDeltaM;
 						// 朝向累计变化:慢旋转同样会被感知为"滑动"(尤其 body 相对质心有偏移时)
 						if (rc.HasApplied)
 						{
 							rc.HeadDeg3s += Quaternion.Angle(rc.PrevSmoothedSrfRel.ToQuaternion(), rc.SmoothedSrfRel.ToQuaternion());
 						}
 						rc.PrevSmoothedSrfRel = rc.SmoothedSrfRel;
-						ApplyRemoteState(rc, interp);
+						ApplyRemoteState(rc, latest);
 						// 每帧用插值后状态驱动幽灵船尾焰(液体 Route A 经 override、航发直接驱动)
 						EngineVisualSync.DriveGhostEngineVisuals(rc);
-						// 位置误差诊断:当前渲染位置(插值/冻结) vs 最新包位置(最近已知真值)。
-						// 反映"渲染滞后":≈ 速度×(renderDelay + 包间隔),高延迟/抖动下会放大 → 橡皮筋可见度指标。
-						if (rc.TryGetNewest(out Mod.RemoteDataPack newest))
-						{
-							rc.LastPosErrorM = Vector3d.Distance(interp.Position, newest.Position);
-						}
+						// 位置误差诊断:当前渲染位置 vs 最新包位置(SP2 式下始终≈0,因为始终用最新包)
+						rc.LastPosErrorM = 0.0; // SP2 式:直接用最新包,无滞后
 					}
 
 					// 诊断：周期性记录平滑/网络状态（每 3 秒）：
@@ -1704,7 +1714,6 @@ namespace Assets.Scripts.Net
 					if (Time.unscaledTime - rc.LastSmoothingLogTime > 3f)
 					{
 						rc.LastSmoothingLogTime = Time.unscaledTime;
-						float underPct = rc.TotalFrames > 0 ? 100f * rc.UnderrunFrames / (float)rc.TotalFrames : 0f;
 						// 3s 窗口累计量:F2/F1 精度下 0.1m/s 级慢漂移显示为 0.00,必须用累计量+高精度捕捉。
 						double move3s = rc.MoveSumM, pktJump = rc.PktJumpM;
 						double headDeg = rc.HeadDeg3s;
@@ -1724,10 +1733,9 @@ namespace Assets.Scripts.Net
 						try { headYaw = rc.SmoothedSrfRel.ToQuaternion().eulerAngles.y.ToString("F1"); } catch { }
 						Mod.LogLobby("MP smoothing P" + rc.PlayerId +
 							": buf=" + rc.BufferCount + "/" + RemoteCraft.BufferCapacity +
-							" renderDelay=" + RenderDelayMs.ToString("F0") + "ms lookback=" + (lookbackSec * 1000f).ToString("F0") + "ms" +
+							" rtt/2=" + (rc.LatencyMs > 0f ? rc.LatencyMs.ToString("F0") : "?") + "ms" +
 							" gapEMA=" + rc.GapEmaMs.ToString("F0") + "ms jitterEMA=" + rc.JitterEmaMs.ToString("F0") + "ms" +
-							" frames=" + rc.TotalFrames + " underrun=" + rc.UnderrunFrames +
-							"(" + underPct.ToString("F1") + "%) snap=" + rc.SnapFrames + " extrap=" + rc.ExtrapolatedFrames +
+							" frames=" + rc.TotalFrames + " snap=" + rc.SnapFrames + " extrap=" + rc.ExtrapolatedFrames +
 							" interpPct=" + rc.InterpPct.ToString("F2") +
 							" moveDelta=" + rc.LastMoveDeltaM.ToString("F2") + "m bodyDelta=" + rc.LastBodyPoseDeltaM.ToString("F2") + "m" +
 							" tfDrift=" + rc.LastTfDriftM.ToString("F2") + "m" +

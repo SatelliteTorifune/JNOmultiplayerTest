@@ -24,6 +24,12 @@ namespace Assets.Scripts
 
 		public static Mod Instance { get; } = GameModBase.GetModInstance<Mod>();
 
+		/// <summary>
+		/// 本地 Mod 版本（= ModInfo.Version，类型 System.Version，如 0.1）。
+		/// 由 OnModInitialized 赋值，供 ModUpdater 做"网站最新 vs 本地"比较。
+		/// </summary>
+		public Version ModVersion { get; private set; }
+
 		protected override void OnModInitialized()
 		{
 			try
@@ -41,6 +47,11 @@ namespace Assets.Scripts
 
 				RegisterMpCommands();
 				InitializeUserInterface();
+
+				// 更新检查（移植自 Volken2 ModUpdater，含防卡死机制）：
+				// 必须在 ModVersion 赋值之后调用，否则 ModUpdater 会因本地版本为空而跳过。
+				this.ModVersion = this.ModInfo.Version;
+				new ModUpdater().CheckForUpdate();
 			}
 			catch (Exception e)
 			{

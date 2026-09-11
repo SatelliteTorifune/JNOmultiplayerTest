@@ -619,8 +619,14 @@ namespace Assets.Scripts
         {
             if (e.Scene == "Flight")
             {
-                inspectorPanel.Visible = false;
-                inspectorPanel.CloseButtonClicked += OnCloseButtonClicked;
+                // 修复(Volken 冲突排查):inspectorPanel 在从未打开过联机面板时为 null,
+                // 直接解引用会抛 NRE;且该异常会中断 SceneLoaded 事件链,使链中其后
+                // 注册的其它 mod(如 Volken)的 OnSceneLoaded 不执行(看不到云等)。
+                if (inspectorPanel != null)
+                {
+                    inspectorPanel.Visible = false;
+                    inspectorPanel.CloseButtonClicked += OnCloseButtonClicked;
+                }
                 Game.Instance.FlightScene.FlightEnded += FlightSceneEnded;
             }
         }
