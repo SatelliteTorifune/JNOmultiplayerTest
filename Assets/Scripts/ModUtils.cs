@@ -18,7 +18,7 @@ namespace Assets.Scripts
             {
                 return;	
             }
-            UnityEngine.Debug.Log("[Mptest] " + message);
+            UnityEngine.Debug.Log("[MultiPlayer] " + message);
         }
 
         public static void LogError(object message)
@@ -27,7 +27,7 @@ namespace Assets.Scripts
             {
                 return;
             }
-            UnityEngine.Debug.LogError("[Mptest] " + message);
+            UnityEngine.Debug.LogError("[MultiPlayer] " + message);
         }
 
         /// <summary>

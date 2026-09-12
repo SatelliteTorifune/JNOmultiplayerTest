@@ -68,7 +68,7 @@ namespace Assets.Scripts
                                 new XElement(
                                     ns + "Image",
                                     new XAttribute("class", "panel-button-icon"),
-                                    new XAttribute("sprite", "aMptest/Sprites/UIIcon"))));
+                                    new XAttribute("sprite", "MultiPlayer/Sprites/UIIcon"))));
                     }
                 });
         }

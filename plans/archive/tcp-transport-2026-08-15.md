@@ -1,6 +1,6 @@
 # TCP 连接方式回归 —— 本地虚拟机 Debug 用（最小改动版）
 
-> 项目：JNOMultiPlayer（SimpleRockets 2 / JNO 联机 mod aMptest）
+> 项目：JNOMultiPlayer（SimpleRockets 2 / JNO 联机 mod MultiPlayer）
 > 创建日期：2026-08-15
 > 状态：✅ 已落地（2026-08-15 按本文实现：`IMpTransport` + 两传输类实现接口 + `TcpHostLobby`/`TcpJoinLobby` 命令）
 

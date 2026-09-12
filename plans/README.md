@@ -1,6 +1,6 @@
 # 联机 Mod 设计文档索引(plans/)
 
-> 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod aMptest)
+> 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod MultiPlayer)
 > **新会话先读:[`AGENT_CONTEXT.md`](AGENT_CONTEXT.md)**(项目路径 / 反编译源码 / ModApi / 已定技术事实 / 开发约定,可直接作为提示词)。
 > 说明:本文档是 `plans/` 的导航页。**当前活跃文档:`multi-craft-sync-2026-08-16.md`(多 craft)、`body-sync-2026-08-18.md`(body 级姿态同步)、`part-switch-sync-2026-08-18.md`(部件开关/控制输入)、`latency-smoothing-2026-08-22.md`(远程船高延迟平滑)、`vizzy-isolation-2026-08-22.md`(Vizzy 隔离)、`update-1.4.2-experimental-2026-09-03.md`(1.4.2 Experimental 兼容适配)、`update-reminder-port-2026-09-10.md`(Volken ModUpdater 移植分析)**，其余已完成/历史文档已移入 [`archive/`](archive/)。
 > 约定:新 plan 建议单一主题一个文件,写清「状态 + 决策记录」,完成后移入 `archive/` 并在此更新索引。
@@ -12,13 +12,13 @@
 
 | 文档 | 主题 | 状态 | 一句话摘要 |
 |---|---|---|---|
-| [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) | **多 Craft 同步**(研究阶段) | 📋 方案研究 + 边界排查 | 多节点身份/生命周期/对接/切换/EVA/无 pod 残骸/边界情况(jnoCode 排查),含 MC1~MC4 里程碑;**body 级姿态同步已于 2026-08-18 拆分为独立 plan [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)** |
+| [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) | **多 Craft 同步**(研究阶段,**代码零实现**) | 📋 方案研究 + 边界排查 | 多节点身份/生命周期/对接/切换/EVA/无 pod 残骸/边界情况(jnoCode 排查),含 MC1~MC4 里程碑;⚠️ **现状是每玩家一船、`_remoteCrafts` 按 `int playerId` 索引、无任何 `Guid`、状态包无船标识**(见该文档 §〇);**body 级姿态同步已于 2026-08-18 拆分为独立 plan [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)** |
 | [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md) | **Body 级姿态同步**(转轴/关节连接部件"整体移动")(**P0 已实现,待游戏内实测**) | ✅ 方案已定(BodyPoses) | `BodyRotations`→`BodyPoses`(相对 comRot 的位置+旋转),采样 + 两处接收端应用(`BodyPositions` 平行列表 + `ApplyRemoteBodyPoses`);一并覆盖残骸小碎片位置缺口;**SP2 参考(可抄:body 位姿同步层次/Quaternion32/Delta 优先级;不可抄:引擎钩子/ParentBody 树/FishNet/物理平滑)**;P1~P3 可选优化 |
 | [`part-switch-sync-2026-08-18.md`](part-switch-sync-2026-08-18.md) | 起落架开关等部件展开/开关状态同步(**方案 B P0 已实测通过;P3 控制输入应用已实现**) | ✅ 方案 B + P3 落地 | 同步 per-part `Part.Activated` + 幽灵本地仿真,覆盖起落架/货舱/着陆腿/太阳能/灯等;分离器/整流罩/对接**只记录不处理**(归 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md));降落伞**专用视觉驱动**(§9,P2);**输入驱动部件**(rotator/舵面/活塞/螺旋桨/车轮/RCS/电机)由 **P3 控制输入应用**(§11,写幽灵 Controls)解决;含"1000 起落架"性能分析 |
-| [`latency-smoothing-2026-08-22.md`](latency-smoothing-2026-08-22.md) | 远程船**高延迟平滑**(延迟>100ms 不"一卡一卡";**分析定稿;P0+P1+自适应lookback+速度帧修正 已实现并经双端(本地VM)实测确认解决静止滑动/高延迟卡顿**;调试工具已落地) | ✅ 已实现(接收端平滑层,双端实测通过) | 根因:body 位姿不参与插值(每包整体跳)+ 缓冲欠载冻结-跳变 + 无外推 + **发送端速度帧错误(`PlanetVectorToSurfaceVector` 纯旋转不减行星自转 ω×r → 静止船上报恒定 158.85 m/s → 外推放大成数十米瞬移)**;方案:**P0** BodyPoses 插值(Slerp/Lerp)+ 欠载外推(velocity×延迟);**P1** SP2 速度自适应指数平滑 + <0.01 快照 + >阈值瞬移;P2 RTT/2+jitter 自适应 + per-body velocity + Quaternion32。**调试工具已实现**:`LagSimTransport` 延迟模拟装饰器(包 TCP,无需 Steam 好友;数值与总开关分离,`NetSimDelay/Jitter/Loss` + `NetSimOn/Off`,会话中实时生效)+ 联机 UI 的 NetSim 分组(延迟/抖动/丢包输入框 + 启用开关 + 实时状态)+ `MP smoothing` 3s 周期日志(缓冲/抖动/欠载/位置误差/漂移指标,**诊断唯一出口,已移除悬浮窗**)。SP2 参考:[`CraftStateSerializer.cs:55-94`](file:///C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:55) 外推/平滑/瞬移、[`BodyScript.cs:660-679`](file:///C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Craft/BodyScript.cs:660) body 位姿平滑 |
+| [`latency-smoothing-2026-08-22.md`](latency-smoothing-2026-08-22.md) | 远程船**高延迟平滑**(延迟>100ms 不"一卡一卡") | ✅ 已实现(**架构已换代:SP2 式连续外推**,详见该文档 §9) | 根因演进:①body 位姿不参与插值(每包整体跳)+ 缓冲欠载冻结-跳变;②**发送端速度帧错误**(`PlanetVectorToSurfaceVector` 纯旋转不减行星自转 ω×r → 静止船上报恒定 158.85 m/s → 外推放大成数十米瞬移,已修)。**现行实现**:不做插值缓冲,始终取最新包 + **连续外推(dead-reckoning)**`ext = 单向延迟(RTT/2) + 包龄`(封顶 1s,长静默冻结)+ 每帧指数平滑(`alpha=1−(1−k)^(dt×50)`、静止锁定、>100m 瞬移、每 body 10·dt);插值缓冲/lookback/underrun 已成**死代码**。调试工具:`LagSimTransport`(包 TCP,数值与总开关分离)+ 联机 UI 的 NetSim 分组 + `MP smoothing` 3s 周期日志(**诊断唯一出口,无悬浮窗**)。SP2 参考:[`CraftStateSerializer.cs:55-94`](file:///C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:55)、[`BodyScript.cs:660-679`](file:///C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Craft/BodyScript.cs:660) |
 | [`vizzy-isolation-2026-08-22.md`](vizzy-isolation-2026-08-22.md) | **Vizzy 联机隔离:阻止跨 Craft 数据传输 + 禁止幽灵船 Vizzy 执行** | ✅ 已实现(双 patch:`BroadcastMessage` + `FlightUpdate`,含 `Enabled` 开关) | Harmony Prefix 拦截 `BroadcastMessage`(AllCrafts→Craft) + `FlightUpdate`(幽灵船跳过),封堵 `RequestUserInput`/`SetTimeMode`/`SetCameraProperty` 等所有侧信道;`VizzyIsolationPatch.Enabled` 默认 `true`,设 `false` 恢复原生 |
-| [`update-1.4.2-experimental-2026-09-03.md`](update-1.4.2-experimental-2026-09-03.md) | **游戏 1.4.2 Experimental 兼容适配**(版本 1.4.200;**P0 确定要做,待执行**) | 📋 规划中 | 唯一编译硬伤:`CraftScript.RecenterTransformOnCoM` 签名变化(需刷新程序集重编译,否则 MissingMethodException);body 脱离 craft 层级打掉 `EnforceRemoteCraftVisuals`/粒子遍历(→`GetComponentsInCraft`);参考系重居中重写 + `SetPose` 接地放置需双端实测;其余 API/Harmony 目标全兼容;P1 各项因实验版未定,待实测后拍板 |
-| [`update-reminder-port-2026-09-10.md`](update-reminder-port-2026-09-10.md) | **移植 Volken 的 ModUpdater.cs(更新检查 + 三按钮提醒弹窗)到 aMptest** | 📋 分析定稿,待实施 | 同游戏同 ModApi,可行性极高(≈纯复制+8 处耦合点替换);目标需补 `ModVersion` 属性 + 2 个语言文件各加 6 个 key;URL 指向 `SatelliteTorifune/JNOmultiplayerTest`;仓库需新建 `version.txt`;日志注意目标 `Mod.Log(object)` 无格式化重载 |
+| [`update-1.4.2-experimental-2026-09-03.md`](update-1.4.2-experimental-2026-09-03.md) | **游戏 1.4.2 Experimental 兼容适配** | 📋 **规划中(P0 三项均未执行)** | ①刷新参考程序集并重编译——`Assets/ModTools/Assemblies/**` 仍全部是 **2026-07-28** 的旧程序集,**未刷新**;②`GetComponentsInCraft` 全仓库 0 命中,`GetComponentsInChildren` 仍在 `CraftUtils.cs:78/119/123/127`、`MpNetworkManager.cs:1354`、`EngineVisualSync.cs:231` 使用,**未迁移**;③`SetPose` 0 命中,**未采用**;④`GroundedSurface*` 走**反射**写入(Node 属性,重命名会静默失效);⑤全仓库**无任何游戏版本检查/实验版开关**,握手也无版本字段;P1 各项均未开始 |
+| [`update-reminder-port-2026-09-10.md`](update-reminder-port-2026-09-10.md) | 移植 Volken 的 `ModUpdater.cs`(更新检查 + 三按钮提醒弹窗)到 MultiPlayer | ✅ **已实现并接线**(分析文档保留) | 已落地 `Assets/Scripts/ModUpdater.cs` 并在 `Mod.OnModInitialized()` 末尾调用(在 `ModVersion = ModInfo.Version` 赋值之后);双通道取版本(GitHub Releases API → 仓库根 `version.txt` 兜底)、看门狗超时防卡死;UI 文案已进 `EN-US.xml`/`ZH-CN.xml` |
 | [`steam-lobby-2026-09-12.md`](steam-lobby-2026-09-12.md) | **Steam 大厅系统移植分析(房间列表替代手动输入房主 SteamId)** | 📋 分析定稿,**待拍板**(旧决策"Lobby 不做"暂不翻案) | 可行性高:仅搬 SP2 `SteamLobbyManager` 的 SteamMatchmaking 部分(已反射验证游戏自带 Steamworks.NET 全套大厅 API);加入大厅后 `GetLobbyOwner` → 复用现有 `SteamTransport.StartClient`,传输/同步零改动;UI 用 ModApi `CreateListView` 或动态 GroupModel;MVP ≈ 新增 300~400 行 + `MultiPlayerUI`/`Mod.cs` 小改 |
 
 > `multi-craft-sync-2026-08-16.md` 承接了归档文档里遗留的"下一步"项(如多船身份/生命周期/残骸),后续以它为准;**body 同步已独立成 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)**,不再是 multi-craft 的子项。
@@ -57,10 +57,30 @@
 | TCP VM debug | **✅ 已实测可行**(`TcpHostLobby`/`TcpJoinLobby`) | archive/tcp §四 |
 | 起落架等部件开关同步 | **✅ 方案 B(P0)已实测通过**(per-part `Activated` 位);分离器/整流罩/对接 **只记录不处理**(归 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md));降落伞走 **专用视觉驱动**(P2);**P3 控制输入应用已实现**(写幽灵 Controls + 放开输入驱动部件 Activated:rotator/舵面/活塞/螺旋桨/车轮/RCS/电机) | [part-switch-sync-2026-08-18.md](part-switch-sync-2026-08-18.md) §3/§4/§9/§10/§11 |
 | body 级姿态同步(转轴连接部件整体移动) | **✅ 方案定稿:BodyPoses**(`BodyRotations`→相对 comRot 的位置+旋转;SP2 验证方向;**P0 已实现**);残骸小碎片位置缺口一并覆盖;不做 SP2 的 ParentBody 树/物理平滑 | [body-sync-2026-08-18.md](body-sync-2026-08-18.md) |
-| 远程船高延迟平滑(>100ms 不卡顿) | **✅ 已实现并经双端(本地VM)实测确认**:P0(BodyPoses插值+欠载外推)+P1(速度自适应指数平滑+近距快照+瞬移阈值)+自适应lookback+**速度帧修正**(发送端`PlanetVectorToSurfaceVector`不减行星自转ω×r→静止船报158.85m/s→外推放大成瞬移,已修复);调试工具(`LagSimTransport`+UI+`MP smoothing`周期日志)已落地 | [latency-smoothing-2026-08-22.md](latency-smoothing-2026-08-22.md) |
-| 游戏 1.4.2 Experimental 兼容(P0) | **✅ P0 决策已定(待执行)**:①刷新 ModTools 程序集(SimpleRockets2.dll/ModApi.dll)重编译(RecenterTransformOnCoM 签名变 2 参,旧二进制必炸);②`EnforceRemoteCraftVisuals`/`CraftUtils` 的 `GetComponentsInChildren` 迁移到 `GetComponentsInCraft`/逐 body(body 脱离 craft 层级);P1(重居中叠加/GroundedSurface×SetPose/版本开关/1.4.2 调试设施)待实测后拍板 | [update-1.4.2-experimental-2026-09-03.md](update-1.4.2-experimental-2026-09-03.md) |
+| 远程船高延迟平滑(>100ms 不卡顿) | **✅ 已实现,架构已换代**:①**速度帧修正**(发送端 `PlanetVectorToSurfaceVector` 不减行星自转 ω×r → 静止船报 158.85 m/s → 外推放大成瞬移,已修);②接收端**弃用插值缓冲**,改为 **SP2 式连续外推(dead-reckoning)**:始终取最新包 + `ext = 单向延迟(RTT/2) + 包龄`(封顶 1s、长静默冻结)+ 每帧指数平滑(`dt×50` 收敛、静止锁定、>100m 瞬移、每 body `10·dt`);调试工具(`LagSimTransport` + UI NetSim 分组 + `MP smoothing` 3s 日志)已落地 | [latency-smoothing-2026-08-22.md](latency-smoothing-2026-08-22.md) §9(现行实现) |
+| 游戏 1.4.2 Experimental 兼容(P0) | 📋 **决策已定但三项都未执行**:①刷新 ModTools 程序集(现仍是 2026-07-28 的旧程序集)重编译;②`GetComponentsInChildren` → `GetComponentsInCraft`/逐 body(现 `GetComponentsInCraft` 0 命中);③`RecenterTransformOnCoM` 1 参调用(换程序集后会 `MissingMethodException`);另:`GroundedSurface*` 走反射(改名会静默失效)、全仓库无游戏版本检查/实验版开关 | [update-1.4.2-experimental-2026-09-03.md](update-1.4.2-experimental-2026-09-03.md) §〇之二 |
+| 更新检查(ModUpdater) | **✅ 已实现并接线**(`Mod.OnModInitialized` 末尾调用):GitHub Releases API → 仓库根 `version.txt` 兜底;15s 总看门狗 + 10s 单请求超时;三按钮弹窗(Download / Later / 不再提醒) | [update-reminder-port-2026-09-10.md](update-reminder-port-2026-09-10.md) |
+| 多 craft 同步 | 📋 **方案研究,代码零实现**:仍是**每玩家一船**、`_remoteCrafts` 按 `int playerId` 索引、**无任何 `Guid`**、状态包无船标识、无残骸路径 | [multi-craft-sync-2026-08-16.md](multi-craft-sync-2026-08-16.md) §〇 |
 
-**当前待定(尚未拍板/未调研)**:A1 方案选型(推荐 A+B 混合,待正式决策)、A2 里程碑顺序、A3 残骸同步策略、A4 观察他人第二艘船(部件开关方案 B 已于 2026-08-18 拍板,见上表;但"观察他人控制"本身待定);B1 跨机身份(Guid+InitialCraftNodeIds 溯源)、B2 对账参数、B3 轨道残骸 spawn 可行性、B4 未加载节点采样、B5 MapView 多船回归、B6 时钟对齐;D 类已决策项的实现暂缓。**Steam 大厅系统移植(房间列表替代手动 SteamId)**:分析已定稿([`steam-lobby-2026-09-12.md`](steam-lobby-2026-09-12.md)),**待拍板**——旧决策「Lobby 邀请:不做」暂不翻案;若拍板落地按该文档 §4 执行。**游戏 1.4.2(Experimental)相关待定**(详见 [update-1.4.2-experimental-2026-09-03.md](update-1.4.2-experimental-2026-09-03.md)):P1-1 参考系重居中叠加(PreSimulation+pendingRecenterDelta vs mod 帧补偿,双重平移风险)、P1-2 GroundedSurface×`SetPose` 接地放置、P1-3 游戏版本检查/实验版开关、P1-4 1.4.2 调试设施接入(GameLoopTypeProfiler/SetFlatDecorationCulling)——均待 1.4.2 实验版双端实测后拍板。
+**当前待定(尚未拍板/未调研)**:A1 方案选型(推荐 A+B 混合,待正式决策)、A2 里程碑顺序、A3 残骸同步策略、A4 观察他人第二艘船(部件开关方案 B 已于 2026-08-18 拍板,见上表;但"观察他人控制"本身待定);B1 跨机身份(Guid+InitialCraftNodeIds 溯源)、B2 对账参数、B3 轨道残骸 spawn 可行性、B4 未加载节点采样、B5 MapView 多船回归、B6 时钟对齐;D 类已决策项的实现暂缓。**Steam 大厅系统移植(房间列表替代手动 SteamId)**:分析已定稿([`steam-lobby-2026-09-12.md`](steam-lobby-2026-09-12.md)),**待拍板**——旧决策「Lobby 邀请:不做」暂不翻案;若拍板落地按该文档 §4 执行。**游戏 1.4.2(Experimental)相关待定**(详见 [update-1.4.2-experimental-2026-09-03.md](update-1.4.2-experimental-2026-09-03.md)):P1-1 参考系重居中叠加(PreSimulation+pendingRecenterDelta vs mod 帧补偿,双重平移风险)、P1-2 GroundedSurface×`SetPose` 接地放置、P1-3 游戏版本检查/实验版开关、P1-4 1.4.2 调试设施接入(GameLoopTypeProfiler/SetFlatDecorationCulling)——均待 1.4.2 实验版双端实测后拍板。**部件同步剩余项**:降落伞专用视觉驱动(P2)、`ExtensionPercent` 相位对齐(P1)、`Stage` 应用(目前只采样不应用)。
+
+---
+
+## 三之二、当前代码里的已知问题(2026-09 复核,尚未修)
+
+> 这一节记录**已核实、但还没动手修**的问题,供下次开工直接取用。
+
+| # | 问题 | 证据 | 影响 |
+|---|---|---|---|
+| 1 | **mod 版本号自相矛盾**:本地 `ModData.asset` 是 **1.4**,发布用 `version.txt` 是 **1.5** | `Assets/ModData.asset:35-36` vs `version.txt` | `ModUpdater` 判定 `1.5 > 1.4` ⇒ **每次启动都弹"有新版本"**,只能"不再提醒"消掉 |
+| 2 | **UI 图标资源路径不一致**:代码请求 `MultiPlayer/Sprites/UIIcon`,资源库前缀仍是 `aMptest/` | `MultiPlayerUI.cs:71` vs `Content/XML UI/UIResourceDatabase.asset:15,21` | NavPanel 联机按钮图标可能取不到(改名遗留) |
+| 3 | **日志前缀不统一**:`Log`/`LogError` 已改 `[MultiPlayer]`,但 `LogLobby`/`LogUpdate` 仍是 `[Mptest]` | `ModUtils.cs:21,30` vs `:39,49` | 仅可读性;按前缀过滤日志会漏 |
+| 4 | **`FlightEnded` 订阅在空值护栏之外** | `MultiPlayerUI.cs:630`(护栏在 `:625-629`) | `OnSceneLoaded` 仍可能抛异常并**打断 `SceneLoaded` 事件链**,使链上其它 mod(如 Volken)的场景回调不执行 |
+| 5 | **TickRate 默认值自相矛盾**:`TickRate = 30` 但 `SendIntervalMs = 50f`(20Hz) | `MpNetworkManager.cs:49` vs `:45`;`SetTickRate` 同值早退 `:558` | 未调用 `SetTickRate` 前,上报频率与实际发包间隔不一致;UI 滑块初始值也对不上 |
+| 6 | **插值时代死代码未清**:`TryGetInterpolatedState`、`RenderDelayMs`、`UnderrunFrames`、`SnapFrames`、`ClearBuffer`、`ReuseInterpBody*` | `MpNetworkManager.cs:1783/47/1086/1087/1176/1106` | `snap=`/`interpPct=`/`posErr=` 成为结构性常量,排查时会误导;`RenderDelayMs` 仍被赋值打印 |
+| 7 | **暂停同步仍是关掉的** | `MpNetworkManager.cs:901-908` 整个 `OnPause` 注释掉 | `Pause` 消息类型仍在协议里分发但无效果 |
+| 8 | **NetSim 无法包 Steam**;`NetSimDuplicate` 无 UI | `LagSimTransport.cs:63-65`;`MultiPlayerUI.cs:175-212` | 延迟模拟只能配合 TCP;重复包只能走控制台 |
+| 9 | **`LiteNetLibTransport` 是死代码**(未实现 `IMpTransport`) | `LiteNetLibTransport.cs:25` | 备用传输实际不可选 |
 
 ---
 
@@ -70,5 +90,4 @@
 1. 新增/修改 plan:在文档头写清「状态:规划中 / 已落地 / 已归档」;
 2. 完成一个主题后移到 `archive/`,并同步更新本索引;
 3. 有明确结论时直接写进对应 plan(加「【决策:…】」标记),并汇总到上表。
-
-(End of file - total 70 lines)
+4. **不要用会产生 `U+FFFD` 或加 BOM 的工具改这些文档**(历史事故:整批文档被有损转码毁掉约 10~16% 汉字);改完请确认无 `U+FFFD`、行尾 LF。

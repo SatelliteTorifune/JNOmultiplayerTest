@@ -19,7 +19,7 @@ Mod Loaded: Volken, Version 0.51 - 8/26/2026 5:18:11 PM
 Loaded Scene on Flight-True Subscribed-False and Quality-Ultra
 OnSceneLoaded更新Drood数量
 OnSceneLoaded执行doShit
-[Mptest][Lobby] MP.OnFlightSceneLoaded: cleared stale remote crafts (count=0)
+[MultiPlayer][Lobby] MP.OnFlightSceneLoaded: cleared stale remote crafts (count=0)
 NullReferenceException: Object reference not set to an instance of an object
   at Assets.Scripts.MultiPlayerUI.OnSceneLoaded (System.Object Sender, ModApi.Scenes.Events.SceneEventArgs e) [0x00016]
   at (wrapper delegate-invoke) System.EventHandler`1[ModApi.Scenes.Events.SceneEventArgs].invoke_void_object_TEventArgs(object,ModApi.Scenes.Events.SceneEventArgs)

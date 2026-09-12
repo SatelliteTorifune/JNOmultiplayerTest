@@ -92,7 +92,7 @@ ApplyRemoteState + 登记 RemoteCraft + 幻影模式(现有逻辑原样)
 
 ## 实现记录(2025,本次落地)
 
-- ✅ 第 1~5 项全部落地,`aMptest.csproj` MSBuild 编译 exit 0,EN/ZH 语言文件 XML+UTF-8 校验通过。
+- ✅ 第 1~5 项全部落地,`MultiPlayer.csproj` MSBuild 编译 exit 0,EN/ZH 语言文件 XML+UTF-8 校验通过。
 - `MpCraftPreloader.cs`:静态协程 `PreloadCraftPrefabs(craftData, onProgress, isCancelled)` + `MpCraftLoadingIndicator`(billboard 旋转白框 + TextMesh,文案取 `MultiPlayer.MultiPlayerUI.LoadingCraft` + `N%`)。
 - `MpNetworkManager.cs`:
   - `SpawnRemoteCraftCoroutine` 改为预加载链路(2 帧 → 解析 XML/构建 CraftData → 建进度框 → 逐帧预加载报真实 % → SpawnCraft → 销毁进度框);`SpawnRemoteCraftAtPosition` 接收预构建的 craftData/location/xml。

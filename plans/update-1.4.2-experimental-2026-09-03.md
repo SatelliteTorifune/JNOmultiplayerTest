@@ -1,9 +1,31 @@
 # 游戏 1.4.2(Experimental 分支)兼容适配方案
 
-> 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod aMptest)
-> 状态:**规划中**(P0 兼容修复已确定要做,待执行;行为适配因实验版未定,需双端实测后拍板)
+> 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod MultiPlayer)
+> 状态:**规划中 — P0 三项均未执行**(2026-09 代码复核确认:程序集未刷新、`GetComponentsInCraft`/`SetPose` 未采用、无版本检查;详见「〇之二、执行状态核对」)
 > 触发:devb 发布 **1.4.2 Experimental 分支**(版本 1.4.200;当前游戏为 1.4.102),反编译对比已完成(新反编译目录 `C:\renko\shitProgram\jnoCode1.4.2`)
 > 关联:本文档是「版本兼容」专项,不改动既有 plan 的机制;但 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)、[`part-switch-sync-2026-08-18.md`](part-switch-sync-2026-08-18.md)、[`latency-smoothing-2026-08-22.md`](latency-smoothing-2026-08-22.md)、[`vizzy-isolation-2026-08-22.md`](vizzy-isolation-2026-08-22.md) 的既有功能都需在本版上回归
+
+---
+
+## 〇之二、执行状态核对(2026-09 代码复核,重要)
+
+> 结论:**P0 三项都没有执行**,当前代码与 1.4.102 时期的程序集/API 形态一致。以下是逐项证据(全部为仓库现状实测)。
+
+| 项 | 计划要求 | 现状 | 证据 |
+|---|---|---|---|
+| **P0-1 刷新参考程序集并重编译** | 用 1.4.2 的 `SimpleRockets2.dll` / `ModApi.dll` 替换后重编译 | ❌ **未做** | `Assets/ModTools/Assemblies/**` 与 `Assemblies/EditorAssemblies/**` 全部仍是 **2026-07-28 03:13** 时间戳(早于本文档 09-03 与"准备 1.4.2 对应更新"提交 09-12) |
+| **P0-2 `GetComponentsInChildren` → `GetComponentsInCraft`** | 迁移到 1.4.2 新 API | ❌ **未做** | `GetComponentsInCraft` 全仓库 **0 命中**;`GetComponentsInChildren` 仍在用:`CraftUtils.cs:78`(ParticleSystem)、:119/:123/:127、`MpNetworkManager.cs:1354`(EnforceRemoteCraftVisuals)、:1260/:1758(诊断计数)、`EngineVisualSync.cs:231` |
+| **P0-3 `RecenterTransformOnCoM` 签名适配** | 旧二进制 1 参调用 → 新 DLL 无此重载 ⇒ `MissingMethodException` | ⚠️ **源码未改**(仍 1 参),但因**程序集也还没换**,目前不会有异常 | `CraftUtils.cs:41` `RecenterTransformOnCoM(true)`,全仓库仅此 1 处调用 |
+| P1-1 参考系重居中叠加防护 | 防双重平移 | ❌ 未做 | 帧补偿路径 `CraftUtils.RecalculateFrameState` 仍是老节奏,无防重入 |
+| P1-2 `GroundedSurface` × `SetPose` 接地放置 | 适配 1.4.2 的 `SetPose` | ❌ 未做 | `SetPose` 全仓库 **0 命中**;接地仍走 `SetStateVectors` + **反射写** `GroundedSurfacePosition/Velocity/Rotation`(`MpNetworkManager.cs:2112-2117` 缓存 PropertyInfo、:2131-2149 写入)——1.4.2 若改名会**静默失效**(不会抛异常,只是接地行为退化) |
+| P1-3 游戏版本检查 / 实验版开关 | 版本门 + 开关 | ❌ 未做 | 全仓库 **0 命中** `GameVersion` / `experimental` / `1.4.2` / `Application.version`;握手消息亦无版本字段(`MpMessage.EncodePlayerJoin` 只有 playerId/nodeId/name/craftXmlHash) |
+| P1-4 1.4.2 调试设施接入 | `GameLoopTypeProfiler` / `FlatDecorationCulling` | ❌ 未做 | 代码无引用 |
+
+**顺带记录的两个当前真实风险(与 1.4.2 无关,但复核时发现)**:
+1. **mod 版本号自相矛盾**:`Assets/ModData.asset` 的 `_versionMajor/_versionMinor` = **1.4**,而仓库根 `version.txt` = **1.5**。`ModUpdater` 用 `ModInfo.Version`(即 1.4)与 `version.txt`(1.5)比较 ⇒ **每次启动都会弹"有新版本"**,只能靠"不再提醒"消掉。(版本策略待统一,不在本文档范围)
+2. **UI 起始引导图标路径不一致**:`MultiPlayerUI.cs:71` 请求 `MultiPlayer/Sprites/UIIcon`,但 `Assets/Content/XML UI/UIResourceDatabase.asset` 的 `PathPrefix` 仍是 `aMptest/`(条目 `aMptest/Sprites/UIIcon`)。资源库路径前缀需随改名同步,否则图标取不到。
+
+**执行顺序建议(不变)**:先做 P0-1(换程序集 + 重编译,这一步会把潜在的 P0-3 暴露成编译期提示)→ 再 P0-2(用 1.4.2 的 `GetComponentsInCraft` 或直接遍历 `craft.Data.Assembly.Bodies`)→ 双端实测 P0-2/P1-1/P1-2 → 再决定 P1-3/P1-4。
 
 ---
 
