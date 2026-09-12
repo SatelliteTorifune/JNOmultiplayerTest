@@ -1,6 +1,6 @@
 # 游戏 1.4.2(Experimental 分支)兼容适配方案
 
-> 项目:JNOmultiplayerTest(SimpleRockets 2 / JNO 联机 mod aMptest)
+> 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod aMptest)
 > 状态:**规划中**(P0 兼容修复已确定要做,待执行;行为适配因实验版未定,需双端实测后拍板)
 > 触发:devb 发布 **1.4.2 Experimental 分支**(版本 1.4.200;当前游戏为 1.4.102),反编译对比已完成(新反编译目录 `C:\renko\shitProgram\jnoCode1.4.2`)
 > 关联:本文档是「版本兼容」专项,不改动既有 plan 的机制;但 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)、[`part-switch-sync-2026-08-18.md`](part-switch-sync-2026-08-18.md)、[`latency-smoothing-2026-08-22.md`](latency-smoothing-2026-08-22.md)、[`vizzy-isolation-2026-08-22.md`](vizzy-isolation-2026-08-22.md) 的既有功能都需在本版上回归

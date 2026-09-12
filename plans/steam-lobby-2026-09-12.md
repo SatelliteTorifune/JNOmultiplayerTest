@@ -1,6 +1,6 @@
 # Steam 大厅系统移植分析(房间列表替代手动 SteamId)
 
-> 项目:JNOmultiplayerTest(SimpleRockets 2 / JNO 联机 mod aMptest)
+> 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod aMptest)
 > 创建日期:2026-09-12
 > 状态:**📋 待定(分析定稿,尚未拍板;旧决策「Lobby 邀请:不做」暂不翻案)**
 > 动机:当前加入房间必须手动输入房主 SteamId(见 [`MultiPlayerUI.cs:522`](../Assets/Scripts/MultiPlayerUI.cs:522) `OnSteamJoinLobbyClick`),目标是把 SP2 的"房间列表菜单"移植过来,实现"开房可见、点列表加入"。

@@ -1,4 +1,4 @@
-# Volken 冲突排查:JNOmultiplayerTest 的 NRE 中断 SceneLoaded 事件链
+# Volken 冲突排查:JNOMultiPlayer 的 NRE 中断 SceneLoaded 事件链
 
 > 日期:2026-08-27
 > 现象:Volken 云完全看不到;**「使用游戏自带云分布」开关无法开启**(提示"该星球没有自带云数据")。此组合此前出现过一次,本次定位到根因。
@@ -7,7 +7,7 @@
 
 - 进入飞行场景(Droo)后,**云完全不可见**(程序化云也不显示)。
 - UI 里 **「使用游戏自带云分布」Toggle 无法打开** → 代码里 `VolkenUserInterface.cs` 在 `StockCloudMap.Current == null` 时拒绝开启并提示 "该星球没有自带云数据"。
-- 两个症状同源(见 §3),且与 **JNOmultiplayerTest 联机 mod 同装**时出现。
+- 两个症状同源(见 §3),且与 **JNOMultiPlayer 联机 mod 同装**时出现。
 
 ## 2. 日志证据
 
@@ -31,7 +31,7 @@ NullReferenceException: Object reference not set to an instance of an object
 
 ## 3. 根因(冲突链)
 
-`JNOmultiplayerTest/Assets/Scripts/MultiPlayerUI.cs`:
+`JNOMultiPlayer/Assets/Scripts/MultiPlayerUI.cs`:
 
 ```csharp
 private void Awake()
@@ -67,7 +67,7 @@ private void OnSceneLoaded(object Sender, SceneEventArgs e)
 
 ### 4.1 JNO 侧(根因,建议修复)`MultiPlayerUI.OnSceneLoaded` 加 null 保护
 
-文件:`C:\renko\unityProjects\JNOmultiplayerTest\Assets\Scripts\MultiPlayerUI.cs`(L618-626)
+文件:`C:\renko\unityProjects\JNOMultiPlayer\Assets\Scripts\MultiPlayerUI.cs`(L618-626)
 
 ```csharp
 private void OnSceneLoaded(object Sender, SceneEventArgs e)

@@ -1,6 +1,6 @@
 # 联机 Mod 设计文档索引(plans/)
 
-> 项目:JNOmultiplayerTest(SimpleRockets 2 / JNO 联机 mod aMptest)
+> 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod aMptest)
 > **新会话先读:[`AGENT_CONTEXT.md`](AGENT_CONTEXT.md)**(项目路径 / 反编译源码 / ModApi / 已定技术事实 / 开发约定,可直接作为提示词)。
 > 说明:本文档是 `plans/` 的导航页。**当前活跃文档:`multi-craft-sync-2026-08-16.md`(多 craft)、`body-sync-2026-08-18.md`(body 级姿态同步)、`part-switch-sync-2026-08-18.md`(部件开关/控制输入)、`latency-smoothing-2026-08-22.md`(远程船高延迟平滑)、`vizzy-isolation-2026-08-22.md`(Vizzy 隔离)、`update-1.4.2-experimental-2026-09-03.md`(1.4.2 Experimental 兼容适配)、`update-reminder-port-2026-09-10.md`(Volken ModUpdater 移植分析)**，其余已完成/历史文档已移入 [`archive/`](archive/)。
 > 约定:新 plan 建议单一主题一个文件,写清「状态 + 决策记录」,完成后移入 `archive/` 并在此更新索引。

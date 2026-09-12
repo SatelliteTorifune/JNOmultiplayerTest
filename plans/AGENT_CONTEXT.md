@@ -13,7 +13,7 @@
 
 | 用途 | 路径 |
 |---|---|
-| 工程目录 | `C:\renko\unityProjects\JNOmultiplayerTest` |
+| 工程目录 | `C:\renko\unityProjects\JNOMultiPlayer` |
 | Mod 源码 | `Assets/Scripts/`(命名空间 `Assets.Scripts.*`) |
 | **反编译游戏源码** | `C:\renko\shitProgram\jnoCode\SimpleRockets2\Assets\Scripts\`(即 `SimpleRockets2.sln`,只读参考) |
 | **ModApi 源码** | `C:\renko\shitProgram\jnoCode\ModApi\`(即 `ModApi.sln`,只读参考) |

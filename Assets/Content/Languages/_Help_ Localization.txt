@@ -1,0 +1,14 @@
+Localization files added to this folder let your mod add new in-game text or override existing text for one or more languages.
+
+Name each file after the language it targets, using the same language codes as the game (for example: EN-US.xml, ES-ES.xml, ZH-CN.xml). EN-US is the fallback that every other language falls back to, so it is a good place to start.
+
+Each file uses the same format as the game's Strings.xml -- a root <Strings> element with one <s> entry per string, each with a unique 'id':
+
+    <Strings>
+        <s id="MyMod.Greeting">Hello!</s>
+        <s id="MyMod.Farewell">Goodbye!</s>
+    </Strings>
+
+Look strings up in code with Locale.GetString("MyMod.Greeting"). Prefix your ids with your mod's name so they do not clash with other mods or the base game; to override an existing game string, use its exact id instead.
+
+Any .xml file in this folder is included in your mod automatically -- you do not need to add it in the Mod Builder Window. When your mod loads, the game installs each file into the user's Languages/<LANGUAGE> folder as Strings_<YourModName>.xml, merged on top of that language. Your mod's files are refreshed every time it loads, so updating a language (or removing one) takes effect the next time the mod loads.

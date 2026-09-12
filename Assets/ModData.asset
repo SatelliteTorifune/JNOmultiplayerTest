@@ -13,22 +13,12 @@ MonoBehaviour:
   m_Name: ModData
   m_EditorClassIdentifier: 
   _assemblies:
-  - FishNet.CodeAnalysis.dll
-  - GameKit.Dependencies.dll
-  - FishNet.Runtime.dll
-  - SynapseSocket.dll
-  - aMptest.dll
-  - FishNet.Demos.dll
-  _author: Torifune
-  _description: "<color=red><size=200%>need JUNO harmony</size></color>\n\u6CA1\u88C5<color=red><size=200%>JUNO
-    harmony</size></color>\u5148\u6B7B\u4E00\u4E07\u4E2A\u5988\nGo KYR if you're
-    trying to continue without <color=red><size=200%>JUNO harmony</size></color>\n"
-  _loadPriority: 10009
-  _name: aMptest
-  _otherAssets:
-  - {fileID: 4900000, guid: efbbf06d6929ef54dab43f206a10b1dc, type: 3}
-  - {fileID: 2800000, guid: 030fdaffc93ddcf4698140ab2bde8c65, type: 3}
-  - {fileID: 4900000, guid: 291dd56b19869fe4aa838fa0a39c03cb, type: 3}
+  - MultiPlayer.dll
+  _author: SatelliteTorifune
+  _description: 
+  _loadPriority: 1000
+  _name: MultiPlayer
+  _otherAssets: []
   _prefabs: []
   _steamDescription: 
   _steamLanguage: English
@@ -43,5 +33,4 @@ MonoBehaviour:
   _partStyleExtensions: []
   _partTextureStyles: []
   _persistentObjects: []
-  _uiResourceDatabases:
-  - {fileID: 11400000, guid: f7d862c4ba189be47a14b51559d3fa7a, type: 2}
+  _uiResourceDatabases: []

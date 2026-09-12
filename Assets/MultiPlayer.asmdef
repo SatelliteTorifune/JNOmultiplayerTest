@@ -1,5 +1,5 @@
 {
-	"name": "aMptest",
+	"name": "MultiPlayer",
 	"references": [
 		"UnityEngine.UI",
 		"Unity.TextMeshPro",
