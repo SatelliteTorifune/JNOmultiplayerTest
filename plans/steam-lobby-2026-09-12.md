@@ -2,7 +2,7 @@
 
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod MultiPlayer)
 > 创建日期:2026-09-12
-> 状态:**📋 待定(分析定稿,尚未拍板;旧决策「Lobby 邀请:不做」暂不翻案)**
+> 状态:**✅ 已落地(2026-09-12 拍板执行;旧决策「Lobby 邀请:不做」翻案,实现见 §4)**
 > 动机:当前加入房间必须手动输入房主 SteamId(见 [`MultiPlayerUI.cs:522`](../Assets/Scripts/MultiPlayerUI.cs:522) `OnSteamJoinLobbyClick`),目标是把 SP2 的"房间列表菜单"移植过来,实现"开房可见、点列表加入"。
 
 ---
@@ -29,7 +29,7 @@
 | 游戏自带 `com.rlabrecque.steamworks.net.dll`(399KB,`SimpleRockets2_Data/Managed/`) | ✅ 反射加载成功 |
 | `SteamMatchmaking` 全套 API | ✅ `CreateLobby / JoinLobby / LeaveLobby / RequestLobbyList / GetLobbyByIndex / SetLobbyData / GetLobbyData / GetLobbyOwner / GetNumLobbyMembers / GetLobbyMemberLimit / AddRequestLobbyListStringFilter / NumericalFilter / DistanceFilter / ResultCountFilter / InviteUserToLobby` |
 | 大厅回调类型 | ✅ `LobbyCreated_t / LobbyMatchList_t / LobbyEnter_t / LobbyDataUpdate_t / GameLobbyJoinRequested_t` + `Callback<T>`(与 `SteamTransport` 现有 `_connStatusCallback` 同机制) |
-| 回调泵 | ✅ 游戏每帧 `SteamAPI.RunCallbacks()`(Steam 游戏标配,P2P 回调已证明);大厅回调同泵分发,保险可再在 Update 补一次 |
+| 回调泵 | ⚠️ **2026-09-13 实测推翻原假设**:游戏**没有**初始化 Steamworks.NET 托管 `CallbackDispatcher`(`SteamAPI.Init()` 从未被托管侧调用;游戏用自有 Steam 互操作做 native 初始化)。浏览器 `Update` 每帧调 `SteamAPI.RunCallbacks()` 抛 "Callback dispatcher is not initialized." → **一个会话刷 6645 条日志**。已修:反射调 `CallbackDispatcher.Initialize()`(internal static,幂等)补上托管 dispatcher,再泵 `RunCallbacks()`;初始化失败则放弃泵(大厅回调靠游戏 native 泵分发)并只警告一次 |
 | AppID 一致 | ✅ 全部 870200,大厅列表只返回同 AppID 房 |
 | 双账号公网测试路径 | ✅ 已实测可行(archive steam §Step4) |
 
@@ -52,25 +52,24 @@
 
 ---
 
-## 四、最小改动方案
+## 四、最小改动方案(✅ 已按此落地)
 
-### 4.1 新增:`Assets/Scripts/Net/SteamLobbyBrowser.cs`(或 `Lobbies/SteamLobbyManager.cs`,照 SP2 抄)
+### 4.1 新增:`Assets/Scripts/Net/SteamLobbyBrowser.cs`(✅ 已实现,~370 行)
 
-- **开房**:`CreateLobby(Public, maxPlayers)` → `LobbyCreated_t` 成功后 `SetLobbyData`(房间名 / 描述 / mod 版本 Major.Minor.Build / 房主 SteamId)→ 调现有 `LobbyManager.HostLobby(0)` 起 P2P 监听;
-- **列表**:`RequestLobbyList()` + 版本数值过滤 + `DistanceFilter`(Regional/Worldwide)→ `LobbyMatchList_t` → 组 `LobbyData` 列表 → 触发事件给 UI;
-- **加入**:`JoinLobby(lobbyId)` → `LobbyEnter_t` 成功 → `GetLobbyOwner` → **复用现有 `SteamTransport.StartClient(ownerSteamId, 0, hello)`**(`SteamTransport.cs:105`),传输/握手/状态同步零改动。
+- **开房**:`CreateLobby(Public, maxPlayers)` → `LobbyCreated_t` 成功后 `SetLobbyData`(房间名 `mp_name` / 描述 / mod 版本 `mp_ver_major|minor|build` / 房主 SteamId `mp_owner`)→ 调现有 `LobbyManager.HostLobby(0)` 起 P2P 监听;
+- **列表**:`RequestLobbyList()` + 版本数值过滤(全等)+ `DistanceFilter`(默认 Regional,`SteamLobbyListWorld` 切 WorldWide)→ `LobbyMatchList_t` → `GetLobbyByIndex` 循环组 `LobbyInfo` 列表 → 事件抛给 UI(过滤掉自己的房间);
+- **加入**:`JoinLobby(lobbyId)` → `LobbyEnter_t` 成功 → `GetLobbyOwner`(兜底读 `mp_owner`)→ **复用现有 `LobbyManager.JoinLobby(ownerSteamId, 0)`**(内部 `SteamTransport.StartClient(hostSteamId, 0, hello)`,`SteamTransport.cs:105`),传输/握手/状态同步零改动;
+- **邀请**:`SteamFriends.ActivateGameOverlayInviteDialog` + `GameLobbyJoinRequested_t` 自动加入(顺手支持);
+- **回调泵**:游戏**不**保证托管 `RunCallbacks()` 可用(实测托管 CallbackDispatcher 未初始化,直接调每帧抛异常刷屏)→ `Update` 先反射确保 `CallbackDispatcher.Initialize()`(internal static)已调用,成功才泵 `SteamAPI.RunCallbacks()`;初始化失败只警告一次并放弃泵,依赖游戏 native 泵分发大厅回调(传输回调 `SteamNetworkingSockets.RunCallbacks()` 走独立通道不受影响);回调引用字段持有防 GC 退订(§六-1)。
 
-### 4.2 UI 改造:`Assets/Scripts/MultiPlayerUI.cs`
+### 4.2 UI 改造:`Assets/Scripts/MultiPlayerUI.cs`(✅ 已实现,采用方案 3 MVP)
 
-把 `OnSteamJoinLobbyClick` 的输入框换成房间列表,ModApi 现成抓手(比 SP2 的 XML 控件好做):
+采用 **方案 3(最省事 MVP)**:仿照现有玩家列表动态 `GroupModel` 重建(`RebuildPlayersIfChanged` 同款),在 inspector 面板新增 **"Steam 房间列表"** 分组——刷新按钮 + 邀请按钮(仅房主可见)+ 状态行 + 每房间一个按钮("房间名 (n/max) v版本"→ 点击即加入),不引入新窗口框架。`OnSteamHostLobbyClick` 改为输入房间名后走大厅开房;`OnSteamJoinLobbyClick` 改为触发列表刷新。手动输入 SteamId 路径保留于控制台 `SteamJoinLobby <id>`。
 
-1. `IUserInterface.CreateListView(IListViewModel, IListViewObjectViewer)`(`ModApi/Ui/IUserInterface.cs:133`),或
-2. `CreateDialog<T>(xmlResourcePath)` + 程序化 XElement(项目已用同套路:`MultiPlayerUI.Start` 的 `AddBuildUserInterfaceXmlAction` 注入 XML),或
-3. **最省事 MVP**:仿照现有玩家列表动态 `GroupModel` 重建(`MultiPlayerUI.RebuildPlayersIfChanged` 同款),把房间做成一组按钮——"房间名 (3/10) · 100ms"→ 点击即加入,不引入新窗口框架。
+### 4.3 决策文档(✅ 已同步)
 
-### 4.3 决策文档
-
-若拍板落地:更新 [`README.md`](README.md) 决策速查表 "Lobby 邀请 | 不做" 一行 + 修订 archive 文档。**当前待定,不做此步。**
+- [`README.md`](README.md) 决策速查表 "Lobby 邀请 | 不做" 一行已修订为 "Steam 房间列表 | ✅ 已实现";
+- [`archive/steam-integration-2026-08-13.md`](archive/steam-integration-2026-08-13.md) §0/Step3 的「Lobby 邀请:不做」已修订为「2026-09-12 翻案落地」。
 
 ---
 
@@ -103,3 +102,4 @@
 ## 八、决策记录
 
 - 2026-09-12:分析定稿,状态 **📋 待定**。旧决策「Lobby 邀请:不做,维持手动输入房主 SteamId」**暂不翻案**;拍板落地时按 §4 执行并同步 README 决策表。
+- 2026-09-12(当日拍板):**✅ 翻案落地**——新增 `Assets/Scripts/Net/SteamLobbyBrowser.cs`(CreateLobby/RequestLobbyList 版本过滤/JoinLobby→GetLobbyOwner→复用 `SteamTransport`)+ `MultiPlayerUI` "Steam 房间列表" 分组(方案 3 MVP,动态 GroupModel)+ `Mod.cs` 控制台命令(`SteamLobbyList`/`SteamLobbyListWorld`/`SteamLobbyCreate`/`SteamLobbyJoin`/`SteamLobbyLeave`)+ `StopLobby` 退厅;README 决策表与 archive 文档已同步修订。手动输入 SteamId 路径保留于控制台 `SteamJoinLobby <hostSteamId>`。**待双 Steam 账号公网实测**(开 Public 房 → 另一台刷列表 + 点加入)。

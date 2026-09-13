@@ -55,12 +55,28 @@ namespace Assets.Scripts.Net
 		/// <summary>客户端未收到房主 CraftDataAck 时，CraftData 重发间隔（秒）。</summary>
 		private const float CraftResendIntervalSec = 1.5f;
 
+		/// <summary>
+		/// 本机游戏暂停时的状态包发送间隔下限（ms，≈8Hz）。暂停中位置/速度都不变，
+		/// 只需让对端知道"我还活着且处于暂停"，无需全速上报；恢复后立即回到 <see cref="SendIntervalMs"/>。
+		/// </summary>
+		private const float PausedSendIntervalMs = 125f;
+
+		/// <summary>
+		/// 远程船"冻结/解冻"时外推量过渡时长(秒)。冻结瞬间把外推量收敛到固定单向延迟(0.15s 内),
+		/// 解冻瞬间再放回"延迟+包龄",避免状态切换本身造成位置跳变(抽搐)。
+		/// </summary>
+		private const float RemoteFreezeBlendSec = 0.15f;
+
 		private readonly Dictionary<int, MpPeer> _playersByPlayerId = new Dictionary<int, MpPeer>();
 		private readonly Dictionary<int, RemoteCraft> _remoteCrafts = new Dictionary<int, RemoteCraft>();
 		private readonly HashSet<int> _spawnMissLogged = new HashSet<int>();
 		private readonly Dictionary<int, float> _spawnAttemptTime = new Dictionary<int, float>(); // 生成尝试节流
 		private float _sendTimer;
 		private float _keepAliveTimer;
+		// --- 抽搐诊断(发送端):每包 body[0] 相对 comRot 采样位置抖动(静止时>0.01m → 发送端数据本身在抖) ---
+		private Vector3? _diagBody0Rel;
+		private float rcDiagBody0RelDelta;
+		private float _diagBody0RelLogTime;
 		private float _craftResendTimer; // 客户端重发 CraftData 节流计时
 		private float _hostCraftResendTimer; // 房主重发 host craft（PlayerJoin）节流计时
 		private bool _craftReported;      // 本机飞船已上报且被房主确认（客户端收到 CraftDataAck 才置 true）
@@ -461,7 +477,39 @@ namespace Assets.Scripts.Net
 			{
 				rc.Node.CraftScript.CenterOfMass.rotation = headingFrame;
 			}
-			ApplyRemoteBodyPoses(rc, data, rc.Node.CraftScript.CenterOfMass);
+			// 抽搐诊断(LateUpdate 路径):记录 LateUpdate 冻结的 comRot 位置(与 Update 路径冻结值对比,
+			// 若 DiagComLinkM>0 说明写 body 连带移动 comRot,Update 与 LateUpdate 两次写入基准不同 → 帧内抖动)。
+			// 同时记录 body[0] 在 LateUpdate 重写前后的位置差(DiagBody0DeltaLateM = 双写不一致幅度)。
+			Vector3 b0LateBefore = Vector3.zero;
+			bool hasB0 = false;
+			try
+			{
+				IReadOnlyList<BodyData> lb = rc.Node.CraftScript.Data.Assembly.Bodies;
+				if (lb != null && lb.Count > 0 && lb[0].BodyScript != null && lb[0].BodyScript.Transform != null)
+				{
+					b0LateBefore = lb[0].BodyScript.Transform.position;
+					hasB0 = true;
+				}
+			}
+			catch { }
+			if (rc.Node.CraftScript.CenterOfMass != null) rc.DiagComPosLate = rc.Node.CraftScript.CenterOfMass.position;
+			// 用"逻辑 comRot 位姿"(状态包导出)作 body 摆放基准,不再读接收端实时 comRot:
+			// 实时 comRot 是根 body 内 ~3cm 偏移的后代,以它为基准每帧与游戏放置差固定 3cm → 抽搐(§〇之四)。
+			Vector3 logicalComPos; Quaternion logicalComRot;
+			TryGetLogicalComPose(rc, data, frame, out logicalComPos, out logicalComRot);
+			ApplyRemoteBodyPoses(rc, data, logicalComPos, logicalComRot);
+			if (hasB0)
+			{
+				Vector3 b0LateAfter = Vector3.zero;
+				try
+				{
+					IReadOnlyList<BodyData> lb = rc.Node.CraftScript.Data.Assembly.Bodies;
+					if (lb != null && lb.Count > 0 && lb[0].BodyScript != null && lb[0].BodyScript.Transform != null)
+						b0LateAfter = lb[0].BodyScript.Transform.position;
+				}
+				catch { }
+				rc.DiagBody0DeltaLateM = Vector3.Distance(b0LateAfter, b0LateBefore);
+			}
 		}
 
 		/// <summary>
@@ -470,8 +518,21 @@ namespace Assets.Scripts.Net
 		/// 子装配"整体移动"(摆动主要是位置变化,枢轴不在 comRot,旋转同步覆盖不了)。
 		/// 两列表(BodyRotations/BodyPositions)同长度同索引(发送端同循环采样),此处各自取 Mathf.Min 兜底。
 		/// 见 plans/body-sync.md。
+		/// 1.4.2 适配(BodyScript.MoveToCraft → SetParent(Game.InFlightScene ? null : craft, true)):
+		/// 飞行中 body 脱离 craft 层级(parent=null),localRotation 不再是"相对根"而是世界旋转。
+		/// 若仍写 localRotation=relCom(相对 comRot 的旋转),body 世界旋转会丢失 comRot 因子 → 整体转错。
+		/// 故改为显式写世界旋转 = comRot.rotation × relCom(comRot 缺省时退化为根旋转,兼容旧层级);
+		/// 1.4.102 下 comRot.rotation=根旋转=headingFrame,世界写与旧 localRotation 结果一致,双版本均正确。
+		/// 另:comRot 是 RootPart.Transform 的后代(:1562),循环内写 body 位置会连带移动 comRot,
+		/// 若每轮重读 comRot 会引入"上一 body 位移"的循环依赖漂移;故先冻结 comRot 位姿一次。
+		/// 2026-09 修复(§〇之四反馈环):基准不再读接收端 comRot 的**实时** Transform,而是用
+		/// <see cref="TryGetLogicalComPose"/> 从状态包直接导出的"逻辑 comRot 位姿"。
+		/// 原因:游戏接地放置(GroundedSurfacePosition)会把根 body 放到包内位置,而接收端 comRot
+		/// 是根 body 内偏移 ~3cm 的后代 —— 若以实时 comRot 为基准写 body[0],每帧与游戏放置
+		/// 差固定 ~3cm,往复摆动(实测 comLink≈b0dLate≈0.0299m,静止也如此 = 可见抽搐)。
+		/// 逻辑位姿与游戏放置基准一致 → 两次写入(Update/LateUpdate)与游戏三方一致,反馈环消失。
 		/// </summary>
-		private static void ApplyRemoteBodyPoses(RemoteCraft rc, Mod.RemoteDataPack data, Transform comRot)
+		private static void ApplyRemoteBodyPoses(RemoteCraft rc, Mod.RemoteDataPack data, Vector3 comRotPos, Quaternion comRotRot)
 		{
 			if (data.BodyRotations == null || data.BodyRotations.Count == 0) return;
 			IReadOnlyList<BodyData> bodies = rc.Node.CraftScript.Data.Assembly.Bodies;
@@ -481,13 +542,60 @@ namespace Assets.Scripts.Net
 			{
 				if (bodies[i].BodyScript != null && bodies[i].BodyScript.Transform != null)
 				{
-					bodies[i].BodyScript.Transform.localRotation = Quaternion.Euler(data.BodyRotations[i]);
-					if (comRot != null && data.BodyPositions != null && i < data.BodyPositions.Count)
+					Transform t = bodies[i].BodyScript.Transform;
+					// 世界旋转 = 逻辑 comRot 旋转 × (相对 comRot 的旋转 relCom),双版本均正确。
+					t.rotation = comRotRot * Quaternion.Euler(data.BodyRotations[i]);
+					if (data.BodyPositions != null && i < data.BodyPositions.Count)
 					{
-						bodies[i].BodyScript.Transform.position = comRot.TransformPoint(data.BodyPositions[i]);
+						if (i == 0)
+						{
+							// 根 body(body[0])按"comPos − G"写出,与游戏的 comRot 锚定一致:
+							// 游戏 RecalculateFrameState 每帧把 comRot 锚到 craft.Position(= 逻辑 comPos;
+							// CraftScript.FramePosition 的 getter 就是 CenterOfMass.position,CraftScript.cs:400)。
+							// body[0] 是 comRot 的父级 → 游戏会把 body[0] 放到 comPos − G
+							// (G = comRot 相对 body[0] 的几何偏移,每船不同:实测 P1=0.1271m、P0=0.0850m)。
+							// 若写 comPos,对抗 = |G|;若写 comPos+rot×rel0,对抗 = |W+G|(P1 恰 W=−G 时为 0)。
+							// 按 comPos − G 写出 → 与游戏锚定完全一致 → 零对抗,无每帧 8~13cm 往复。
+							Transform comRot = rc.Node.CraftScript.CenterOfMass;
+							Vector3 gVec = Vector3.zero;
+							if (comRot != null) gVec = comRot.position - t.position; // 写前读取当前几何
+							t.position = comRotPos - gVec;
+						}
+						else
+						{
+							// 逻辑位姿版 comRot.TransformPoint(relPos) = comRotPos + comRotRot × relPos(scale=1)。
+							t.position = comRotPos + comRotRot * data.BodyPositions[i];
+						}
 					}
 				}
 			}
+		}
+
+		/// <summary>
+		/// 由状态包直接导出"逻辑 comRot 位姿"(帧空间):位置 = 包内 Position(地表坐标)转帧空间,
+		/// 旋转 = 行星当前自转 × SrfRel 转帧空间(与 ApplyRemoteState/ForceRemoteHeading 的朝向公式一致)。
+		/// 不读取接收端 comRot 的实时 Transform —— 详见 <see cref="ApplyRemoteBodyPoses"/> 注释(反馈环修复)。
+		/// </summary>
+		private static bool TryGetLogicalComPose(RemoteCraft rc, Mod.RemoteDataPack data, IReferenceFrame frame,
+			out Vector3 logicalComPos, out Quaternion logicalComRot)
+		{
+			logicalComPos = Vector3.zero;
+			logicalComRot = Quaternion.identity;
+			if (rc.Node == null || rc.Node.Parent == null) return false;
+			IPlanetNode planet = rc.Node.Parent;
+			Vector3d planetPos = planet.SurfaceVectorToPlanetVector(data.Position);
+			if (frame != null)
+			{
+				logicalComRot = frame.PlanetToFrameRotation(planet.Rotation * data.SrfRel);
+				logicalComPos = frame.PlanetToFramePosition(planetPos);
+			}
+			else
+			{
+				// 帧未就绪回退:近似(帧角≈行星角时成立)
+				logicalComRot = Quaternion.AngleAxis((float)(planet.RotationAngle * Mathf.Rad2Deg), Vector3.up) * data.SrfRel.ToQuaternion();
+				logicalComPos = (Vector3)planetPos;
+			}
+			return true;
 		}
 
 		private void ProcessOutgoing()
@@ -495,8 +603,16 @@ namespace Assets.Scripts.Net
 			// 使用 unscaledDeltaTime：游戏暂停（Time.deltaTime==0）时状态包也照常发送，
 			// 避免暂停导致对端远程飞船冻结/失步（暂停相关问题的临时处理）。
 			_sendTimer += Time.unscaledDeltaTime * 1000f;
-			if (_sendTimer < SendIntervalMs) return;
-			_sendTimer = 0f;
+			// 暂停时位置/速度都不再变化,无需按全速上报;降到 ~8Hz 仍足以让对端确认"已暂停"
+			// 并维持平滑层(带宽/CPU 都省),恢复后立即回到正常速率。
+			bool localPaused = FlightSceneScript.Instance != null &&
+				FlightSceneScript.Instance.TimeManager != null &&
+				FlightSceneScript.Instance.TimeManager.Paused;
+			float sendIntervalMs = localPaused ? Mathf.Max(SendIntervalMs, PausedSendIntervalMs) : SendIntervalMs;
+			if (_sendTimer < sendIntervalMs) return;
+			// 携带余量而非清零:清零会把发送率钳制在渲染帧率(30fps 时只有 15Hz → 对端 gapEMA≈70ms,
+			// 高速机动时每包位置跳变更大、外推更易失准 → 顿挫)。减余量后任意 ≥20fps 都稳定发满 20Hz。
+			_sendTimer -= sendIntervalMs;
 
 			Mod.RemoteDataPack data;
 			if (!TrySampleLocalCraft(out data)) return;
@@ -509,6 +625,25 @@ namespace Assets.Scripts.Net
 			// 其内曾被加入过早 return，导致 ProcessOutgoing 每帧提前返回、状态包完全停发）
 			double time = FlightSceneScript.Instance.FlightState.Time;
 			byte[] packet = MpMessages.EncodeState(PlayerId, LocalNodeId, time, data);
+			// 抽搐诊断(发送端):每 1s 输出本机采样数据抖动。若静止时 body0RelΔ 持续>0.01m,
+			// 说明发送端数据本身在抖(comRot/body 微动),接收端平滑只能衰减无法消除。
+			if (Time.unscaledTime - _diagBody0RelLogTime > 1f)
+			{
+				_diagBody0RelLogTime = Time.unscaledTime;
+				// body0Rel = 包内 body[0] 相对 comRot 的偏移绝对值(接收端根 body 写 comPos,不叠加它;
+				// 该值即"游戏放置 vs 我们的写入"的对抗幅度,双端同版本时可直接核对)
+				double body0Rel = 0.0;
+				if (data.BodyPositions != null && data.BodyPositions.Count > 0)
+				{
+					body0Rel = data.BodyPositions[0].magnitude;
+				}
+				Mod.LogLobby("MP sendDiag P" + PlayerId +
+					": vel=" + data.Velocity.magnitude.ToString("F3") + "m/s" +
+					" paused=" + (data.Paused ? 1 : 0) +
+					" body0RelΔ=" + rcDiagBody0RelDelta.ToString("F4") + "m" +
+					" body0Rel=" + body0Rel.ToString("F4") + "m" +
+					" bodyCnt=" + (data.BodyPositions != null ? data.BodyPositions.Count : 0));
+			}
 			if (IsServer)
 			{
 				Transport.Broadcast(packet);
@@ -1093,6 +1228,14 @@ namespace Assets.Scripts.Net
 			public float NewestArrivalTime;  // 最新包到达时刻(Time.unscaledTime,连续外推用)
 			public double LastPosErrorM;     // 最近渲染位置(插值/外推) vs 最新包位置 的距离（米）
 			public float LastSmoothingLogTime; // 平滑诊断周期日志计时
+			public float LastSlowmoLogTime;    // 慢放诊断周期日志计时(接收端/发送端慢放时 0.5s 输出)
+			public bool DiagHasPrevSlowmo;     // 慢放诊断:是否有上一帧采样
+			public Vector3 DiagPrevRootPos;    // 慢放诊断:上一帧 craft 根 transform 位置
+			public Vector3 DiagPrevPartPos;    // 慢放诊断:上一帧首个部件世界位置
+			public Vector3 DiagPrevComPos;     // 慢放诊断:上一帧 comRot 位置
+			public float DiagMaxRootDelta;     // 慢放诊断:窗口内 craft 根最大单帧位移
+			public float DiagMaxPartDelta;     // 慢放诊断:窗口内首个部件最大单帧位移
+			public float DiagMaxComDelta;      // 慢放诊断:窗口内 comRot 最大单帧位移
 			private float _lastPushTime = -1f; // PushSample 上次到达时间（抖动 EMA 用）
 
 			// --- 平滑状态（P1：SP2 式指数平滑 + 近距快照 + 瞬移；首帧/body 数量变化时快照为 target） ---
@@ -1107,6 +1250,8 @@ namespace Assets.Scripts.Net
 			public readonly List<Vector3> ReuseInterpBodyRot = new List<Vector3>();
 			public readonly List<Vector3> ReuseSmoothBodyPos = new List<Vector3>();
 			public readonly List<Vector3> ReuseSmoothBodyRot = new List<Vector3>();
+			// 1.4.2:EnforceRemoteCraftVisuals 每帧逐 body 遍历渲染器,复用缓冲避免每帧 GC(GetComponentsInCraft 每次 Clear)。
+			public readonly List<Renderer> ReuseRenderers = new List<Renderer>();
 
 			// --- 跳动诊断（定位"0 延迟静止仍跳动"：上一帧已应用位置/每 body 位姿 vs 本帧） ---
 			public Vector3d LastRenderedPos;      // 上一帧实际应用的位置（地面坐标）
@@ -1124,6 +1269,65 @@ namespace Assets.Scripts.Net
 			public bool HasLastPktPos;
 			public double HeadDeg3s;               // 3s 窗口内累计朝向(应用 SrfRel)变化(度;慢旋转也会被感知为滑动)
 			public Quaterniond PrevSmoothedSrfRel; // 上一帧平滑朝向(计算 HeadDeg3s)
+
+			// --- 暂停/冻结检测(2026-09:飞船"有速度时暂停"→观察方位置抽搐) ---
+			// 暂停时发送端的 Position 冻结、但 Velocity 仍是暂停前最后一刻的值(非零)。
+			// 接收端若照常做 Position+Velocity×age 的 dead-reckoning,目标位置会随每包到达被拉回、
+			// 又在包间按速度前进 → 以发包频率来回摆动 → 观察方看到"抽搐"(见 plans/latency-smoothing §9.7)。
+			// 判据(双保险,任一成立即视为"发送端已冻结"):
+			//   ① 包内显式 Paused 标记(本 mod 双端都升级后最可靠);
+			//   ② 连续多包位置零位移(兼容旧版本对端;也不依赖标记是否被中继/丢包)。
+			public bool RemotePaused;              // 判定:发送端当前处于"位置冻结"(暂停/完全静止)
+			public bool LastPktPausedFlag;         // 最新包携带的发送端暂停标记(包内显式字段)
+			public long FrozenFrames;              // 完全冻结态(ramp=1)的帧数(诊断)
+			public float RemotePausedRamp;         // 0..1 平滑过渡量(0=正常外推,1=完全停止速度外推),避免冻结/解冻瞬间跳变
+			public int PktStallCount;              // 连续"位置零位移"包计数
+			public float PktFreezeDeltaM;          // 最近两包位置距离(诊断:是否真的零位移)
+			public bool HasPktFreezePos;
+			public Vector3d PktFreezePos;
+			public double LastAgeNowSec;           // 本帧实际使用的外推量(诊断)
+
+			// --- 发送端时间倍率(2026-09:慢放时外推按真实时间推进而包位置按发送端缩放时间走 → 每包向后锯齿) ---
+			// 相邻两包 FlightState.Time(发送端游戏时间)增量 / 真实到达时间增量;正常=1,慢放<1,暂停→0。
+			// UpdateRemoteCrafts 把外推量 ext 乘以此倍率换算到发送端时间基 → 慢放时外推与发送端实际运动同步。
+			// ⚠️ 2026-09-13 四轮:用户慢放是 Unity Time.timeScale<1,但游戏 FlightState.Time 不缩放
+			// (对端实测 rate 恒 1.000)→ 包时间测不出慢放;而包位置位移确实按慢放速率缩小。
+			// 改用 SenderMotionRate(基于包位置位移/速度×真实时间)测量发送端实际运动速率,更鲁棒。
+			public float SenderTimeRate = 1f;
+			private double _lastPktTime = -1;      // 上一包发送端 FlightState.Time(倍率测量)
+			// --- 发送端运动倍率(2026-09 四轮,位置基) ---
+			// 相邻两包位置位移 ÷ (速度 × 真实到达间隔):正常飞行≈1,发送端慢放=timeScale,静止/暂停→0。
+			// 外推量 ext ×= 此倍率 → 外推与发送端实际运动同步(慢放时不再"外推超前→每包向后锯齿")。
+			// ⚠️ 2026-09-13 六轮:单包测量尖刺(切换速度模式瞬间的大间隔/大位移包,实测 mRate 单包
+			// 0.208→0.393)经 EMA 仍能透出 → ext 突变 → 幽灵单帧 1.97~2.7m 跳变。修复:速率变化钳制
+			// MaxMotionRateStep/包(±0.15 @20Hz → 满量程 0.05↔1.0 收敛仅 ~0.3s,尖刺被压到 ±0.15/包)。
+			public float SenderMotionRate = 1f;
+			public const float MaxMotionRateStep = 0.15f; // mRate 每包最大变化量(切换瞬间尖刺抑制)
+
+			/// <summary>
+			/// 位置零位移判定阈值(米,地面坐标)。发送端暂停时相邻包位置完全相同(≈0);
+			/// 0.5 m/s 的慢速漂移在 50ms 包间隔内也有 0.025m,故 0.02m 不会误判正常缓速运动。
+			/// </summary>
+			public const double PositionStallM = 0.02;
+			/// <summary>连续多少个零位移包才认定发送端已冻结(过滤单次丢包/重复包造成的假静止)。</summary>
+			public const int PositionStallPackets = 2;
+
+			// --- 抽搐诊断(2026-09:双飞静止一方抽搐,定位"comRot 连带移动 + 双写不一致"反馈环) ---
+			// 1.4.2 中 comRot 是 RootPart.Transform 的后代(CraftScript.cs:2172),RootPart 位于根 body 内,
+			// 因此"写 body 世界位置"会连带移动 comRot;而 ApplyRemoteBodyPoses 又用 comRot 位姿作基准,
+			// 若每帧冻结的 comRotPos 随上帧写入而漂移,body 位置将逐帧漂移(静止时肉眼可见"抽搐")。
+			public Vector3 DiagComPosFrozen;       // ApplyRemoteBodyPoses 冻结的 comRot.position(帧空间)
+			public Vector3 DiagComPosPrevFrozen;   // 上一帧 Update 路径冻结的 comRot.position(跨帧对比基准)
+			public Vector3 DiagComPosAfterBodies;  // 写完所有 body 后 comRot.position(检测连带漂移)
+			public Vector3 DiagComPosLate;         // LateUpdate ForceRemoteHeading 冻结的 comRot.position
+			public float DiagComLinkM;             // 写 body 前后 comRot 连带位移(|AfterBodies - Frozen|)
+			public float DiagComCrossFrameM;       // 跨帧 comRot 漂移(|Frozen - PrevFrozen|)
+			public Vector3 DiagBody0PrevWorld;     // 上一帧 body[0] 世界位置(帧空间)
+			public bool DiagHasBody0Prev;
+			public float DiagBody0DeltaM;          // body[0] 逐帧世界位移(抽搐幅度)
+			public float DiagBody0DeltaLateM;      // LateUpdate 重写后 body[0] 位移(双写不一致幅度)
+			public Vector3 DiagSmoothedBody0;      // 平滑后 body[0] 相对 comRot 位置(目标)
+			public float LastTwitchLogTime;        // 抽搐诊断周期日志计时
 
 			public struct StateSample
 			{
@@ -1150,7 +1354,68 @@ namespace Assets.Scripts.Net
 					float dev = Mathf.Abs(gapMs - GapEmaMs);
 					JitterEmaMs = JitterEmaMs <= 0f ? dev : JitterEmaMs * 0.9f + dev * 0.1f;
 				}
+				// 保存上一包到达时间(倍率测量用),再覆盖 _lastPushTime。
+				// ⚠️ 2026-09-13 五轮:此前 `_lastPushTime = arrivalTime` 在前、倍率块在后,
+				// 差值恒为 0 → SenderTimeRate/SenderMotionRate 从未更新、恒 1.000 → 慢放外推从未缩放!
+				// 这就是"慢放 1/20 时 1.5 个船身跳变"从未被修好的根因(倍率测量一直是死的)。
+				float prevArrival = _lastPushTime;
 				_lastPushTime = arrivalTime;
+
+				// 发送端时间倍率:相邻两包 FlightState.Time(发送端游戏时间)增量 / 真实到达时间增量。
+				// 慢放(发送端 timeScale<1)时发送端游戏时间推进慢于真实时间 → 倍率<1;暂停(时间冻结)→0。
+				// 用于把 dead-reckoning 外推量换算到发送端时间基(见 UpdateRemoteCrafts),
+				// 否则慢放时外推按真实时间推进、包位置却按发送端缩放时间走 → 每包向后锯齿(实测慢放最严重)。
+				// ⚠️ 2026-09-13 四轮实测:用户的慢放是 Unity Time.timeScale<1,但游戏 FlightState.Time 不缩放
+				// (对端 rate 恒 1.000)→ 包时间测不出慢放!真正可靠的测量是"包位置运动倍率"(见下)。
+				if (_lastPktTime >= 0 && prevArrival >= 0)
+				{
+					double dtPkt = packetTime - _lastPktTime;
+					float dtReal = arrivalTime - prevArrival;
+					if (dtReal > 0.001f)
+					{
+						float rate = dtPkt > 0.0 ? (float)(dtPkt / dtReal) : 0f; // 发送端时间冻结(暂停)→0
+						if (rate >= 0f && rate < 10f) // 过滤坏包/时间回绕
+						{
+							SenderTimeRate = SenderTimeRate <= 0f ? rate : SenderTimeRate * 0.9f + rate * 0.1f;
+						}
+					}
+				}
+				_lastPktTime = packetTime;
+
+				// 发送端运动倍率(2026-09 四轮,位置基):相邻两包位置位移 ÷ (速度 × 真实到达间隔)。
+				// 正常飞行:位移 = v×dtReal → 倍率≈1;发送端慢放(Unity timeScale<1):位移 = v×dtReal×ts → 倍率=ts;
+				// 静止/暂停:位移≈0 → 倍率→0(外推量归零,幽灵精确停包位)。比包时间倍率鲁棒:
+				// 用户慢放实测 FlightState.Time 不缩放(rate 恒 1.000),只有位置位移如实反映慢放。
+				if (HasLastPktPos && prevArrival >= 0)
+				{
+					float mDtReal = arrivalTime - prevArrival;
+					if (mDtReal > 0.001f)
+					{
+						double dPos = Vector3d.Distance(data.Position, LastPktPos);
+						float v = (float)data.Velocity.magnitude;
+						if (v > 1f && dPos > 0.001)
+						{
+							float mRate = (float)(dPos / (v * mDtReal));
+							if (mRate > 0.0f && mRate < 10f) // 过滤坏包(加速段 v 突变会瞬时失真,EMA 摊平)
+							{
+								float newMotionRate = SenderMotionRate * 0.9f + mRate * 0.1f;
+								// 速率变化钳制:切换速度模式瞬间的单包测量尖刺(实测 0.208→0.393/包 → 幽灵
+								// 单帧 2m 跳)不允许直接透出;±0.15/包 @20Hz 下满量程收敛仍仅 ~0.3s。
+								newMotionRate = Mathf.Clamp(newMotionRate,
+									SenderMotionRate - MaxMotionRateStep, SenderMotionRate + MaxMotionRateStep);
+								SenderMotionRate = newMotionRate;
+							}
+						}
+						else
+						{
+							// 速度≈0 或位移≈0(静止/暂停):发送端没有实际运动 → 倍率收敛到 0,外推量归零。
+							float newMotionRate = SenderMotionRate * 0.9f + 0f * 0.1f;
+							newMotionRate = Mathf.Clamp(newMotionRate,
+								SenderMotionRate - MaxMotionRateStep, SenderMotionRate + MaxMotionRateStep);
+							SenderMotionRate = newMotionRate;
+						}
+					}
+				}
 
 				// 包间位置跳变诊断:相邻两包的位置差(发送端数据是否在缓慢漂移/跳变)。
 				// 双方"静止"时若此值持续>0,说明滑动来自发送端数据,而非接收端平滑层。
@@ -1161,6 +1426,23 @@ namespace Assets.Scripts.Net
 				}
 				LastPktPos = data.Position;
 				HasLastPktPos = true;
+
+				// 暂停/冻结检测:位置零位移连续计数(见字段区注释)。包内 Paused 标记用于"尽快进入"冻结态;
+				// 退出冻结态一律以"位置重新开始变化"为准(计数清零)—— 这样对端刚恢复那一瞬间不会立刻
+				// 按速度外推(那时包内位置仍是暂停前的旧值,一旦外推就会跳一下)。
+				double freezeDelta = HasPktFreezePos ? Vector3d.Distance(data.Position, PktFreezePos) : double.MaxValue;
+				PktFreezeDeltaM = HasPktFreezePos ? (float)freezeDelta : 0f;
+				if (HasPktFreezePos && freezeDelta <= PositionStallM)
+				{
+					if (PktStallCount < 1000) PktStallCount++;
+				}
+				else
+				{
+					PktStallCount = 0;
+				}
+				PktFreezePos = data.Position;
+				HasPktFreezePos = true;
+				LastPktPausedFlag = data.Paused;
 			}
 
 			/// <summary>取最新样本。</summary>
@@ -1257,7 +1539,11 @@ namespace Assets.Scripts.Net
 					int rendererCount = 0, enabledCount = 0;
 					if (rgo != null)
 					{
-						foreach (Renderer r in rgo.GetComponentsInChildren<Renderer>(true)) { rendererCount++; if (r.enabled) enabledCount++; }
+						// 1.4.2:body 脱离 craft 层级后 GetComponentsInChildren 遍历不到 body 上的渲染器,
+						// 改用逐 body 遍历(GetComponentsInCraft,等价游戏新 API)。
+						List<Renderer> renderers = new List<Renderer>();
+						CraftUtils.GetComponentsInCraft(remote, renderers, true);
+						foreach (Renderer r in renderers) { rendererCount++; if (r.enabled) enabledCount++; }
 					}
 					Mod.LogLobby("MP spawnDiag p" + peer.PlayerId + ": goActive=" + (rgo != null ? rgo.activeSelf.ToString() : "null") +
 						", craftScript=" + (remote.CraftScript != null ? "built" : "notBuilt") +
@@ -1351,7 +1637,10 @@ namespace Assets.Scripts.Net
 						go.SetActive(true);
 						Mod.LogLobby("MP: re-activated remote craft GameObject for player " + rc.PlayerId);
 					}
-					foreach (Renderer r in go.GetComponentsInChildren<Renderer>(true))
+					// 1.4.2:body 脱离 craft 层级后 GetComponentsInChildren 遍历不到 body 上的渲染器,
+					// 改用逐 body 遍历(GetComponentsInCraft,等价游戏新 API)。复用缓冲防每帧 GC。
+					CraftUtils.GetComponentsInCraft(rc.Node, rc.ReuseRenderers, true);
+					foreach (Renderer r in rc.ReuseRenderers)
 					{
 						if (!r.enabled)
 						{
@@ -1674,6 +1963,35 @@ namespace Assets.Scripts.Net
 						// SP2 用 physicsTime-senderTime 测单向延迟;我们没有时钟同步,用 RTT/2 近似(OnPong 更新)。
 						float latencySec = (rc.LatencyMs > 0f ? rc.LatencyMs : rc.GapEmaMs) / 1000f;
 						float age = Time.unscaledTime - rc.NewestArrivalTime;
+						// ★ 暂停/冻结保护(2026-09,修"飞船有速度时暂停→观察方位置抽搐"):
+						// 发送端暂停后 Position 冻结、Velocity 仍是非零旧值(暂停前最后一刻的速度)。
+						// 此时若继续 Position + Velocity×age:每包到达把目标拉回近处、包间又按速度推进
+						// → 目标以发包频率来回摆动 → 渲染层直接"抽搐"(高速船 k≈1 时平滑几乎不衰减)。
+						// 修正:冻结期间把外推量按 RemotePausedRamp 收敛到固定单向延迟 latencySec(不带 age),
+						// 即"停在最新包位置 + 网络传输本身占用的那段位移",不再人工推进目标。
+						// 恢复运动(或对端解除暂停)时 ramp 在 0.15s 内回落到 0,重新把"包龄"加回外推量,避免瞬间跳变。
+						bool pausedNow = rc.PktStallCount >= RemoteCraft.PositionStallPackets || rc.LastPktPausedFlag;
+						if (pausedNow != rc.RemotePaused)
+						{
+							// 一次性状态跃迁日志(便于实测确认"暂停=冻结"是否按预期生效):
+							// 进入冻结 → 速度外推被抑制,幽灵停在最新包位置;退出冻结 → 恢复正常 dead-reckoning。
+							Mod.LogLobby("MP freeze P" + rc.PlayerId + ": " + (pausedNow ? "ENTER" : "EXIT") +
+								" (flag=" + (rc.LastPktPausedFlag ? 1 : 0) + " stall=" + rc.PktStallCount +
+								" pkΔ=" + rc.PktFreezeDeltaM.ToString("F4") + "m vel=" + latest.Velocity.magnitude.ToString("F2") + "m/s)");
+						}
+						rc.RemotePaused = pausedNow;
+						rc.RemotePausedRamp = Mathf.MoveTowards(rc.RemotePausedRamp, pausedNow ? 1f : 0f,
+							Time.unscaledDeltaTime / RemoteFreezeBlendSec);
+						// 冻结期把外推量中的"包龄"部分收敛到 0 → ext → 固定单向延迟 latencySec,
+						// 目标不再随包龄前进,也就没有"每包拉回/包间推进"的锯齿摆动。
+						// ⚠️ 必须无条件收敛(不能加 ageNow>latencySec 守卫):暂停时发送端降频(8Hz),
+						// 包龄往往小于 latencySec,旧守卫会漏钳制 → 高速船(如 85m/s)依旧锯齿(2026-09 实测发现)。
+						float ageNow = age;
+						if (rc.RemotePausedRamp > 0f)
+						{
+							ageNow = Mathf.Lerp(ageNow, 0f, rc.RemotePausedRamp);
+						}
+						rc.LastAgeNowSec = ageNow;
 						float ext;
 						if (age > Mathf.Max(rc.GapEmaMs * 3f / 1000f, 0.25f))
 						{
@@ -1682,11 +2000,18 @@ namespace Assets.Scripts.Net
 						}
 						else
 						{
-							ext = latencySec + age; // 正常:持续外推
+							ext = latencySec + ageNow; // 正常:持续外推;冻结期:ageNow→0 → ext→latencySec
 						}
+						// 换算到发送端时间基:慢放(发送端 timeScale<1)时发送端包位置只按缩放时间推进,
+						// 若外推仍按真实时间跑 → 目标每包"超前→拉回"锯齿(幅度 v×发包间隔×(1−倍率),慢放最严重)。
+						// 正常飞行倍率≈1 → 行为不变;发送端暂停(倍率→0) → ext→0,幽灵精确停在包位置。
+						// ⚠️ 用位置基 SenderMotionRate(发送端实际运动速率):用户慢放实测 FlightState.Time 不缩放
+						// (包时间倍率恒 1.000),只有包位置位移如实反映慢放(2026-09-13 四轮)。
+						ext *= rc.SenderMotionRate;
 						if (ext > 1.0f) ext = 1.0f; // 安全上限 1s
 						latest.Position = latest.Position + latest.Velocity * ext;
 						rc.ExtrapolatedFrames++; // 计数(SP2 风格:每帧按速度外推)
+						if (rc.RemotePausedRamp >= 1f) rc.FrozenFrames++;
 						rc.InterpPct = 1f;       // 始终在最新包(无缓冲插值)
 
 						// P1:SP2 式平滑(指数收敛 + 近距快照 + 瞬移)
@@ -1736,12 +2061,100 @@ namespace Assets.Scripts.Net
 							" rtt/2=" + (rc.LatencyMs > 0f ? rc.LatencyMs.ToString("F0") : "?") + "ms" +
 							" gapEMA=" + rc.GapEmaMs.ToString("F0") + "ms jitterEMA=" + rc.JitterEmaMs.ToString("F0") + "ms" +
 							" frames=" + rc.TotalFrames + " snap=" + rc.SnapFrames + " extrap=" + rc.ExtrapolatedFrames +
+							" frozen=" + rc.FrozenFrames + " paused=" + (rc.RemotePaused ? 1 : 0) +
+							" rate=" + rc.SenderTimeRate.ToString("F3") + " mRate=" + rc.SenderMotionRate.ToString("F3") +
+							" ageNow=" + rc.LastAgeNowSec.ToString("F3") + "s stall=" + rc.PktStallCount +
+							" pkΔ=" + rc.PktFreezeDeltaM.ToString("F4") + "m" +
 							" interpPct=" + rc.InterpPct.ToString("F2") +
 							" moveDelta=" + rc.LastMoveDeltaM.ToString("F2") + "m bodyDelta=" + rc.LastBodyPoseDeltaM.ToString("F2") + "m" +
 							" tfDrift=" + rc.LastTfDriftM.ToString("F2") + "m" +
 							" move3s=" + move3s.ToString("F3") + "m pktJump=" + pktJump.ToString("F3") + "m" +
 							" vel=" + vel + "m/s headYaw=" + headYaw + "deg head3s=" + headDeg.ToString("F1") + "deg" +
 							" newest=(" + newestPos + ") posErr=" + rc.LastPosErrorM.ToString("F2") + "m");
+					}
+
+					// 慢放诊断(2026-09,0.5s 周期):接收端慢放(Time.timeScale<0.99)或发送端慢放(rate<0.99)时
+					// 单独输出。背景:用户"本机慢放看静止对端船 → 整船一跳一跳",但 comRot/body 变换全恒定
+					// (twitch 全 0),说明跳动在诊断采样点之外的渲染路径(根 transform/部件世界位置/地图渲染)。
+					// 这里逐帧追踪 craft 根、首个部件、comRot 的最大单帧位移 + 观察距离,定位跳动来源。
+					bool receiverSlow = Time.timeScale < 0.99f;
+					if (receiverSlow || rc.SenderTimeRate < 0.99f || rc.SenderMotionRate < 0.99f)
+					{
+						Transform rootT = null, partT = null, comT = null;
+						Vector3 rootP = Vector3.zero, partP = Vector3.zero, comP = Vector3.zero;
+						try
+						{
+							if (rc.Node.CraftScript != null)
+							{
+								rootT = rc.Node.CraftScript.Transform;
+								comT = rc.Node.CraftScript.CenterOfMass;
+								if (rc.Node.CraftScript.Data != null && rc.Node.CraftScript.Data.Assembly.Parts.Count > 0)
+									partT = rc.Node.CraftScript.Data.Assembly.Parts[0].PartScript.Transform;
+							}
+						}
+						catch { }
+						if (rootT != null) rootP = rootT.position;
+						if (partT != null) partP = partT.position;
+						if (comT != null) comP = comT.position;
+						if (rc.DiagHasPrevSlowmo)
+						{
+							float dRoot = (rootP - rc.DiagPrevRootPos).magnitude;
+							float dPart = (partP - rc.DiagPrevPartPos).magnitude;
+							float dCom = (comP - rc.DiagPrevComPos).magnitude;
+							if (dRoot > rc.DiagMaxRootDelta) rc.DiagMaxRootDelta = dRoot;
+							if (dPart > rc.DiagMaxPartDelta) rc.DiagMaxPartDelta = dPart;
+							if (dCom > rc.DiagMaxComDelta) rc.DiagMaxComDelta = dCom;
+						}
+						rc.DiagHasPrevSlowmo = true;
+						rc.DiagPrevRootPos = rootP; rc.DiagPrevPartPos = partP; rc.DiagPrevComPos = comP;
+
+						if (Time.unscaledTime - rc.LastSlowmoLogTime > 0.5f)
+						{
+							rc.LastSlowmoLogTime = Time.unscaledTime;
+							string dist = "?";
+							try
+							{
+								if (rc.Node.CraftScript != null && FlightSceneScript.Instance != null &&
+									FlightSceneScript.Instance.CraftNode != null && FlightSceneScript.Instance.CraftNode.CraftScript != null)
+								{
+									dist = (rc.Node.CraftScript.FramePosition - FlightSceneScript.Instance.CraftNode.CraftScript.FramePosition).magnitude.ToString("F0");
+								}
+							}
+							catch { }
+							Mod.LogLobby("MP slowmo P" + rc.PlayerId +
+								": timeScale=" + Time.timeScale.ToString("F3") +
+								" rate=" + rc.SenderTimeRate.ToString("F3") +
+								" mRate=" + rc.SenderMotionRate.ToString("F3") +
+								" rootΔ=" + rc.DiagMaxRootDelta.ToString("F3") + "m" +
+								" partΔ=" + rc.DiagMaxPartDelta.ToString("F3") + "m" +
+								" comΔ=" + rc.DiagMaxComDelta.ToString("F3") + "m" +
+								" dist=" + dist + "m" +
+								" paused=" + (rc.RemotePaused ? 1 : 0) +
+								" ageNow=" + rc.LastAgeNowSec.ToString("F3") + "s" +
+								" moveDelta=" + rc.LastMoveDeltaM.ToString("F2") + "m" +
+								" pkΔ=" + rc.PktFreezeDeltaM.ToString("F4") + "m");
+							rc.DiagMaxRootDelta = 0f; rc.DiagMaxPartDelta = 0f; rc.DiagMaxComDelta = 0f;
+						}
+					}
+
+					// 抽搐诊断(2026-09:双飞静止一方抽搐):每 1 秒高精度输出 comRot 连带/跨帧漂移
+					// 与 body[0] 逐帧位移,定位反馈环来源:
+					// - comLink   = 写 body 前后 comRot 连带位移(>0 说明"写 body 连带移动 comRot"存在);
+					// - comCross = 跨帧冻结 comRot 漂移(>0 说明基准被上帧写入污染 → body 逐帧漂移);
+					// - b0Δ      = body[0] 逐帧世界位移(渲染层抽搐幅度,静止时应≈0);
+					// - b0ΔLate  = LateUpdate 重写造成的 body[0] 位移(Update/LateUpdate 双写不一致幅度);
+					// - comLate  = LateUpdate 冻结的 comRot 位置(与 Update 冻结值差 >0 → 双写基准不同)。
+					if (Time.unscaledTime - rc.LastTwitchLogTime > 1f)
+					{
+						rc.LastTwitchLogTime = Time.unscaledTime;
+						Mod.LogLobby("MP twitch P" + rc.PlayerId +
+							": comLink=" + rc.DiagComLinkM.ToString("F4") + "m" +
+							" comCross=" + rc.DiagComCrossFrameM.ToString("F4") + "m" +
+							" b0d=" + rc.DiagBody0DeltaM.ToString("F4") + "m" +
+							" b0dLate=" + rc.DiagBody0DeltaLateM.ToString("F4") + "m" +
+							" comFrozen=(" + rc.DiagComPosFrozen.x.ToString("F2") + "," + rc.DiagComPosFrozen.y.ToString("F2") + "," + rc.DiagComPosFrozen.z.ToString("F2") + ")" +
+							" comAfter=(" + rc.DiagComPosAfterBodies.x.ToString("F2") + "," + rc.DiagComPosAfterBodies.y.ToString("F2") + "," + rc.DiagComPosAfterBodies.z.ToString("F2") + ")" +
+							" comLate=(" + rc.DiagComPosLate.x.ToString("F2") + "," + rc.DiagComPosLate.y.ToString("F2") + "," + rc.DiagComPosLate.z.ToString("F2") + ")");
 					}
 
 					// 诊断：周期性记录远程飞船可见性（每 3 秒），用于定位"无法显示对方 craft"。
@@ -1755,7 +2168,11 @@ namespace Assets.Scripts.Net
 							int rendererCount = 0, enabledCount = 0;
 							if (rgo != null)
 							{
-								foreach (Renderer r in rgo.GetComponentsInChildren<Renderer>(true)) { rendererCount++; if (r.enabled) enabledCount++; }
+								// 1.4.2:body 脱离 craft 层级后 GetComponentsInChildren 遍历不到 body 上的渲染器,
+								// 改用逐 body 遍历(GetComponentsInCraft,等价游戏新 API)。
+								List<Renderer> renderers = new List<Renderer>();
+								CraftUtils.GetComponentsInCraft(rc.Node, renderers, true);
+								foreach (Renderer r in renderers) { rendererCount++; if (r.enabled) enabledCount++; }
 							}
 						}
 						catch (Exception e) { Mod.LogError("MP visualDiag error (p" + rc.PlayerId + "): " + e.Message); }
@@ -1906,6 +2323,19 @@ namespace Assets.Scripts.Net
 				// k=0.1 时时间常数≈0.2s(旧 dt*10 是≈1s,慢 5 倍 → 残差蠕动拖出可见滑动)。
 				float alpha = 1f - Mathf.Pow(1f - k, dt * 50f);
 				smoothedPos = Vector3d.Lerp(rc.SmoothedPos, target.Position, alpha);
+				// 单帧位移上限(2026-09 三轮):平滑位置每帧最多移动 1.5×v×dt(物理可行上限)。
+				// 高速机动/加减速时包到达会造成目标异常跳变(实测单帧 moveDelta 可达 5.8m、pkΔ 13m),
+				// k→1 时 alpha≈1 全跟 → 渲染层单帧大跳 = 肉眼顿挫;改 k 上限又会给匀速飞行引入人工滞后。
+				// 用速度上限摊平异常跳变:匀速飞行单帧目标移动 = v×dt < 上限 → 零影响(无滞后);
+				// 异常跳变按上限逐帧收敛(13m → ~4 帧摊平),不滞后正常运动。
+				// 静止锁定分支(上一行 if)不经过这里,低速蠕动抑制不受影响。
+				Vector3d stepDelta = smoothedPos - rc.SmoothedPos;
+				double maxStep = 1.5 * speed * dt;
+				double stepLen = stepDelta.magnitude;
+				if (stepLen > maxStep && maxStep > 1e-4)
+				{
+					smoothedPos = rc.SmoothedPos + stepDelta * (maxStep / stepLen);
+				}
 			}
 			if (Vector3d.Distance(smoothedPos, target.Position) > 100.0) smoothedPos = target.Position;
 			rc.SmoothedPos = smoothedPos;
@@ -1987,7 +2417,9 @@ namespace Assets.Scripts.Net
 		/// ① GroundedSurface*：让游戏"表面锁定+物理禁用"分支跟随远程状态，避免被拉回/坠落；
 		/// ② 位置/速度：地面坐标 → 行星空间 SetStateVectors；
 		/// ③ 视觉朝向：帧空间"质心旋转"直接赋给根 Transform（XML 是质心坐标系，根=质心 part 才正确），
-		///    body 用相对质心的局部旋转（根=质心，故 body.localRotation 直接可写）；
+		///    body 用相对质心的旋转 relCom 显式写"世界旋转 = comRot.rotation × relCom"
+		///    （1.4.2 飞行中 body 脱离 craft 层级 parent=null，localRotation 即世界旋转，
+		///     直接写 localRotation=relCom 会丢 comRot 因子导致整体转错；见 ApplyRemoteBodyPoses）；
 		/// ④ 刷新 FrameState：让 Transform.position 跟随逻辑位置。
 		/// </summary>
 		private static void ApplyRemoteState(RemoteCraft rc, Mod.RemoteDataPack data)
@@ -2049,7 +2481,39 @@ namespace Assets.Scripts.Net
 				rc.Node.CraftScript.CenterOfMass.rotation = headingFrame;
 			}
 			rc.LastAppliedHeading = headingFrame; // 记录本次写入值(诊断:对比 transformRot 判断是否被覆盖)
-			ApplyRemoteBodyPoses(rc, data, rc.Node.CraftScript.CenterOfMass);
+			// 抽搐诊断(Update 路径):冻结 comRot 位姿前,记录跨帧漂移与冻结基准。
+			// 1.4.2 comRot 是 RootPart(根 body 内)的后代,上一帧写 body 会连带移动 comRot,
+			// 若本帧冻结值相对上帧已漂移(DiagComCrossFrameM>0),说明"写 body→连带移动 comRot→
+			// 下帧冻结基准漂移→body 再写"形成反馈环,即静止抽搐的根源。
+			Transform comRotDiag = rc.Node.CraftScript.CenterOfMass;
+			if (comRotDiag != null)
+			{
+				rc.DiagComPosFrozen = comRotDiag.position;
+				rc.DiagComCrossFrameM = Vector3.Distance(rc.DiagComPosFrozen, rc.DiagComPosPrevFrozen);
+				rc.DiagComPosPrevFrozen = rc.DiagComPosFrozen;
+			}
+			// 用"逻辑 comRot 位姿"(状态包导出)作 body 摆放基准,不再读接收端实时 comRot(反馈环修复,§〇之四)。
+			Vector3 logicalComPos; Quaternion logicalComRot;
+			TryGetLogicalComPose(rc, data, frame, out logicalComPos, out logicalComRot);
+			ApplyRemoteBodyPoses(rc, data, logicalComPos, logicalComRot);
+			// 抽搐诊断:写完全部 body 后 comRot 的连带位移(写 body 前后 comRot 位置差)。
+			// comRot 在根 body 内,写根 body 位置必然连带移动 comRot;该值即每帧"基准污染"量。
+			if (comRotDiag != null)
+			{
+				rc.DiagComPosAfterBodies = comRotDiag.position;
+				rc.DiagComLinkM = Vector3.Distance(rc.DiagComPosAfterBodies, rc.DiagComPosFrozen);
+			}
+			// 抽搐诊断:body[0] 逐帧世界位移(渲染层抽搐幅度;下一帧 Update 再对比,得到跨帧位移)。
+			{
+				IReadOnlyList<BodyData> diagBodies = rc.Node.CraftScript.Data.Assembly.Bodies;
+				if (diagBodies != null && diagBodies.Count > 0 && diagBodies[0].BodyScript != null && diagBodies[0].BodyScript.Transform != null)
+				{
+					Vector3 b0w = diagBodies[0].BodyScript.Transform.position;
+					rc.DiagBody0DeltaM = rc.DiagHasBody0Prev ? Vector3.Distance(b0w, rc.DiagBody0PrevWorld) : 0f;
+					rc.DiagBody0PrevWorld = b0w;
+					rc.DiagHasBody0Prev = true;
+				}
+			}
 
 			// ④ 刷新帧状态（Transform.position 跟随逻辑位置）
 			if (frame != null)
@@ -2252,6 +2716,12 @@ namespace Assets.Scripts.Net
 				}
 				data = new Mod.RemoteDataPack(pos, vel, heading);
 
+				// 通知接收端"本机游戏已暂停":暂停时位置/速度整体冻结,但 Velocity 仍是暂停前最后一刻的值。
+				// 接收端若继续按速度外推(dead-reckoning),目标会在每个包到达时被拉回、包间又按速度前进
+				// → 观察方看到"位置抽搐"(有速度时暂停尤其明显)。见 plans/latency-smoothing §9.7。
+				data.Paused = FlightSceneScript.Instance.TimeManager != null &&
+					FlightSceneScript.Instance.TimeManager.Paused;
+
 				// 每引擎视觉 throttle(尾焰同步):按确定枚举顺序,与接收端一一对应
 				data.EngineThrottles = EngineVisualSync.SampleEngineThrottles(craft);
 
@@ -2289,6 +2759,15 @@ namespace Assets.Scripts.Net
 							// body-sync P0:相对 comRot 的位置(转轴/关节连接的子装配"整体移动"主要就是位置变化)。
 							// 与 BodyRotations 同循环同索引,接收端 body.Transform.position = comRot.TransformPoint(relPos)。
 							data.BodyPositions.Add(comRotTransform.InverseTransformPoint(bodyList[bi].BodyScript.Transform.position));
+							// 抽搐诊断(发送端):每包 body[0] 相对 comRot 采样位置抖动。
+							// 若静止时此处>0.01m,说明"发送端数据本身在抖"(来源:发送端自身 comRot/body 微动,
+							// 或发送端 body 未静止),接收端平滑层只能衰减无法消除 → 需从发送端定位。
+							if (bi == 0)
+							{
+								Vector3 s0 = comRotTransform.InverseTransformPoint(bodyList[bi].BodyScript.Transform.position);
+								rcDiagBody0RelDelta = _diagBody0Rel.HasValue ? Vector3.Distance(s0, _diagBody0Rel.Value) : 0f;
+								_diagBody0Rel = s0;
+							}
 						}
 					}
 				}

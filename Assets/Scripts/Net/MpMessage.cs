@@ -521,6 +521,10 @@ namespace Assets.Scripts.Net
 			int paCount = d.PartActivated == null ? 0 : d.PartActivated.Count;
 			w.Write(paCount);
 			for (int i = 0; i < paCount; i++) w.Write(d.PartActivated[i]);
+
+			// 发送端暂停标记(尾部**最后**追加,与 ReadRecdata 的读取顺序严格一致;旧包读到此处即 EOF → 保持 false):
+			// 暂停时发送端位置冻结但 Velocity 仍非零,接收端必须停止按速度外推,否则目标在包间来回摆动(抽搐)。
+			w.Write(d.Paused);
 		}
 
 		public static Mod.RemoteDataPack ReadRecdata(BinaryReader r)
@@ -572,6 +576,10 @@ namespace Assets.Scripts.Net
 			{
 				d.PartActivated.Add(r.ReadBoolean());
 			}
+
+			// 暂停标记为**尾部最后**追加字段:旧版本发来的包没有该字节,读到 EOF 时保持 false(向前兼容)。
+			// 放在最后读取,保证即使缺失也不会截断前面任何字段(默认已是 false,异常可忽略)。
+			try { d.Paused = r.ReadBoolean(); } catch { d.Paused = false; }
 
 			return d;
 		}

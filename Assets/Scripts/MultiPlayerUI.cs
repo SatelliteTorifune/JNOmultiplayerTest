@@ -10,6 +10,7 @@ using ModApi.GameLoop;
 using ModApi.Scenes.Events;
 using ModApi.Ui;
 using ModApi.Ui.Inspector;
+using Steamworks;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -36,6 +37,16 @@ namespace Assets.Scripts
         /// <summary>事件驱动的脏标记：OnPlayerJoined/OnPlayerLeft 置位，主线程 Update 立即重建。</summary>
         private volatile bool playersDirty;
         private bool playersWasVisible;
+        /// <summary>Steam 房间列表分组（浏览器：刷新/邀请按钮 + 状态行 + 每房间一个加入按钮，列表变化时 ReplaceGroup 重建）。</summary>
+        private GroupModel lobbiesGroup;
+        /// <summary>最新房间列表（null = 尚未刷新；仅主线程读写：事件回调缓存 + Update 消费）。</summary>
+        private IReadOnlyList<SteamLobbyBrowser.LobbyInfo> lobbyList;
+        /// <summary>刷新中标记（状态行显示"正在刷新…"）。</summary>
+        private volatile bool lobbiesRefreshing;
+        /// <summary>房间列表变化脏标记（Steam 回调事件置位，主线程 Update 重建分组）。</summary>
+        private volatile bool lobbiesDirty;
+        /// <summary>待展示的对话框文案（事件可能来自 Steam 回调上下文，延后到主线程 Update 弹窗）。</summary>
+        private string pendingDialogMessage;
 
         #endregion
 
@@ -71,6 +82,13 @@ namespace Assets.Scripts
                                     new XAttribute("sprite", "MultiPlayer/Sprites/UIIcon"))));
                     }
                 });
+            // 订阅 Steam 房间列表事件（浏览器对象由 Mod 创建、跨场景常驻；首次进入游戏时即存在）
+            if (SteamLobbyBrowser.Instance != null)
+            {
+                SteamLobbyBrowser.Instance.OnLobbyListReceived += OnLobbyListReceived;
+                SteamLobbyBrowser.Instance.OnLobbyHosted += OnLobbyHosted;
+                SteamLobbyBrowser.Instance.OnLobbyError += OnLobbyError;
+            }
         }
 
         private void OnDestroy()
@@ -81,6 +99,12 @@ namespace Assets.Scripts
                 trackedManager.OnPlayerJoined -= OnPlayersChanged;
                 trackedManager.OnPlayerLeft -= OnPlayersChanged;
                 trackedManager = null;
+            }
+            if (SteamLobbyBrowser.Instance != null)
+            {
+                SteamLobbyBrowser.Instance.OnLobbyListReceived -= OnLobbyListReceived;
+                SteamLobbyBrowser.Instance.OnLobbyHosted -= OnLobbyHosted;
+                SteamLobbyBrowser.Instance.OnLobbyError -= OnLobbyError;
             }
         }
 
@@ -107,6 +131,11 @@ namespace Assets.Scripts
             inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.HostLobbyButton"), (b) => OnSteamHostLobbyClick()));
             inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.JoinLobbyButton"), (b) => OnSteamJoinLobbyClick()));
             inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.DisconnectButton"), (b) => OnDisconnectClick()));
+
+            // --- Steam 房间列表（大厅浏览器：替代手动输入房主 SteamId，"开房可见、点列表加入"）---
+            // 动态分组：刷新/邀请按钮 + 状态行固定，房间行按列表变化 ReplaceGroup 重建（RebuildPlayersIfChanged 同款，不引入新窗口框架）。
+            lobbiesGroup = BuildLobbiesGroup();
+            inspectorModel.AddGroup(lobbiesGroup);
 
             // --- 玩家列表（SP2 风格：每玩家一行 = 名字 + 延迟；房主额外每行踢人按钮）---
             // 初始为空分组占位，Update 中检测到玩家集合变化时用 ReplaceGroup 在原位置重建。
@@ -290,10 +319,19 @@ namespace Assets.Scripts
             if (inspectorModel == null || inspectorPanel == null) return;
             EnsurePlayersSubscribed();
 
+            // 待弹窗（事件可能来自 Steam 回调上下文，延后到主线程 Update 弹窗；与面板可见性无关）
+            if (pendingDialogMessage != null)
+            {
+                string msg = pendingDialogMessage;
+                pendingDialogMessage = null;
+                ShowMessageDialog(msg);
+            }
+
             bool visible = inspectorPanel.Visible;
             if (visible && !playersWasVisible)
             {
                 RebuildPlayersIfChanged(); // 面板刚打开：立即核对一次
+                RebuildLobbiesIfChanged();
             }
             playersWasVisible = visible;
             if (!visible) return;          // 面板未打开：不重建（SP2 同款守卫）
@@ -302,6 +340,14 @@ namespace Assets.Scripts
             {
                 playersDirty = false;
                 ForceRebuildPanel(); // 玩家加入/离开（事件驱动）：强制整体重建窗口刷新
+                return;
+            }
+
+            // Steam 房间列表变化（事件驱动）：列表回调/开房/错误都会置脏，这里重建房间分组
+            if (lobbiesDirty)
+            {
+                lobbiesDirty = false;
+                RebuildLobbiesIfChanged();
                 return;
             }
 
@@ -502,45 +548,36 @@ namespace Assets.Scripts
 
         private void OnSteamHostLobbyClick()
         {
-            // 确保走 Steam 传输（若之前切到过 TCP debug，先切回，避免"Steam 按钮实际走 TCP"）
-            MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-            if (mgr != null && !(mgr.Transport is Net.SteamTransport)) mgr.SetTransport(new Net.SteamTransport());
-            bool ok = LobbyManager.Instance.HostLobby(0);
-            if (ok)
+            // 开房 = 创建 Steam 大厅（Public）：输入房间名 → CreateLobby → LobbyCreated 成功后
+            // 浏览器内部复用 LobbyManager.HostLobby(0) 起 P2P 监听；成功弹窗含房间名 + 本机 SteamId（手动路径兜底）。
+            if (SteamLobbyBrowser.Instance == null)
             {
-                ulong steamId = 0UL;
-                var m =  MpNetworkManager.Instance;
-                if (m != null && m.Transport is Net.SteamTransport st) steamId = st.LocalSteamId;
-                global::ModApi.Ui.InputDialogScript idDialog = Game.Instance.UserInterface.CreateInputDialog(null);
-                idDialog.MessageText =Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyStarted", steamId);
-                idDialog.InputText = steamId.ToString();
-                idDialog.OkayClicked += delegate(global::ModApi.Ui.InputDialogScript d) {d.Close(); };
-
+                ShowMessageDialog(Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyUnavailable"));
+                return;
             }
+            // 默认房间名 = Steam 昵称 + 房间后缀（可改）
+            string defaultName;
+            try { defaultName = SteamFriends.GetPersonaName(); }
+            catch { defaultName = "Player"; }
+            if (string.IsNullOrWhiteSpace(defaultName)) defaultName = "Player";
+            defaultName += Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyDefaultRoomName");
+
+            global::ModApi.Ui.InputDialogScript nameDialog = Game.Instance.UserInterface.CreateInputDialog(null);
+            nameDialog.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.EnterRoomName");
+            nameDialog.InputText = defaultName;
+            nameDialog.OkayClicked += delegate(global::ModApi.Ui.InputDialogScript d)
+            {
+                string name = nameDialog.InputText.Trim();
+                d.Close();
+                if (string.IsNullOrEmpty(name)) name = defaultName;
+                SteamLobbyBrowser.Instance.CreateLobby(name, SteamLobbyBrowser.DefaultMaxPlayers);
+            };
         }
 
         private void OnSteamJoinLobbyClick()
         {
-            global::ModApi.Ui.InputDialogScript idDialog = Game.Instance.UserInterface.CreateInputDialog(null);
-            idDialog.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.EnterHostSteamId");
-            idDialog.InputText = "";
-            idDialog.OkayClicked += delegate(global::ModApi.Ui.InputDialogScript d)
-            {
-                string steamId = idDialog.InputText.Trim();
-                d.Close();
-                if (ulong.TryParse(steamId, out ulong _) && steamId.Length > 0)
-                {
-                    // 确保走 Steam 传输（同 Host 端，防止停留在 TCP debug 传输上）
-                    MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-                    if (mgr != null && !(mgr.Transport is Net.SteamTransport)) mgr.SetTransport(new Net.SteamTransport());
-                    LobbyManager.Instance.JoinLobby(steamId, 0);
-                }
-                else
-                {
-                    global::ModApi.Ui.MessageDialogScript msg = Game.Instance.UserInterface.CreateMessageDialog(global::ModApi.Ui.MessageDialogType.Okay, null, true);
-                    msg.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.InvalidSteamId", steamId);
-                }
-            };
+            // 房间列表替代手动输入 SteamId：点"加入" = 触发一次列表刷新（房间组显示结果，点房间行即加入）。
+            OnRefreshLobbiesClick();
         }
 
         /// <summary>TCP debug：输入端口后切到 TcpTransport 并开房（房主监听 IPAddress.Any:port）。</summary>
@@ -609,6 +646,135 @@ namespace Assets.Scripts
 
             global::ModApi.Ui.MessageDialogScript msg = Game.Instance.UserInterface.CreateMessageDialog(global::ModApi.Ui.MessageDialogType.Okay, null, true);
             msg.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.Disconnected");
+        }
+
+        #endregion
+
+        #region Steam 房间列表（大厅浏览器）
+
+        /// <summary>刷新房间列表按钮：置刷新标记 + 触发 Steam 请求（结果经 OnLobbyListReceived 回到 Update 重建）。</summary>
+        private void OnRefreshLobbiesClick()
+        {
+            if (SteamLobbyBrowser.Instance == null)
+            {
+                ShowMessageDialog(Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyUnavailable"));
+                return;
+            }
+            lobbiesRefreshing = true;
+            lobbiesDirty = true;
+            SteamLobbyBrowser.Instance.RefreshLobbyList();
+        }
+
+        /// <summary>邀请好友按钮（仅开房后可见）：打开 Steam overlay 邀请对话框。</summary>
+        private void OnInviteFriendsClick()
+        {
+            if (SteamLobbyBrowser.Instance != null) SteamLobbyBrowser.Instance.OpenInviteDialog();
+        }
+
+        /// <summary>点房间行：加入该 Steam 大厅（浏览器内部 JoinLobby → GetLobbyOwner → SteamTransport 连接）。</summary>
+        private void OnJoinRoomClick(ulong lobbyId)
+        {
+            if (SteamLobbyBrowser.Instance != null) SteamLobbyBrowser.Instance.JoinLobby(lobbyId);
+        }
+
+        /// <summary>房间列表刷新完成（Steam 回调主线程）：缓存列表 + 置脏，Update 里重建分组。</summary>
+        private void OnLobbyListReceived(IReadOnlyList<SteamLobbyBrowser.LobbyInfo> lobbies)
+        {
+            lobbyList = lobbies != null ? lobbies : new List<SteamLobbyBrowser.LobbyInfo>();
+            lobbiesRefreshing = false;
+            lobbiesDirty = true;
+        }
+
+        /// <summary>开房成功（Steam 回调主线程）：延后弹窗确认（含房间名 + 本机 SteamId，手动路径兜底）。</summary>
+        private void OnLobbyHosted(SteamLobbyBrowser.LobbyInfo info)
+        {
+            lobbiesRefreshing = false;
+            lobbiesDirty = true;
+            ulong steamId = SteamTransport.GetLocalSteamId();
+            pendingDialogMessage = Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyHosted",
+                info.Name, info.MemberCount, info.MaxMembers, steamId);
+        }
+
+        /// <summary>开房/加入失败（Steam 回调主线程）：延后弹窗错误。</summary>
+        private void OnLobbyError(string message)
+        {
+            lobbiesRefreshing = false;
+            lobbiesDirty = true;
+            pendingDialogMessage = message;
+        }
+
+        /// <summary>构建 Steam 房间列表分组：刷新/邀请按钮 + 状态行 + 每房间一个"加入"按钮（点击即加入）。</summary>
+        private GroupModel BuildLobbiesGroup()
+        {
+            GroupModel g = new GroupModel(Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyBrowserGroup"), null);
+            g.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyRefreshButton"), (b) => OnRefreshLobbiesClick()));
+            Func<bool> hostInLobby = () => SteamLobbyBrowser.Instance != null &&
+                SteamLobbyBrowser.Instance.CurrentLobbyId != 0 &&
+                SteamLobbyBrowser.Instance.IsCurrentLobbyOwner;
+            g.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyInviteButton"), (b) => OnInviteFriendsClick(), null, hostInLobby));
+            g.Add(new TextModel(Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyStatus"), GetLobbyStatusText, null, null, null));
+
+            if (lobbiesRefreshing)
+            {
+                g.Add(new TextModel(Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyRefreshing"), null, null, null, null));
+            }
+            else if (lobbyList == null)
+            {
+                g.Add(new TextModel(Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyInitialHint"), null, null, null, null));
+            }
+            else if (lobbyList.Count == 0)
+            {
+                g.Add(new TextModel(Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyNoRooms"), null, null, null, null));
+            }
+            else
+            {
+                foreach (SteamLobbyBrowser.LobbyInfo room in lobbyList)
+                {
+                    SteamLobbyBrowser.LobbyInfo r = room;
+                    string label = room.Name + " (" + room.MemberCount + "/" + room.MaxMembers + ")";
+                    if (!string.IsNullOrEmpty(room.Version)) label += "  v" + room.Version;
+                    g.Add(new TextButtonModel(label, (b) => OnJoinRoomClick(r.LobbyId)));
+                }
+            }
+            return g;
+        }
+
+        /// <summary>房间列表变化时原位重建分组（ReplaceGroup，RebuildPlayersIfChanged 同款）。</summary>
+        private void RebuildLobbiesIfChanged()
+        {
+            try
+            {
+                GroupModel newGroup = BuildLobbiesGroup();
+                inspectorPanel.ReplaceGroup(lobbiesGroup, newGroup);
+                lobbiesGroup = newGroup;
+            }
+            catch (Exception e)
+            {
+                Mod.LogLobby("MultiPlayerUI: ReplaceGroup lobbies failed: " + e.Message);
+            }
+        }
+
+        /// <summary>房间列表状态行（实时）：Steam 未初始化 / 刷新中 / 房间数 / 提示。</summary>
+        private string GetLobbyStatusText()
+        {
+            if (SteamLobbyBrowser.Instance == null) return Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyUnavailable");
+            if (lobbiesRefreshing) return Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyRefreshing");
+            if (lobbyList == null) return Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyInitialHint");
+            return Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyCount", lobbyList.Count);
+        }
+
+        /// <summary>弹出消息对话框（异常安全，失败只记日志）。</summary>
+        private static void ShowMessageDialog(string message)
+        {
+            try
+            {
+                global::ModApi.Ui.MessageDialogScript msg = Game.Instance.UserInterface.CreateMessageDialog(global::ModApi.Ui.MessageDialogType.Okay, null, true);
+                msg.MessageText = message;
+            }
+            catch (Exception e)
+            {
+                Mod.LogLobby("MultiPlayerUI: ShowMessageDialog failed: " + e.Message);
+            }
         }
 
         #endregion

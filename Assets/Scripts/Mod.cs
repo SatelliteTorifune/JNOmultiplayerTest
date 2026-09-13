@@ -36,9 +36,7 @@ namespace Assets.Scripts
 			{
 				base.OnModInitialized();
 				//HarmonyPatch部署
-				Harmony harmony = new Harmony("MPTest");
-				harmony.PatchAll();
-				JetEngineGhostPatch.Apply(harmony);
+				DeployHarmony();
 
 				// 联机房间管理器（独立类，负责网络管理器创建与场景事件）
 				new LobbyManager();
@@ -59,6 +57,13 @@ namespace Assets.Scripts
 			}
 		}
 
+		private void DeployHarmony()
+		{
+			Harmony harmony = new Harmony("MPTest");
+			harmony.PatchAll();
+			JetEngineGhostPatch.Apply(harmony);
+		}
+
 		/// <summary>创建常驻 UI 对象（跨场景存活）。</summary>
 		private void InitializeUserInterface()
 		{
@@ -66,6 +71,12 @@ namespace Assets.Scripts
 			UiObject.AddComponent<MultiPlayerUI>();
 			UiObject.SetActive(true);
 			GameObject.DontDestroyOnLoad(UiObject);
+
+			// Steam 大厅浏览器（房间列表）：独立对象跨场景常驻，任何场景都泵回调（SteamAPI.RunCallbacks 保险），
+			// 并处理好友"加入游戏"邀请（GameLobbyJoinRequested_t）。见 plans/steam-lobby-2026-09-12.md。
+			GameObject lobbyObject = new GameObject("MPSteamLobbyBrowser");
+			lobbyObject.AddComponent<Net.SteamLobbyBrowser>();
+			GameObject.DontDestroyOnLoad(lobbyObject);
 		}
 
 		/// <summary>注册联机控制台命令（HostLobby / JoinLobby / StopLobby）。</summary>
@@ -90,6 +101,28 @@ namespace Assets.Scripts
 			DevConsoleApi.RegisterCommand<int>("SteamHostLobby", new Action<int>(port => LobbyManager.Instance.HostLobby(port)));
 			// Steam P2P：客户端按房主 SteamId 加入
 			DevConsoleApi.RegisterCommand<string>("SteamJoinLobby", new Action<string>(hostSteamId => LobbyManager.Instance.JoinLobby(hostSteamId, 0)));
+			// Steam 房间列表（大厅浏览器，见 plans/steam-lobby-2026-09-12.md）：开房可见、点列表加入
+			DevConsoleApi.RegisterCommand("SteamLobbyList", new Action(() =>
+			{
+				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.RefreshLobbyList();
+			}));
+			// 世界范围列表（默认 Regional 距离过滤；跨区找房用）
+			DevConsoleApi.RegisterCommand("SteamLobbyListWorld", new Action(() =>
+			{
+				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.RefreshLobbyList(true);
+			}));
+			DevConsoleApi.RegisterCommand<string>("SteamLobbyCreate", new Action<string>(name =>
+			{
+				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.CreateLobby(name, Net.SteamLobbyBrowser.DefaultMaxPlayers);
+			}));
+			DevConsoleApi.RegisterCommand<ulong>("SteamLobbyJoin", new Action<ulong>(lobbyId =>
+			{
+				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.JoinLobby(lobbyId);
+			}));
+			DevConsoleApi.RegisterCommand("SteamLobbyLeave", new Action(() =>
+			{
+				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.LeaveLobby();
+			}));
 			// TCP debug（本地虚拟机联机调试）：先切到 TcpTransport 再开房 / 加入。
 			// 房主监听 IPAddress.Any:port；客户端按宿主局域网 IP:port 连接（如 192.168.56.1:25555）。
 			// 若已启用 NetSim 延迟模拟（NetSimDelay 等），自动包一层 LagSimTransport 模拟公网延迟。
@@ -224,6 +257,16 @@ namespace Assets.Scripts
 			/// </summary>
 			public List<bool> PartActivated;
 
+			/// <summary>
+			/// 发送端游戏是否处于暂停(TimeManager.Paused,即 Time.timeScale==0)。
+			/// 用途:暂停时发送端位置是"冻结"的,但 Velocity 仍保留暂停前最后一刻的非零速度。
+			/// 接收端若仍按 "Position + Velocity×外推量" 做 dead-reckoning,目标位置会在
+			/// 每包到达时被拉回、又在包间按速度前进 → 以发包频率来回摆动 → 观察方看到"位置抽搐"
+			/// (见 plans/latency-smoothing-2026-08-22.md §9.7)。
+			/// 接收端据此把目标锁在"最新包位置"上,不再用速度外推。
+			/// </summary>
+			public bool Paused;
+
 			public RemoteDataPack(Vector3d position, Vector3d velocity, Quaterniond heading)
 			{
 				Position = position;
@@ -253,6 +296,7 @@ namespace Assets.Scripts
 				BodyPositions = new List<Vector3>();
 				EngineThrottles = new List<float>();
 				PartActivated = new List<bool>();
+				Paused = false;
 			}
 
 		}

@@ -11,7 +11,7 @@ namespace Assets.Scripts // ★⑤ 与目标 Mod 一致(本工程全部脚本都
     /// <summary>
     /// 通用 Mod 更新检查 + 提醒弹窗系统。
     /// 移植自 Volken2 的 Assets/Scripts/ModUpdater.cs(2026-09-10 版本,含防卡死机制),
-    /// 适配到 aMptest(SimpleRockets 2 / JNO 联机 Mod)。
+    /// 适配到 Mptest(SimpleRockets 2 / JNO 联机 Mod)。
     ///
     /// 【它做什么】
     ///   1. 读取本地版本(ModInfo.Version,类型 System.Version,如 0.6);
@@ -86,7 +86,7 @@ namespace Assets.Scripts // ★⑤ 与目标 Mod 一致(本工程全部脚本都
             "https://raw.githubusercontent.com/SatelliteTorifune/JNOmultiplayerTest/main/version.txt";
 
         // ★⑦ 玩家"不再提醒"记住的版本存哪。带本 Mod 名前缀,避免与 Volken 等其它 Mod 互相覆盖。
-        private const string SkippedVersionPrefKey = "aMptest.UpdateReminder.SkippedVersion";
+        private const string SkippedVersionPrefKey = "Mptest.UpdateReminder.SkippedVersion";
 
         // 防抖:一次游戏会话只检查一次(static 跨实例共享)。
         private static bool _startedThisSession;
@@ -137,7 +137,7 @@ namespace Assets.Scripts // ★⑤ 与目标 Mod 一致(本工程全部脚本都
                 // 协程宿主:非 MonoBehaviour 类用隐藏 GameObject 跑 UnityWebRequest 协程。
                 if (_host == null)
                 {
-                    var go = new GameObject("aMptestUpdateReminder"); // 名字随意,仅便于排查
+                    var go = new GameObject("MptestUpdateReminder"); // 名字随意,仅便于排查
                     GameObject.DontDestroyOnLoad(go);
                     _host = go.AddComponent<ModUpdaterHost>();
                     _host.Owner = this;

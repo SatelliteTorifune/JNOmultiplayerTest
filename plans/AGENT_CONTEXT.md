@@ -9,7 +9,7 @@
 
 给 **SimpleRockets 2 / JNO**(Steam AppID **870200**)写**联机 mod `MultiPlayer`**(Unity **2022.3.62f3**,C#/.NET 4.x,C# 命名空间 `Assets.Scripts.*`)。思路:反编译游戏源码找内部 API + 参考 KSP 的 LunaMultiplayer。
 
-**当前进度**:单船"幽灵船"联机原型**已跑通并通过 Steam 双账号公网实测**;已实现 body 级位姿同步、部件开关/控制输入同步、Vizzy 联机隔离、高延迟平滑(SP2 式连续外推)、延迟模拟调试工具、更新检查(ModUpdater)。**多 craft 同步仍是"方案研究阶段"(未实现)**。
+**当前进度**:单船"幽灵船"联机原型**已跑通并通过 Steam 双账号公网实测**;已实现 body 级位姿同步、部件开关/控制输入同步、Vizzy 联机隔离、高延迟平滑(SP2 式连续外推)、延迟模拟调试工具、更新检查(ModUpdater)、**Steam 房间列表(大厅浏览器,2026-09-12 落地)**。**多 craft 同步仍是"方案研究阶段"(未实现)**。
 
 ## 1. 关键路径
 
@@ -47,6 +47,7 @@
 | `Net/MpMessage.cs` | 二进制消息编码 `MpMessageType`(Hello=1 … **Kick=15**)+ GZip XML 按需下载(`CraftXmlRequest/Response`) |
 | `Net/IMpTransport.cs` | 传输层薄接口(Start/StartClient/DrainIncoming/SendTo/Broadcast…) |
 | `Net/SteamTransport.cs` / `TcpTransport.cs` / `LiteNetLibTransport.cs` | 传输实现(Steam 默认、TCP debug、LiteNetLib 备用) |
+| `Net/SteamLobbyBrowser.cs` | **Steam 大厅浏览器(房间列表)**:开房(CreateLobby+SetLobbyData→复用 HostLobby)/列表(RequestLobbyList 版本过滤)/加入(LobbyEnter→GetLobbyOwner→复用 SteamTransport)/邀请(overlay+GameLobbyJoinRequested);回调引用持有防 GC |
 | `Net/LagSimTransport.cs` | **延迟模拟装饰器**(NetSim:延迟/抖动/丢包/重复,包 TCP,无需 Steam 好友) |
 | `Net/MpPeer.cs` | 对端(含 `SteamId` `ulong`、`NodeId`、`PingMs`、`CraftXml`) |
 | `Net/MpCraftPreloader.cs` | 幽灵船 prefab 异步预热(消除加入白屏 + 真实加载百分比) |
@@ -67,7 +68,7 @@
 - **传输**:Steam P2P 默认(`SteamNetworkingSockets`;游戏启动已 `SteamAPI.Init()`,mod **不重复 Init**);TCP 仅 VM/公网 debug(`TcpHostLobby`/`TcpJoinLobby`);LiteNetLib 备用未启用。
 - **房主 = 中继**:客户端之间的状态包经房主转发(`IsServer` 时 `Transport.Broadcast`)。
 - **FishNet 高层 API 被 codegen 否决**(运行时加载 mod DLL 无序列化器)→ 传输层自建、高层逻辑自持。
-- **加入方式仍是手动输入房主 SteamId**;Steam 大厅/房间列表**未实现**(分析见 `steam-lobby-2026-09-12.md`,待拍板)。
+- **加入方式**:Steam 房间列表(大厅浏览器)——"开房可见、点列表加入";`SteamLobbyBrowser`(SteamMatchmaking 直调)实现开房/列表(版本过滤)/加入(`GetLobbyOwner`→复用 `SteamTransport`)/好友邀请;**手动输入房主 SteamId 仍保留于控制台** `SteamJoinLobby <hostSteamId>`(见 `steam-lobby-2026-09-12.md`,已落地)。
 
 **幽灵船(remote craft)**
 - **幽灵模式**:`AllowPlayerControl=false` + 物理禁用 `SetPhysicsEnabled(false, PhysicsChangeReason.Warp)`(**必须用 Warp**:`UnloadPhysics` 会让 MapCraft 被销毁却留在注册表里 → MapView NRE)+ `CraftUtils.DisableCraftPhysicCalculation`(colliders off、`PreventDebris=true`、`IncludeInDrag=false`、`Damage`/`HeatShield` 拉满)+ 所有 body `RigidBody.isKinematic = true`。
@@ -117,6 +118,7 @@
 - **日志**:`Mod.LogLobby`(联机流程)、`Mod.LogUpdate`(更新检查,不受 `DebugMode` 限制)、`Mod.Log`(通用)。接收端平滑诊断:`MP smoothing P<id>: ...` 每 3 秒一条,只进 `Player.log`(无悬浮窗)。
 - **DevConsole 命令**:
   - 房间:`HostLobbyPort <port>` / `JoinLobbyPort <ip> <port>` / `StopLobby` / `SteamHostLobby <port>` / `SteamJoinLobby <hostSteamId>` / `TcpHostLobby <port>` / `TcpJoinLobby <ip> <port>` / `SetTickRate <hz>`(1~120,房主设置后广播)。
+  - Steam 房间列表(大厅):`SteamLobbyList`(Regional 距离过滤)/ `SteamLobbyListWorld`(WorldWide)/ `SteamLobbyCreate <房间名>` / `SteamLobbyJoin <lobbyId>` / `SteamLobbyLeave`。
   - 延迟模拟(NetSim,需 TCP):`NetSimDelay <ms>` / `NetSimJitter <ms>` / `NetSimLoss <pct>` / `NetSimDuplicate <pct>` / `NetSimOn` / `NetSimOff` / `NetSimReset` / `NetSim`(查看配置与投递统计)。**数值与总开关分离**,会话中改值实时生效。
   - spike(历史):`FishNetSpike` / `SteamSpike`。
 - **本地 VM debug**:本机 `TcpHostLobby 25555`(防火墙放行入站);VM `TcpJoinLobby <宿主IP> 25555`——**✅ 已实测可行**。

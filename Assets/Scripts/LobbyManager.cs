@@ -96,10 +96,19 @@ namespace Assets.Scripts
 			return ok;
 		}
 
-		/// <summary>停止联机。</summary>
+		/// <summary>停止联机（同时退出 Steam 大厅，房间从列表消失）。</summary>
 		public void StopLobby()
 		{
 			Mod.LogLobby("StopLobby() called" + (MpNetworkManager.Instance != null ? " (manager exists)" : " (manager is null, nothing to stop)"));
+			// Steam 大厅浏览器：断开/停房时退出所在大厅（开房/加入时创建的）
+			try
+			{
+				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.LeaveLobby();
+			}
+			catch (Exception e)
+			{
+				Mod.LogLobby("StopLobby: SteamLobbyBrowser.LeaveLobby error: " + e.Message);
+			}
 			if (MpNetworkManager.Instance != null)
 			{
 				MpNetworkManager.Instance.Stop();

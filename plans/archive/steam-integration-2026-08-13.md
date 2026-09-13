@@ -8,7 +8,7 @@
 
 ## 〇、经验教训（归档修订）
 
-> 本文方案已按 3.1~3.3 落地，归档为开发经验记录。**两处保留/不做的说明**：`LiteNetLibTransport` 备用未启用；Lobby 邀请（3.4 进阶）**【决策:不做】**，维持"手动输入房主 SteamId"（`SteamJoinLobby <hostSteamId>`）。
+> 本文方案已按 3.1~3.3 落地，归档为开发经验记录。**一处翻案说明**：**Lobby 邀请已于 2026-09-12 翻案落地**（见 [`steam-lobby-2026-09-12.md`](../../plans/steam-lobby-2026-09-12.md)）——新增 `SteamLobbyBrowser` 实现"房间列表替代手动输入房主 SteamId"；`LiteNetLibTransport` 备用仍未启用。
 
 **结论**：`SteamSpike`（[`SteamSpike.cs`](../Assets/Scripts/Net/SteamSpike.cs)）验证 mod 运行时能直接调 `SteamUser.GetSteamID()` / `SteamNetworkingSockets`；`SteamTransport`（[`SteamTransport.cs:21`](../Assets/Scripts/Net/SteamTransport.cs:21)）实现 `IMpTransport`：房主 `CreateListenSocketP2P` + 客户端 `ConnectP2P` + 每帧 `RunCallbacks()`；`MpNetworkManager.Transport` 默认即 `SteamTransport`（[`MpNetworkManager.cs:35`](../Assets/Scripts/Net/MpNetworkManager.cs:35)），`SteamJoinLobby <hostSteamId>` 加入。
 
@@ -114,9 +114,9 @@ flowchart LR
 - [x] 实现房主 ListenSocket（`CreateListenSocketP2P`）+ 客户端 `ConnectP2P` + 每帧 `RunCallbacks()`；
 - [x] 可靠/不可靠通道按消息类型选择（复用 [`MpMessage`](../Assets/Scripts/Net/MpMessage.cs) 首字节判断）。
 
-### Step 3：房间接入（✅ MVP 完成；Lobby【决策:不做】）
+### Step 3：房间接入（✅ MVP 完成；Lobby【决策:2026-09-12 翻案落地】→ 见 steam-lobby-2026-09-12.md）
 - [x] MVP：`SteamJoinLobby <hostSteamId>` 手动输入房主 SteamId；房主 `SteamHostLobby` 显示本机 SteamId；
-- [~] （**【决策 2026-08】不做**）`SteamMatchmaking` Lobby 创建/加入/邀请 —— 维持手动 SteamId 方案。
+- [x] （**【决策 2026-08 不做 → 2026-09-12 翻案落地】**）`SteamMatchmaking` Lobby 创建/加入/邀请 —— 已由 `SteamLobbyBrowser` 实现（房间列表替代手动 SteamId，见 [`steam-lobby-2026-09-12.md`](../../plans/steam-lobby-2026-09-12.md)）；手动 SteamId 命令保留。
 
 ### Step 4：验证（✅ 全部完成）
 - [x] 回 Unity 编译无报错；
