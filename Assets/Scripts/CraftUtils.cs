@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -75,10 +75,13 @@ namespace Assets.Scripts
 			}
 
 			//craft.GetType().GetField("_frameVelocity", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).SetValue(craft, null);
-			ParticleSystem[] componentsInChildren = craft.gameObject.GetComponentsInChildren<ParticleSystem>();
-			for (int i = 0; i < componentsInChildren.Length; i++)
+			// 1.4.2:body 飞行中脱离 craft 层级后 GetComponentsInChildren 遍历不到 body 上的组件,
+			// 改用手动逐 body 遍历(等价游戏新增的 CraftScript.GetComponentsInCraft<T>,见下方 GetComponentsInCraft)。
+			List<ParticleSystem> particleSystems = new List<ParticleSystem>();
+			GetComponentsInCraft(craft, particleSystems, false);
+			for (int i = 0; i < particleSystems.Count; i++)
 			{
-				CraftScript.RepositionParticleSystem(componentsInChildren[i], positionDelta, velocityDelta);
+				CraftScript.RepositionParticleSystem(particleSystems[i], positionDelta, velocityDelta);
 			}
 			/*
 			IReadOnlyList<PartData> parts = craft.Data.Assembly.Parts;
@@ -93,6 +96,33 @@ namespace Assets.Scripts
 			*/
 			
 		}
+		// 1.4.2 适配:body 飞行中脱离 craft 层级(BodyScript.MoveToCraft → SetParent(Game.InFlightScene ? null : craft)),
+		// craft.gameObject.GetComponentsInChildren 遍历不到 body 上的组件。等价游戏新增的
+		// CraftScript.GetComponentsInCraft<T>(List<T>):显式遍历 craft.Data.Assembly.Bodies 中
+		// 所有未挂接在 craft transform 下的 body。includeInactive 保留旧行为(远程幽灵船渲染器可能处于 inactive)。
+		public static void GetComponentsInCraft<T>(CraftScript craft, List<T> results, bool includeInactive) where T : Component
+		{
+			results.Clear();
+			if (craft == null) return;
+			craft.GetComponentsInChildren<T>(includeInactive, results);
+			foreach (BodyData body in craft.Data.Assembly.Bodies)
+			{
+				BodyScript bodyScript = body.BodyScript as BodyScript;
+				if (bodyScript != null && !bodyScript.transform.IsChildOf(craft.transform))
+				{
+					bodyScript.GetComponentsInChildren<T>(includeInactive, results);
+				}
+			}
+		}
+
+		// CraftNode 便捷重载:内部取 CraftScript 再逐 body 遍历。
+		public static void GetComponentsInCraft<T>(CraftNode craft, List<T> results, bool includeInactive) where T : Component
+		{
+			results.Clear();
+			if (craft == null || craft.CraftScript == null) return;
+			GetComponentsInCraft((CraftScript)craft.CraftScript, results, includeInactive);
+		}
+
 		//禁用craft1的物理计算更新
 		public static bool DisableCraftPhysicCalculation(ref CraftNode craft)
 		{

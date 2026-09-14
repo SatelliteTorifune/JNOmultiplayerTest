@@ -29,5 +29,8 @@ namespace Assets.Scripts.Net
 		void CheckTimeouts(long timeoutMs);
 		IReadOnlyCollection<MpPeer> GetPeers();
 		int GetPeersCount();
+
+		/// <summary>房主：断开与指定对端的连接（踢人用）。断开后传输层会移除该 peer 并触发 OnPeerTimeout。</summary>
+		void DisconnectPeer(MpPeer peer);
 	}
 }

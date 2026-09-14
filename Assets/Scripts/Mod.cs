@@ -1,18 +1,20 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Assets.Packages.DevConsole;
+using Assets.Scripts.Net;
 using ModApi.Mods;
 using ModApi.Scenes.Events;
-
-using Assets.Scripts.Net;
-
-using Jundroo.ModTools;
 using UnityEngine;
 
-//using HarmonyLib;
+using HarmonyLib;
+using Jundroo.ModTools;
 
 namespace Assets.Scripts
 {
+	/// <summary>
+	/// Mod 主入口：负责初始化、控制台命令注册与联机状态包数据结构 recdata。
+	/// 联机房间操作已抽象到独立的 LobbyManager 类（见 LobbyManager.cs），降低与主入口的耦合。
+	/// </summary>
 	public partial class Mod : GameMod
 	{
 		private Mod()
@@ -21,63 +23,68 @@ namespace Assets.Scripts
 		}
 
 		public static Mod Instance { get; } = GameModBase.GetModInstance<Mod>();
-		public GameObject MPGameObject = null;
-
-		public static void Log(object message)
-		{
-			if (!ModSettings.Instance.DebugMode)
-			{
-				return;	
-			}
-			UnityEngine.Debug.Log("[Mptest] " + message);
-		}
-
-		public static void LogError(object message)
-		{
-			if (!ModSettings.Instance.DebugMode)
-			{
-				return;
-			}
-			UnityEngine.Debug.LogError("[Mptest] " + message);
-		}
 
 		/// <summary>
-		/// 联机生命周期日志：不受 DebugMode 限制，始终输出到控制台。
-		/// 用于确认 Host/Join/Stop 等关键节点确实执行成功。
+		/// 本地 Mod 版本（= ModInfo.Version，类型 System.Version，如 0.1）。
+		/// 由 OnModInitialized 赋值，供 ModUpdater 做"网站最新 vs 本地"比较。
 		/// </summary>
-		public static void LogLobby(object message)
-		{
-			UnityEngine.Debug.Log("[Mptest][Lobby] " + message);
-		}
+		public Version ModVersion { get; private set; }
 
 		protected override void OnModInitialized()
 		{
 			try
 			{
 				base.OnModInitialized();
-				//new Harmony("MPTest").PatchAll();
+				//HarmonyPatch部署
+				DeployHarmony();
+
+				// 联机房间管理器（独立类，负责网络管理器创建与场景事件）
+				new LobbyManager();
+				LobbyManager.Instance.EnsureMpManager();
+				Game.Instance.SceneManager.SceneLoaded += LobbyManager.Instance.OnSceneLoaded;
 
 				RegisterMpCommands();
+				InitializeUserInterface();
 
-				//联机网络管理器
-				EnsureMpManager();
+				// 更新检查（移植自 Volken2 ModUpdater，含防卡死机制）：
+				// 必须在 ModVersion 赋值之后调用，否则 ModUpdater 会因本地版本为空而跳过。
+				this.ModVersion = this.ModInfo.Version;
+				new ModUpdater().CheckForUpdate();
 			}
 			catch (Exception e)
 			{
 				Log("Init failed: " + e.ToString());
 			}
-			BuildUi();
-			Game.Instance.SceneManager.SceneLoaded += OnSceneLoaded;
+		}
+
+		private void DeployHarmony()
+		{
+			Harmony harmony = new Harmony("MPTest");
+			harmony.PatchAll();
+			JetEngineGhostPatch.Apply(harmony);
+		}
+
+		/// <summary>创建常驻 UI 对象（跨场景存活）。</summary>
+		private void InitializeUserInterface()
+		{
+			GameObject UiObject=new GameObject("UI");
+			UiObject.AddComponent<MultiPlayerUI>();
+			UiObject.SetActive(true);
+			GameObject.DontDestroyOnLoad(UiObject);
+
+			// Steam 大厅浏览器（房间列表）：独立对象跨场景常驻，任何场景都泵回调（SteamAPI.RunCallbacks 保险），
+			// 并处理好友"加入游戏"邀请（GameLobbyJoinRequested_t）。见 plans/steam-lobby-2026-09-12.md。
+			GameObject lobbyObject = new GameObject("MPSteamLobbyBrowser");
+			lobbyObject.AddComponent<Net.SteamLobbyBrowser>();
+			GameObject.DontDestroyOnLoad(lobbyObject);
 		}
 
 		/// <summary>注册联机控制台命令（HostLobby / JoinLobby / StopLobby）。</summary>
-		
-
 		private void RegisterMpCommands()
 		{
-			DevConsoleApi.RegisterCommand<int>("HostLobbyPort", new Action<int>(port => HostLobby(port)));
-			DevConsoleApi.RegisterCommand<string, int>("JoinLobbyPort", new Action<string, int>((host, port) => JoinLobby(host, port)));
-			DevConsoleApi.RegisterCommand("StopLobby", new Action(() => StopLobby()));
+			DevConsoleApi.RegisterCommand<int>("HostLobbyPort", new Action<int>(port => LobbyManager.Instance.HostLobby(port)));
+			DevConsoleApi.RegisterCommand<string, int>("JoinLobbyPort", new Action<string, int>((host, port) => LobbyManager.Instance.JoinLobby(host, port)));
+			DevConsoleApi.RegisterCommand("StopLobby", new Action(() => LobbyManager.Instance.StopLobby()));
 			// FishNet spike 临时验证命令：起本地 server+client 验证连接
 			DevConsoleApi.RegisterCommand("FishNetSpike", new Action(() =>
 			{
@@ -91,143 +98,101 @@ namespace Assets.Scripts
 				new GameObject("SteamSpike").AddComponent<Net.SteamSpike>();
 			}));
 			// Steam P2P：房主开房（port 忽略，Steam 无端口）
-			DevConsoleApi.RegisterCommand<int>("SteamHostLobby", new Action<int>(port => HostLobby(port)));
+			DevConsoleApi.RegisterCommand<int>("SteamHostLobby", new Action<int>(port => LobbyManager.Instance.HostLobby(port)));
 			// Steam P2P：客户端按房主 SteamId 加入
-			DevConsoleApi.RegisterCommand<string>("SteamJoinLobby", new Action<string>(hostSteamId => JoinLobby(hostSteamId, 0)));
+			DevConsoleApi.RegisterCommand<string>("SteamJoinLobby", new Action<string>(hostSteamId => LobbyManager.Instance.JoinLobby(hostSteamId, 0)));
+			// Steam 房间列表（大厅浏览器，见 plans/steam-lobby-2026-09-12.md）：开房可见、点列表加入
+			DevConsoleApi.RegisterCommand("SteamLobbyList", new Action(() =>
+			{
+				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.RefreshLobbyList();
+			}));
+			// 世界范围列表（默认 Regional 距离过滤；跨区找房用）
+			DevConsoleApi.RegisterCommand("SteamLobbyListWorld", new Action(() =>
+			{
+				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.RefreshLobbyList(true);
+			}));
+			DevConsoleApi.RegisterCommand<string>("SteamLobbyCreate", new Action<string>(name =>
+			{
+				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.CreateLobby(name, Net.SteamLobbyBrowser.DefaultMaxPlayers);
+			}));
+			DevConsoleApi.RegisterCommand<ulong>("SteamLobbyJoin", new Action<ulong>(lobbyId =>
+			{
+				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.JoinLobby(lobbyId);
+			}));
+			DevConsoleApi.RegisterCommand("SteamLobbyLeave", new Action(() =>
+			{
+				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.LeaveLobby();
+			}));
 			// TCP debug（本地虚拟机联机调试）：先切到 TcpTransport 再开房 / 加入。
 			// 房主监听 IPAddress.Any:port；客户端按宿主局域网 IP:port 连接（如 192.168.56.1:25555）。
+			// 若已启用 NetSim 延迟模拟（NetSimDelay 等），自动包一层 LagSimTransport 模拟公网延迟。
 			DevConsoleApi.RegisterCommand<int>("TcpHostLobby", new Action<int>(port =>
 			{
-				MpNetworkManager mgr = EnsureMpManager();
-				if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
-				HostLobby(port);
+				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
+				if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
+				LobbyManager.Instance.HostLobby(port);
 			}));
 			DevConsoleApi.RegisterCommand<string, int>("TcpJoinLobby", new Action<string, int>((host, port) =>
 			{
-				MpNetworkManager mgr = EnsureMpManager();
-				if (mgr != null) mgr.SetTransport(new Net.TcpTransport());
-				JoinLobby(host, port);
+				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
+				if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
+				LobbyManager.Instance.JoinLobby(host, port);
 			}));
+			// 网络延迟模拟（NetSim）：无需 Steam 好友，在 TCP+本地 VM 上模拟公网延迟/抖动/丢包。
+			// 语义：数值命令(NetSimDelay/Jitter/Loss/Duplicate)只设数值、不开总开关；
+			//      总开关 NetSimOn/NetSimOff（或 UI Toggle）控制是否实际生效——避免其它场景残留延迟。
+			// 会话中改值实时生效；已启用实例改总开关也实时直通/恢复。
+			DevConsoleApi.RegisterCommand<int>("NetSimDelay", new Action<int>(ms =>
+			{
+				Net.LagSimTransport.SetDelay(Mathf.Max(0, ms));
+				LogLobby("NetSimDelay -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + "; 需 NetSimOn 或 UI 开关开启后生效)");
+			}));
+			DevConsoleApi.RegisterCommand<int>("NetSimJitter", new Action<int>(ms =>
+			{
+				Net.LagSimTransport.SetJitter(Mathf.Max(0, ms));
+				LogLobby("NetSimJitter -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + ")");
+			}));
+			DevConsoleApi.RegisterCommand<float>("NetSimLoss", new Action<float>(pct =>
+			{
+				Net.LagSimTransport.SetLoss(Mathf.Clamp(pct, 0f, 100f));
+				LogLobby("NetSimLoss -> " + pct + "% (" + Net.LagSimTransport.DescribeConfig() + ")");
+			}));
+			DevConsoleApi.RegisterCommand<float>("NetSimDuplicate", new Action<float>(pct =>
+			{
+				Net.LagSimTransport.SetDuplicate(Mathf.Clamp(pct, 0f, 100f));
+				LogLobby("NetSimDuplicate -> " + pct + "% (" + Net.LagSimTransport.DescribeConfig() + ")");
+			}));
+			DevConsoleApi.RegisterCommand("NetSimOn", new Action(() =>
+			{
+				Net.LagSimTransport.SetToggle(true);
+				LogLobby("NetSimOn: " + Net.LagSimTransport.DescribeConfig() +
+					(Net.LagSimTransport.Enabled ? "（已生效；开房自动包装，活跃实例实时生效）" : "（数值未设,实为直通）"));
+			}));
+			DevConsoleApi.RegisterCommand("NetSimOff", new Action(() =>
+			{
+				Net.LagSimTransport.SetToggle(false);
+				LogLobby("NetSimOff: 延迟模拟已关闭（直通；后续 TcpHostLobby/TcpJoinLobby 不包装，活跃实例立即直通）");
+			}));
+			DevConsoleApi.RegisterCommand("NetSimReset", new Action(() =>
+			{
+				Net.LagSimTransport.ResetConfig();
+				LogLobby("NetSimReset: 数值与总开关已清空（后续 TcpHostLobby/TcpJoinLobby 不再包装；当前会话若已包装则立即直通）");
+			}));
+			DevConsoleApi.RegisterCommand("NetSim", new Action(() =>
+			{
+				MpNetworkManager mgr = MpNetworkManager.Instance;
+				Net.LagSimTransport lag = mgr != null ? mgr.Transport as Net.LagSimTransport : null;
+				LogLobby("NetSim 配置: " + Net.LagSimTransport.DescribeConfig() +
+					(lag != null ? " | 活跃实例统计: " + lag.DescribeStats() : " | 当前传输未启用延迟模拟(需开房前配置或重启会话)"));
+			}));
+			// 接收端平滑/网络诊断仅通过 Mod.LogLobby 写 Player.log（3s 周期行 "MP smoothing P#"），不设悬浮窗。
 			// 房主调整状态包发送频率（Hz）：SetTickRate 20 → 50ms（默认）；5 → 200ms；60 → ~16.7ms。
 			// 房主设置后广播给所有客户端（SP2 ServerTickRate 同款思路）。
-			DevConsoleApi.RegisterCommand<int>("SetTickRate", new Action<int>(hz => SetTickRateCommand(hz)));
+			DevConsoleApi.RegisterCommand<int>("SetTickRate", new Action<int>(hz => LobbyManager.Instance.SetTickRate(hz)));
 		}
 
-		/// <summary>作为房主开启联机房间。</summary>
-		public bool HostLobby(int port = 25555)
-		{
-			LogLobby("HostLobby() called: port=" + port);
-			MpNetworkManager mgr = EnsureMpManager();
-			if (mgr == null)
-			{
-				LogLobby("HostLobby FAILED: MpNetworkManager.Instance is null (EnsureMpManager returned null)");
-				return false;
-			}
-
-			bool ok = mgr.Host(port);
-			LogLobby("HostLobby() finished: port=" + port + ", result=" + ok +
-				", IsServer=" + mgr.IsServer + ", IsConnected=" + mgr.IsConnected +
-				", PlayerId=" + mgr.PlayerId + ", LocalNodeId=" + mgr.LocalNodeId +
-				", Transport.IsRunning=" + mgr.Transport.IsRunning +
-				", LocalPort=" + mgr.Transport.LocalPort +
-				", peerCount=" + mgr.Transport.GetPeersCount());
-			if (!ok) LogLobby("HostLobby FAILED: see above for Transport start error (port " + port + " may already be in use)");
-			return ok;
-		}
-
-		/// <summary>作为客户端加入房主。</summary>
-		public bool JoinLobby(string host, int port = 25555, string playerName = null)
-		{
-			// 未显式传名时读取 ModSettings 配置的玩家名,避免硬编码 "Player" 覆盖设置值
-			if (string.IsNullOrWhiteSpace(playerName))
-			{
-				try { playerName = ModSettings.Instance.PlayerName.Value; }
-				catch { playerName = "Player"; }
-				if (string.IsNullOrWhiteSpace(playerName)) playerName = "Player";
-			}
-			LogLobby("JoinLobby() called: host=" + host + ":" + port + ", playerName='" + playerName + "'");
-			MpNetworkManager mgr = EnsureMpManager();
-			if (mgr == null)
-			{
-				LogLobby("JoinLobby FAILED: MpNetworkManager.Instance is null (EnsureMpManager returned null)");
-				return false;
-			}
-
-			bool ok = mgr.Join(host, port, playerName);
-			LogLobby("JoinLobby() finished: host=" + host + ":" + port + ", result=" + ok +
-				", IsConnected=" + mgr.IsConnected + ", PlayerId=" + mgr.PlayerId +
-				", LocalNodeId=" + mgr.LocalNodeId +
-				", Transport.IsRunning=" + mgr.Transport.IsRunning +
-				", LocalPort=" + mgr.Transport.LocalPort +
-				", peerCount=" + mgr.Transport.GetPeersCount());
-			return ok;
-		}
-
-		/// <summary>停止联机。</summary>
-		public void StopLobby()
-		{
-			LogLobby("StopLobby() called" + (MpNetworkManager.Instance != null ? " (manager exists)" : " (manager is null, nothing to stop)"));
-			if (MpNetworkManager.Instance != null)
-			{
-				MpNetworkManager.Instance.Stop();
-			}
-		}
-
-		/// <summary>
-		/// 房主调整状态包发送频率（Hz）的控制台指令实现（SetTickRate <hz>）。
-		/// 仅房主设置会广播给所有客户端；客户端调用仅改本端（采纳房主广播值为准）。
-		/// </summary>
-		public void SetTickRateCommand(int hz)
-		{
-			MpNetworkManager mgr = EnsureMpManager();
-			if (mgr == null)
-			{
-				LogLobby("SetTickRate FAILED: MpNetworkManager.Instance is null (EnsureMpManager returned null)");
-				return;
-			}
-			if (!mgr.IsServer)
-			{
-				LogLobby("SetTickRate: 仅房主可调整全局发包频率（当前为客户端，本端将采纳房主广播值）");
-			}
-			mgr.SetTickRate(hz);
-		}
-
-		/// <summary>确保联机网络管理器已创建并返回实例。</summary>
-		public MpNetworkManager EnsureMpManager()
-		{
-			if (MpNetworkManager.Instance == null)
-			{
-				if (MPGameObject == null) MPGameObject = new GameObject("MPNetwork");
-				// 关键：让管理器跨场景存活。切换全屏/退出菜单等触发场景重载时，
-				// 普通场景 GameObject 会被销毁 → OnDestroy → Transport.Stop() 断线 → 远程飞船被移除。
-				// DontDestroyOnLoad 保证联机会话在场景切换期间保持连接。
-				GameObject.DontDestroyOnLoad(MPGameObject);
-				MPGameObject.AddComponent<MpNetworkManager>();
-				MPGameObject.SetActive(true);
-			}
-			return MpNetworkManager.Instance;
-		}
-
-		public void OnSceneLoaded(object sender, SceneEventArgs e)
-		{
-			if (Game.Instance.SceneManager.InFlightScene)
-			{
-				// 兜底：若管理器因场景重载被销毁（理论上 DontDestroyOnLoad 后不应发生），在此重建
-				if (MpNetworkManager.Instance == null)
-				{
-					EnsureMpManager();
-				}
-				if (MpNetworkManager.Instance != null)
-				{
-					// 清理上一场景遗留的远程飞船引用（旧 CraftNode 已被场景卸载销毁），
-					// 再上报/刷新本机飞船 NodeId
-					MpNetworkManager.Instance.OnFlightSceneLoaded();
-					MpNetworkManager.Instance.RefreshLocalCraft();
-				}
-			}
-		}
-
-		public struct recdata
+		/// <summary>联机状态包数据结构。</summary>
+		public struct RemoteDataPack
 		{
 			public Vector3d Position;
 			public Vector3d Velocity;
@@ -268,7 +233,54 @@ namespace Assets.Scripts
 			/// </summary>
 			public List<Vector3> BodyRotations;
 
-			public recdata(Vector3d position, Vector3d velocity, Quaterniond heading)
+			/// <summary>
+			/// 每个 body 相对 comRot(CenterOfMass)的"局部位置"(与 BodyRotations 平行、同长度同索引,body-sync P0)。
+			/// 发送端采样 comRot.InverseTransformPoint(body.Transform.position),接收端写 body.Transform.position = comRot.TransformPoint(relPos)。
+			/// 解决"转轴/关节连接的子装配随转轴整体移动"(摆动主要是位置变化)以及残骸小碎片位置缺口。
+			/// 见 plans/body-sync.md。
+			/// </summary>
+			public List<Vector3> BodyPositions;
+
+			/// <summary>
+			/// 每台引擎的"视觉 throttle"(0..1)，按确定顺序(Data.Assembly.Parts 顺序→每部件 modifiers 顺序)
+			/// 与接收端一一对应：液体引擎=EngineThrottle，航发=EngineThrottle(接收端据此推导加力尾焰驱动值 ab)。
+			/// 接收端据此驱动幽灵船尾焰(液体走 ExhaustThrottleOverride;航发加力由 MP 层直接驱动)。
+			/// </summary>
+			public List<float> EngineThrottles;
+
+			/// <summary>
+			/// 每部件"开关/展开状态"(PartData.Activated)，按 Data.Assembly.Parts 确定顺序与接收端一一对应(方案 B)。
+			/// 接收端只对白名单部件(起落架/货舱门/着陆腿/太阳能/灯·信标/SubPartRotator)应用 Activate()/Deactivate()
+			/// 让游戏自身 FlightUpdate/动画器驱动本地视觉;引擎走 EngineVisualSync(不在此应用);
+			/// 分离器/整流罩/对接 = 只记录不处理(归 body 同步);降落伞 = 专用视觉驱动(P2)。
+			/// 见 plans/part-switch-sync-feasibility.md §3/§4/§9。
+			/// </summary>
+			public List<bool> PartActivated;
+
+			/// <summary>
+			/// 发送端游戏是否处于暂停(TimeManager.Paused,即 Time.timeScale==0)。
+			/// 用途:暂停时发送端位置是"冻结"的,但 Velocity 仍保留暂停前最后一刻的非零速度。
+			/// 接收端若仍按 "Position + Velocity×外推量" 做 dead-reckoning,目标位置会在
+			/// 每包到达时被拉回、又在包间按速度前进 → 以发包频率来回摆动 → 观察方看到"位置抽搐"
+			/// (见 plans/latency-smoothing-2026-08-22.md §9.7)。
+			/// 接收端据此把目标锁在"最新包位置"上,不再用速度外推。
+			/// </summary>
+			public bool Paused;
+
+			/// <summary>
+			/// 2 阶外推数据(2026-09-14,acceleration-smoothing):
+			/// Acceleration = 发送端飞船加速度(行星系,含重力,根 body 刚体速度差分测量)
+			/// 转"地表系"后的值(纯旋转,Coriolis/离心项在 SR2 尺度 ≈0.1 m/s² 可忽略);
+			/// 接收端外推加 ½·a·ext²。
+			/// AngularVelocity = 发送端飞船角速度,**craft 局部系**(ModApi 约定,SR2 符号翻转已内嵌);
+			/// 接收端按 ω·ext 右乘外推朝向(符号约定待实测,见 plans/acceleration-smoothing-2026-09-14.md §六-1)。
+			/// 协议尾部追加字段:旧对端包读到 EOF → 零值(退化到 1 阶外推,行为不变)。
+			/// </summary>
+			public Vector3 Acceleration;
+			public Vector3 AngularVelocity;
+
+			
+			public RemoteDataPack(Vector3d position, Vector3d velocity, Quaterniond heading)
 			{
 				Position = position;
 				Velocity = velocity;
@@ -294,6 +306,12 @@ namespace Assets.Scripts
 				ActivationGroupStates = new List<bool>();
 				Stage = 0;
 				BodyRotations = new List<Vector3>();
+				BodyPositions = new List<Vector3>();
+				EngineThrottles = new List<float>();
+				PartActivated = new List<bool>();
+				Paused = false;
+				Acceleration = Vector3.zero;
+				AngularVelocity = Vector3.zero;
 			}
 
 		}

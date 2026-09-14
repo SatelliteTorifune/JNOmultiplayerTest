@@ -1,0 +1,9 @@
+{
+	"name": "MultiPlayer",
+	"references": [
+		"UnityEngine.UI",
+		"Unity.TextMeshPro",
+		"Unity.Mathematics",
+		"FishNet.Runtime"
+	]
+}

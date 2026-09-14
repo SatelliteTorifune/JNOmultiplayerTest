@@ -28,6 +28,7 @@ namespace Assets.Scripts.Net
 		CraftXmlRequest = 12,  // 客户端 -> 房主：按需请求指定玩家（playerId）的飞船 XML（SP2 方案）
 		CraftXmlResponse = 13, // 房主 -> 客户端：返回指定玩家的飞船 XML（大包，走可靠通道）
 		TickRate = 14,         // 房主 -> 所有：当前状态包发送频率（Hz），客户端据此调整发包节奏与插值
+		Kick = 15,             // 房主 -> 指定客户端：你被房主踢出（随后断开连接）
 	}
 
 	/// <summary>
@@ -216,7 +217,7 @@ namespace Assets.Scripts.Net
 		/// 状态包格式：PlayerId(int) + NodeId(int) + FlightState.Time(double) + recdata。
 		/// PlayerId 由房主分配，全局唯一，用于寻址；NodeId 为发送方本机飞船节点号（各机之间可重复）。
 		/// </summary>
-		public static byte[] EncodeState(int playerId, int nodeId, double time, Mod.recdata data)
+		public static byte[] EncodeState(int playerId, int nodeId, double time, Mod.RemoteDataPack data)
 		{
 			return Pack(MpMessageType.State, w =>
 			{
@@ -227,9 +228,9 @@ namespace Assets.Scripts.Net
 			});
 		}
 
-		public static bool TryDecodeState(byte[] buffer, out int playerId, out int nodeId, out double time, out Mod.recdata data)
+		public static bool TryDecodeState(byte[] buffer, out int playerId, out int nodeId, out double time, out Mod.RemoteDataPack data)
 		{
-			playerId = -1; nodeId = -1; time = 0; data = new Mod.recdata();
+			playerId = -1; nodeId = -1; time = 0; data = new Mod.RemoteDataPack();
 			try
 			{
 				using (MemoryStream ms = new MemoryStream(buffer))
@@ -396,6 +397,58 @@ namespace Assets.Scripts.Net
 			return Pack(MpMessageType.Pong, w => w.Write(tick));
 		}
 
+		public static bool TryDecodePing(byte[] buffer, out long tick)
+		{
+			tick = 0;
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					if (r.ReadByte() != (byte)MpMessageType.Ping) return false;
+					tick = r.ReadInt64();
+					return true;
+				}
+			}
+			catch { return false; }
+		}
+
+		public static bool TryDecodePong(byte[] buffer, out long tick)
+		{
+			tick = 0;
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					if (r.ReadByte() != (byte)MpMessageType.Pong) return false;
+					tick = r.ReadInt64();
+					return true;
+				}
+			}
+			catch { return false; }
+		}
+
+		// ---------------- Kick（房主 -> 指定客户端：你被踢出） ----------------
+
+		public static byte[] EncodeKick()
+		{
+			return Pack(MpMessageType.Kick, _ => { });
+		}
+
+		public static bool TryDecodeKick(byte[] buffer)
+		{
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					return r.ReadByte() == (byte)MpMessageType.Kick;
+				}
+			}
+			catch { return false; }
+		}
+
 		// ---------------- TickRate（房主 -> 客户端：状态包发送频率） ----------------
 
 		public static byte[] EncodeTickRate(int hz)
@@ -421,7 +474,7 @@ namespace Assets.Scripts.Net
 
 		// ---------------- recdata 序列化 ----------------
 
-		public static void WriteRecdata(BinaryWriter w, Mod.recdata d)
+		public static void WriteRecdata(BinaryWriter w, Mod.RemoteDataPack d)
 		{
 			w.Write(d.Position.x); w.Write(d.Position.y); w.Write(d.Position.z);
 			w.Write(d.Velocity.x); w.Write(d.Velocity.y); w.Write(d.Velocity.z);
@@ -449,11 +502,40 @@ namespace Assets.Scripts.Net
 				Vector3 br = d.BodyRotations[i];
 				w.Write(br.x); w.Write(br.y); w.Write(br.z);
 			}
+
+			// body 局部位置(相对 comRot,body-sync P0):与 BodyRotations 平行同索引;远程端据此复现转轴/关节连接的子装配"整体移动"
+			int bpCount = d.BodyPositions == null ? 0 : d.BodyPositions.Count;
+			w.Write(bpCount);
+			for (int i = 0; i < bpCount; i++)
+			{
+				Vector3 bp = d.BodyPositions[i];
+				w.Write(bp.x); w.Write(bp.y); w.Write(bp.z);
+			}
+
+			// 每引擎视觉 throttle(尾焰同步)：与发送端引擎枚举顺序一一对应
+			int etCount = d.EngineThrottles == null ? 0 : d.EngineThrottles.Count;
+			w.Write(etCount);
+			for (int i = 0; i < etCount; i++) w.Write(d.EngineThrottles[i]);
+
+			// 每部件开关状态(方案 B)：与发送端 Data.Assembly.Parts 顺序一一对应
+			int paCount = d.PartActivated == null ? 0 : d.PartActivated.Count;
+			w.Write(paCount);
+			for (int i = 0; i < paCount; i++) w.Write(d.PartActivated[i]);
+
+			// 发送端暂停标记(尾部**最后**追加,与 ReadRecdata 的读取顺序严格一致;旧包读到此处即 EOF → 保持 false):
+			// 暂停时发送端位置冻结但 Velocity 仍非零,接收端必须停止按速度外推,否则目标在包间来回摆动(抽搐)。
+			w.Write(d.Paused);
+
+			// 2 阶外推(2026-09-14,acceleration-smoothing):加速度(地表系)+ 角速度(craft 局部系)。
+			// 在 Paused 之后**最后**追加:旧端读新包时这些字节留在流尾不被读取(读取顺序固定,无异常);
+			// 新端读旧包读到 EOF → 零值(见 ReadRecdata 的 try/catch,退化 1 阶外推)。
+			w.Write(d.Acceleration.x); w.Write(d.Acceleration.y); w.Write(d.Acceleration.z);
+			w.Write(d.AngularVelocity.x); w.Write(d.AngularVelocity.y); w.Write(d.AngularVelocity.z);
 		}
 
-		public static Mod.recdata ReadRecdata(BinaryReader r)
+		public static Mod.RemoteDataPack ReadRecdata(BinaryReader r)
 		{
-			Mod.recdata d = new Mod.recdata(
+			Mod.RemoteDataPack d = new Mod.RemoteDataPack(
 				new Vector3d(r.ReadDouble(), r.ReadDouble(), r.ReadDouble()),
 				new Vector3d(r.ReadDouble(), r.ReadDouble(), r.ReadDouble()),
 				new Quaterniond(r.ReadDouble(), r.ReadDouble(), r.ReadDouble(), r.ReadDouble())
@@ -482,6 +564,37 @@ namespace Assets.Scripts.Net
 			{
 				d.BodyRotations.Add(new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
 			}
+
+			int bpCount = r.ReadInt32();
+			for (int i = 0; i < bpCount; i++)
+			{
+				d.BodyPositions.Add(new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
+			}
+
+			int etCount = r.ReadInt32();
+			for (int i = 0; i < etCount; i++)
+			{
+				d.EngineThrottles.Add(r.ReadSingle());
+			}
+
+			int paCount = r.ReadInt32();
+			for (int i = 0; i < paCount; i++)
+			{
+				d.PartActivated.Add(r.ReadBoolean());
+			}
+
+			// 暂停标记为**尾部最后**追加字段:旧版本发来的包没有该字节,读到 EOF 时保持 false(向前兼容)。
+			// 放在最后读取,保证即使缺失也不会截断前面任何字段(默认已是 false,异常可忽略)。
+			try { d.Paused = r.ReadBoolean(); } catch { d.Paused = false; }
+
+			// 2 阶外推字段(2026-09-14,acceleration-smoothing):尾部最后追加;旧对端包无这些字节
+			// → EOF → 保持零值(退化 1 阶外推,行为不变)。
+			try
+			{
+				d.Acceleration = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+				d.AngularVelocity = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+			}
+			catch { d.Acceleration = Vector3.zero; d.AngularVelocity = Vector3.zero; }
 
 			return d;
 		}

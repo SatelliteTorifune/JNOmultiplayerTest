@@ -1,11 +1,46 @@
-.vs
-Library
-Temp
-obj
-Logs
-ModAssetBundles
+# ============================================================
+# JNOMultiPlayer (SimpleRockets 2 联机 mod aMptest) — .gitignore
+# 原则:只上传"源码 + 配置 + 文档";Unity 生成的、可再生的、
+# 私有的、编辑器相关的全部不上传。
+# 注意:*.meta 必须上传(Unity GUID/引用依赖),本文件不忽略 meta。
+# ============================================================
+
+# ---- Unity 自动生成 / 可再生 ----
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Ll]ogs/
+[Uu]serSettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+*.csproj
+*.sln
+*.unityproj
+*.booproj
+*.svd
+*.pidb
+*.user
+*.userprefs
+
+# ---- 编辑器 / OS 杂项 ----
+.vs/
+.idea/
+.vscode/
+.kilo/
+*.DotSettings*
+.DS_Store
+Thumbs.db
+
+# ---- 本项目:构建产物(AssetBundle 输出) ----
+ModAssetBundles/
+
+# ---- 本项目:私有/第三方资产,不上传(需要本地自备) ----
+# 素材商店资产(私有)
 Assets/_ModAssets_/*
 Assets/_ModAssets_.meta
-*.sln
-*.csproj
+# ModTools 预编译 DLL(游戏/ModApi 程序集,属游戏本体,不随仓库分发)
 Assets/ModTools/*
+/ProjectSettings
+
+# ---- 本机隐私信息:真实路径映射(仅本地,严禁上传) ----
+plans/LOCAL_PATHS.md

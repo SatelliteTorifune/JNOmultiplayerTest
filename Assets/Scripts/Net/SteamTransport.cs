@@ -45,6 +45,21 @@ namespace Assets.Scripts.Net
 		public bool IsRunning => _running;
 		public ulong LocalSteamId { get; private set; } // 本机 SteamId
 
+		/// <summary>
+		/// 查询当前 Steam 登录用户 ID（0 = 未初始化/未登录）。
+		/// 与实例属性 LocalSteamId 不同：后者仅在 Start/StartClient 成功后才赋值，
+		/// 开房前的预检（HostLobby）不能依赖它，否则 Steam 正常时也会被误判为未登录而拒绝开房。
+		/// </summary>
+		public static ulong GetLocalSteamId()
+		{
+			try { return SteamUser.GetSteamID().m_SteamID; }
+			catch (Exception e)
+			{
+				Mod.LogError("SteamTransport.GetLocalSteamId error: " + e.Message);
+				return 0;
+			}
+		}
+
 		/// <summary>毫秒级时间戳（纯 .NET）。</summary>
 		private static long NowMs => DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;
 
@@ -306,6 +321,27 @@ namespace Assets.Scripts.Net
 			catch (Exception e)
 			{
 				Mod.LogError("SteamTransport.Broadcast error: " + e.Message);
+			}
+		}
+
+		/// <summary>房主：踢人用——关闭与指定对端的 Steam 连接。先移除映射再 CloseConnection，
+		/// 避免 OnConnectionStatusChanged 回调再次移除/触发 OnPeerTimeout（重复清理）。</summary>
+		public void DisconnectPeer(MpPeer peer)
+		{
+			if (peer == null || peer.SteamId == 0) return;
+			HSteamNetConnection conn = default;
+			lock (_serverConnections)
+			{
+				if (_serverConnections.TryGetValue(peer.SteamId, out conn))
+				{
+					_serverConnections.Remove(peer.SteamId);
+				}
+			}
+			lock (_serverPeers) { _serverPeers.Remove(peer.SteamId); }
+			if (conn.m_HSteamNetConnection != 0)
+			{
+				try { SteamNetworkingSockets.CloseConnection(conn, 1, "kicked", false); }
+				catch (Exception e) { Mod.LogError("SteamTransport.DisconnectPeer error: " + e.Message); }
 			}
 		}
 
