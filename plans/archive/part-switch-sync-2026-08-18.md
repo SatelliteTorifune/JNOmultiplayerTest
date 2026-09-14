@@ -2,8 +2,8 @@
 
 > 项目:JNOMultiPlayer(MultiPlayer)
 > 反编译参考:`C:/renko/shitProgram/jnoCode`
-> 定位:[`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) 的补充分析——回答"幽灵船的起落架收放/货舱门/太阳能板/灯等**开关与展开状态**能否同步、怎么同步、代价多大"
-> 状态:**① 方案 B(P0)已实现并实测通过(起落架/货舱同步 OK,2026-08-18)**;**② P3 控制输入应用已实现**(§11,2026-08-18,编译通过待实测;**激活组 off-by-one 已于 2026-08-22 修复**,见 §11.5)。① 方案 B(per-part `Activated` 位);② 分离器/级间、整流罩、对接等**涉及 body 改动的部件只记录、不处理**(归后续 body 同步);③ 降落伞等特殊部件**先反编译确定原理**(见 §9),走专用视觉驱动(P2,**尚未实现**);④ 输入驱动部件(rotator/舵面等)**靠"开关+输入"双驱动**,由 P3 控制输入应用解决(§11,用户 2026-08-18 指出)。实现记录见 §10/§11.5;P1(相位对齐)/P2(伞专用驱动)**未排期**。
+> 定位:[`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) 的补充分析——回答"幽灵船的起落架收放/货舱门/太阳能板/灯等**开关与展开状态**能否同步、怎么同步、代价多大"
+> 状态:✅ **已归档**(核心功能已实现:P0 方案 B + P3 控制输入;剩余 P1 相位对齐 / P2 降落伞专用驱动**未排期**,见 README「当前待定」)。**① 方案 B(P0)已实现并实测通过(起落架/货舱同步 OK,2026-08-18)**;**② P3 控制输入应用已实现**(§11,2026-08-18,编译通过待实测;**激活组 off-by-one 已于 2026-08-22 修复**,见 §11.5)。① 方案 B(per-part `Activated` 位);② 分离器/级间、整流罩、对接等**涉及 body 改动的部件只记录、不处理**(归后续 body 同步);③ 降落伞等特殊部件**先反编译确定原理**(见 §9),走专用视觉驱动(P2,**尚未实现**);④ 输入驱动部件(rotator/舵面等)**靠"开关+输入"双驱动**,由 P3 控制输入应用解决(§11,用户 2026-08-18 指出)。实现记录见 §10/§11.5;P1(相位对齐)/P2(伞专用驱动)**未排期**。
 
 > **实现复核(2026-09)**:`PartActivated`(每部件 `Activated` 位,按 `Data.Assembly.Parts` 确定顺序)在收发两端已接通;接收端白名单 `PartVisualSync._applyModifierTypes` 现包含**输入驱动部件**(`ControlSurfaceScript`/`JointRotatorScript`/`PistonScript`/`PropellerAssemblyScript`/`ResizableWheelScript`/`ReactionControlNozzleScript`/`ElectricMotorScript`/`ElectricMotorOldScript`/`LightPartScript`),由 `ControlVisualSync.ApplyRemoteControls` 写幽灵 `CraftControls`(12 控制标量 + 10 激活组)。**仍未做**:降落伞专用视觉驱动(P2)、`ExtensionPercent` 相位对齐(P1)。**注意 `Stage` 字段目前只采样/传输、未应用**——所以"整流罩投弃/分级"在幽灵上不会发生(与 §4 的"只记录不处理"一致)。
 > 结论先行:**同步"开关状态"可行且成本近零**——机制是同步每个部件的 `Part.Activated`(开关位),幽灵端**复用游戏自己的 FlightUpdate/动画器做本地仿真**(与 engine-fx 尾焰的 L1"输入/状态同步 + 本地仿真"完全同套路)。不推翻 8.2-5"燃料/资源不同步",只把"部件展开状态"从 8.2-5 的限制里摘出来。
@@ -12,7 +12,7 @@
 
 ## 0. 现状(plan 已认定的限制)
 
-- [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) 8.2-5 决策:**燃料/资源/部件状态 MVP 不同步**,其中"part 损伤/展开/引擎/Vizzy 状态"都记为已知限制。
+- [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) 8.2-5 决策:**燃料/资源/部件状态 MVP 不同步**,其中"part 损伤/展开/引擎/Vizzy 状态"都记为已知限制。
 - engine-fx 尾焰已用"同步**视觉驱动值**(throttle)"打破了"引擎视觉不同步"的边界(不涉及燃料数值)。**起落架等开关是同一类**:同步"开关状态(Part.Activated)",不同步任何燃料/资源数值。
 - 现状代码:recdata **已含** `ActivationGroupStates`(10 bool)+ `Stage`(见 [`Mod.cs`](../Assets/Scripts/Mod.cs:132)),且已序列化传输([`MpMessage.cs`](../Assets/Scripts/Net/MpMessage.cs:488)),但 **接收端从未应用**(`MpNetworkManager.ApplyRemoteState` 只采样不应用)——是现成的半成品通道。
 - 同理:`Pitch/Yaw/Roll/Throttle/Brake/Sliders` 也是"只采样、不应用"的死字段(`MpNetworkManager.cs:1951-1962`)。

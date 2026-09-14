@@ -3,8 +3,8 @@
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod MultiPlayer)
 > 反编译参考:`C:/renko/shitProgram/jnoCode`
 > KSP 参考:`C:/renko/unityProjects/LunaMultiplayer`
-> 状态:📋 方案研究阶段(**代码侧零实现**,下述方案均未落地;2026-08-18 **body 级姿态同步已拆分为独立 plan [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)**,本文件只专注多 craft)
-> 定位:**当前唯一活跃 plan**(索引见 [`README.md`](README.md));已完成/历史文档见 `archive/`
+> 状态:📋 方案研究阶段(**代码侧零实现**,下述方案均未落地;2026-08-18 **body 级姿态同步已拆分为独立 plan [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md)**,本文件只专注多 craft)
+> 定位:**多 craft 方案研究 plan**(当前未实现,见索引 [`README.md`](README.md)「当前活跃」);已完成/历史文档见 `archive/`
 
 ---
 
@@ -25,7 +25,7 @@
 **当前实际的船模型(作为多 craft 的起点)**:
 - 本机侧:`RefreshLocalCraft()` 只上报**一艘**(`GetLocalCraftNodeId()` = `FlightSceneScript.Instance.CraftNode.NodeId`,`MpNetworkManager.cs:2153`)。
 - 远端侧:每玩家一个 `RemoteCraft`,`SpawnRemoteCraftCoroutine` 生成一艘幽灵,后续该玩家的所有状态都打到这一艘上。
-- 分离出的子装配**不会**变成独立幽灵——它们只作为"同一艘幽灵内部的 body 位姿变化"体现(见 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md))。
+- 分离出的子装配**不会**变成独立幽灵——它们只作为"同一艘幽灵内部的 body 位姿变化"体现(见 [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md))。
 
 **结论**:多 craft 是**从零开始的功能**,不是"给现有结构加字段"。第一步应该就是 §三 方案 B 的注册表 + §3 的 `Guid` 身份,二者必须同时做(没有身份就无法建注册表)。
 
@@ -279,7 +279,7 @@ Luna 不自己实现切换动作,而是挂钩 KSP `onVesselChange`(玩家按 `[`
 2. **轨道残骸**:需 `Situation`(地面/轨道)字段,接收端用 `LaunchLocationType.Orbital` 或直接 `SetStateVectors`,不能固定 `SurfaceLockedGround`(对应 MC2)。
 3. **过滤策略(可选,MC4)**:残骸只在"距任一玩家较近 / 部件数>阈值"时生成完整幽灵船;超远/极小跳过。
 4. **超时清理**:低频下 5~10s 无状态包(>3 周期)→ 远端删幽灵船,兜住"owner 侧已毁但 CraftRemove 丢 / owner 掉线"。
-5. **已知缺口(已转出)**:同 craft 内 `IsDebris` 小碎片只同步旋转不同步位置(`BodyRotations` 限制)→ **已由独立 plan [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md) 的 BodyPoses 覆盖**(位置+旋转相对 comRot)。
+5. **已知缺口(已转出)**:同 craft 内 `IsDebris` 小碎片只同步旋转不同步位置(`BodyRotations` 限制)→ **已由独立 plan [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md) 的 BodyPoses 覆盖**(位置+旋转相对 comRot)。
 6. **最高优先级场景 C**:"玩家分离掉唯一 pod" → `SplitCraftNode` 自动 `ChangePlayersActiveCommandPodImmediate` 切走控制权([`CraftSplitter.cs:133`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/Sim/CraftSplitter.cs:133)),原 craft 变无 pod 残骸、`FlightSceneScript.Instance.CraftNode` 自动换节点 → mod 必须 **`RefreshLocalCraft()`** 且把原 craft 从"活动船"降级为"残骸(低频)"继续上报。
 
 ---
@@ -326,6 +326,6 @@ Luna 不自己实现切换动作,而是挂钩 KSP `onVesselChange`(玩家按 `[`
 
 ### 8.4 body 级姿态同步 —— 已拆分为独立 plan
 
-> **2026-08-18**:body 级姿态同步(转轴/关节连接部件的"整体移动",BodyRotations→BodyPoses 方案 + SP2 参考可抄性结论)与 multi-craft 是两个独立目标,**已移至 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)**。本文件只保留多 craft(身份/生命周期/对接/残骸/切换)内容。
+> **2026-08-18**:body 级姿态同步(转轴/关节连接部件的"整体移动",BodyRotations→BodyPoses 方案 + SP2 参考可抄性结论)与 multi-craft 是两个独立目标,**已移至 [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md)**。本文件只保留多 craft(身份/生命周期/对接/残骸/切换)内容。
 >
-> 与本文件相关的接口:原 §7.7.5 "IsDebris 小碎片只同步旋转不同步位置"缺口 → 由 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md) 的 BodyPoses 覆盖;分离/对接后 body 数量与顺序变化 → 由本文件 MC1/MC3 生命周期对账解决(body-sync 的索引契约依赖它)。
+> 与本文件相关的接口:原 §7.7.5 "IsDebris 小碎片只同步旋转不同步位置"缺口 → 由 [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md) 的 BodyPoses 覆盖;分离/对接后 body 数量与顺序变化 → 由本文件 MC1/MC3 生命周期对账解决(body-sync 的索引契约依赖它)。

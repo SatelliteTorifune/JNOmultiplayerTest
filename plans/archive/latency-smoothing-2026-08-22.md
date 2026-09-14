@@ -1,8 +1,8 @@
 # 远程飞船高延迟平滑方案(latency-smoothing)
 
-> 状态:✅ **已实现,且接收端架构已再次重构**——**现行实现 = SP2 式连续外推(dead-reckoning)+ 每帧指数平滑**(见 §9);本文 §0~§7 记载的**插值缓冲 + 自适应 lookback** 方案为**已被取代的上一代实现**,保留作决策记录。
+> 状态:✅ **已归档(2026-09-13 收工,用户确认)**——**现行实现 = SP2 式连续外推(dead-reckoning)+ 每帧指数平滑**(见 §9);本文 §0~§7 记载的**插值缓冲 + 自适应 lookback** 方案为**已被取代的上一代实现**,保留作决策记录。
 > 目标:延迟 >100ms(RTT)时,对面 craft 同步位置**平滑**(不"一卡一卡"),包括整船平移、朝向、每 body 相对位姿(转轴/关节连接的子装配摆动)。
-> 关联:[`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)(BodyPoses 数据源,本方案在**接收端平滑层**上做文章);[`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md)(body 数量变化归生命周期对账);[`part-switch-sync-2026-08-18.md`](part-switch-sync-2026-08-18.md) §11.5(同一轮排查中发现并修复的激活组 off-by-one)。
+> 关联:[`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)(BodyPoses 数据源,本方案在**接收端平滑层**上做文章);[`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md)(body 数量变化归生命周期对账);[`part-switch-sync-2026-08-18.md`](part-switch-sync-2026-08-18.md) §11.5(同一轮排查中发现并修复的激活组 off-by-one)。
 >
 > ⚠️ **阅读提示(2026-09 校订)**:本文档前几节的"渲染回看 / 插值缓冲 / underrun%"等描述**已不代表当前代码**。当前接收端**不再用插值缓冲渲染**,而是"始终取最新包 + 按 `RTT/2 + 包龄` 连续外推 + 平滑收敛"。以 **§9 为现行事实**,§0~§7 为历史演进。相关残留物(`TryGetInterpolatedState`、`RenderDelayMs`、`UnderrunFrames`)仍在代码里但**已不被使用**。
 
@@ -201,7 +201,7 @@ newest=(<F4>,<F4>,<F4>)  posErr=<F2>m
 
 ### 9.11 【2026-09-13 三轮】根 body 与游戏 comRot 锚定的 G 对抗(8~13cm 恒定抖动,全阶段)
 
-> 详见 [update-1.4.2 §〇之四](update-1.4.2-experimental-2026-09-03.md) 三轮。要点:
+> 详见 [update-1.4.2 §〇之四](../update-1.4.2-experimental-2026-09-03.md) 三轮。要点:
 > 游戏 `CraftScript.FramePosition` getter = `CenterOfMass.position` → `RecalculateFrameState` 每帧把
 > **comRot 锚到 craft.Position**;body[0] 是 comRot 父级 → 被游戏放到 `comPos − G`(G = 接收端自身几何偏移,每船不同)。
 > 根 body 按 `comPos − G`(G 写前实时读取)写出 → 与游戏锚定一致 → `b0dLate→0`,全阶段 8~13cm 恒定抖动消除。
@@ -325,6 +325,15 @@ newest=(<F4>,<F4>,<F4>)  posErr=<F2>m
 > 诊断:`MP smoothing`(3s,含 rate/mRate)、`MP slowmo`(0.5s,rootΔ/partΔ/comΔ/dist)、
 > `MP freeze`(跃迁)、`MP twitch`(1s)。
 
+### 9.18 【2026-09-14 评估】2 阶外推(加速度 + 旋转速率)— 未实施
+
+> dev 讨论要点:飞船时刻变速度/变朝向,只有 1 阶(速度)外推必然"每包跳状态";加速度与旋转速率(两个域的 2 阶导)是关键,
+> 输入突变不可预测(unavoidable)但有了 2 阶项后纠偏会小得多(subtle)。
+> 评估结论:平移现为 1 阶(§9.3),旋转**零外推**(§9.4 仅 2.5·dt Slerp 追目标)→ 确为两个真实缺口;
+> 游戏侧 `CraftFlightData.Acceleration`(行星系含重力)/`AngularVelocity`(craft 局部系)可直接采样(反编译已核实)。
+> 完整方案(期 0 零协议接收端推导 / 期 1 协议尾部追加)、量级估算、风险与回归判据见
+> [`acceleration-smoothing-2026-09-14.md`](../acceleration-smoothing-2026-09-14.md)。**状态:仅评估,未实施**(2026-09-14 拍板)。
+
 ---
 
 ## 0. 一句话结论【历史:插值缓冲时代】
@@ -402,7 +411,7 @@ SP2 反编译给出了完整药方:**用"测得延迟×速度外推"补足延迟
 
 ### T7. 发送端 Delta 兴趣 + top-N(带宽,非平滑)
 
-- [`CraftStateSerializer.SerializeWrite`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:149) 根 body 全发、子 body 仅 `Delta>0.1f`,按 Delta 降序每包 top-5;`BodySyncData.Update/Delta`([`BodySyncData.cs:89-118`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/SyncData/BodySyncData.cs:89))。**与我们 body 顺序索引契约冲突(需先引 Id,见 body-sync-2026-08-18.md P2),不在此方案内。**
+- [`CraftStateSerializer.SerializeWrite`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:149) 根 body 全发、子 body 仅 `Delta>0.1f`,按 Delta 降序每包 top-5;`BodySyncData.Update/Delta`([`BodySyncData.cs:89-118`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/SyncData/BodySyncData.cs:89))。**与我们 body 顺序索引契约冲突(需先引 Id,见 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md) P2),不在此方案内。**
 
 ---
 
@@ -451,7 +460,7 @@ SP2 反编译给出了完整药方:**用"测得延迟×速度外推"补足延迟
 **需适配 / 不抄**
 - ❌ **远程船物理保持开启 + RigidBody 积分 + 每物理步写速度**(T5):SR2 幽灵全 kinematic、物理禁用(既定模式),**用"每帧直接写 Transform + P0/P1 平滑层"替代**;烟雾速度注入(EngineVisualSync.InjectGhostMotion)可复用为外推的视觉一致性。
 - ❌ **FishNet tick 时钟同步**:SP2 的 `num = 接收端物理时间 − 包内发送时间` 依赖双端同 tick;SR2 无时钟同步 → 用到达时间差 + RTT/2 近似。
-- ❌ **ParentBody 树 / Delta top-N 兴趣**:body 顺序索引契约(无 Id)暂不支持子集,保持整船全发(见 body-sync-2026-08-18.md)。
+- ❌ **ParentBody 树 / Delta top-N 兴趣**:body 顺序索引契约(无 Id)暂不支持子集,保持整船全发(见 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md))。
 
 ---
 

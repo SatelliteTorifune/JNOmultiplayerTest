@@ -267,6 +267,7 @@ namespace Assets.Scripts
 			/// </summary>
 			public bool Paused;
 
+			
 			public RemoteDataPack(Vector3d position, Vector3d velocity, Quaterniond heading)
 			{
 				Position = position;

@@ -2,7 +2,7 @@
 
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod MultiPlayer)
 > 创建日期:2026-09-12
-> 状态:**✅ 已落地(2026-09-12 拍板执行;旧决策「Lobby 邀请:不做」翻案,实现见 §4)**
+> 状态:✅ **已归档**(原状态:已落地,2026-09-12 拍板执行;旧决策「Lobby 邀请:不做」翻案,实现见 §4)
 > 动机:当前加入房间必须手动输入房主 SteamId(见 [`MultiPlayerUI.cs:522`](../Assets/Scripts/MultiPlayerUI.cs:522) `OnSteamJoinLobbyClick`),目标是把 SP2 的"房间列表菜单"移植过来,实现"开房可见、点列表加入"。
 
 ---
@@ -17,7 +17,7 @@
 
 - 当前加入流程:`MultiPlayerUI.OnSteamJoinLobbyClick` 弹输入框 → 玩家手动粘贴房主 SteamId → `LobbyManager.JoinLobby(steamId, 0)` → `SteamTransport.StartClient(hostSteamId)`。
 - 全项目 grep:`SteamMatchmaking` / `CreateLobby` / `RequestLobbyList` / `SetLobbyData` / `GetLobbyOwner` / `LobbyEnter` / `GameLobbyJoinRequested` / `ActivateGameOverlayInviteDialog` **一处都没有**(2026-09 复核仍为 0 命中;代码里出现的 `JoinLobby(` 是 `LobbyManager` 自己的方法名),SP2 的 `SteamLobbyManager` 未移植。也**不存在**房间元数据、版本过滤、密码房、好友邀请、房间列表、ping 估算。
-- 旧决策记录于 [`archive/steam-integration-2026-08-13.md`](archive/steam-integration-2026-08-13.md) §3.4 + Step3:**「Lobby 邀请【决策:不做】,维持手动输入房主 SteamId」**——当时为优先验证 P2P 通道。本文档为重新评估该决策的可行性分析,**待定,不翻案**。
+- 旧决策记录于 [`steam-integration-2026-08-13.md`](steam-integration-2026-08-13.md) §3.4 + Step3:**「Lobby 邀请【决策:不做】,维持手动输入房主 SteamId」**——当时为优先验证 P2P 通道。本文档为重新评估该决策的可行性分析,**待定,不翻案**。
 
 ---
 
@@ -68,8 +68,8 @@
 
 ### 4.3 决策文档(✅ 已同步)
 
-- [`README.md`](README.md) 决策速查表 "Lobby 邀请 | 不做" 一行已修订为 "Steam 房间列表 | ✅ 已实现";
-- [`archive/steam-integration-2026-08-13.md`](archive/steam-integration-2026-08-13.md) §0/Step3 的「Lobby 邀请:不做」已修订为「2026-09-12 翻案落地」。
+- [`README.md`](../README.md) 决策速查表 "Lobby 邀请 | 不做" 一行已修订为 "Steam 房间列表 | ✅ 已实现";
+- [`steam-integration-2026-08-13.md`](steam-integration-2026-08-13.md) §0/Step3 的「Lobby 邀请:不做」已修订为「2026-09-12 翻案落地」。
 
 ---
 

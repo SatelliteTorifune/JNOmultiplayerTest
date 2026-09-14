@@ -1,8 +1,8 @@
 # Vizzy 联机隔离方案:阻止跨 Craft 数据传输 + 禁止幽灵船 Vizzy 执行
 
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod MultiPlayer)
-> 状态:✅ 已实现(Harmony patch:`BroadcastMessage` + `FlightUpdate`,含 `Enabled` 开关,默认开启);待游戏内双端实测
-> 关联:本方案基于 [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) §8.2-5 决策「MVP 不做 Vizzy 同步」的进一步扩展——不仅不同步,还**主动阻止**联机下跨 craft 的 Vizzy 数据传递。
+> 状态:✅ **已归档**(原状态:已实现——Harmony patch `BroadcastMessage` + `FlightUpdate`,含 `Enabled` 开关,默认开启;游戏内双端实测见 README 归档表备注)
+> 关联:本方案基于 [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) §8.2-5 决策「MVP 不做 Vizzy 同步」的进一步扩展——不仅不同步,还**主动阻止**联机下跨 craft 的 Vizzy 数据传递。
 
 ---
 
@@ -182,8 +182,8 @@ static bool Prefix(FlightProgramScript __instance, BroadcastScope scope, string 
 
 | 文档 | 关系 |
 |---|---|
-| [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) §8.2-5 | 原决策「MVP 不做 Vizzy 同步」——本方案是此决策的**安全加固**:不仅不同步,还要阻止跨 craft 广播 |
-| [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) §8.1-3 | 已规划 Harmony 拦截 `ChangePlayersActiveCommandPodImmediate` 防劫持——与本方案同属「联机安全 Harmony patch」系列 |
+| [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) §8.2-5 | 原决策「MVP 不做 Vizzy 同步」——本方案是此决策的**安全加固**:不仅不同步,还要阻止跨 craft 广播 |
+| [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) §8.1-3 | 已规划 Harmony 拦截 `ChangePlayersActiveCommandPodImmediate` 防劫持——与本方案同属「联机安全 Harmony patch」系列 |
 | [`part-switch-sync-2026-08-18.md`](part-switch-sync-2026-08-18.md) | 无关(部件开关同步) |
 | [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md) | 无关(body 位姿同步) |
 | [`latency-smoothing-2026-08-22.md`](latency-smoothing-2026-08-22.md) | 无关(延迟平滑) |

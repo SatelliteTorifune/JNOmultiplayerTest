@@ -9,7 +9,7 @@
 
 给 **SimpleRockets 2 / JNO**(Steam AppID **870200**)写**联机 mod `MultiPlayer`**(Unity **2022.3.62f3**,C#/.NET 4.x,C# 命名空间 `Assets.Scripts.*`)。思路:反编译游戏源码找内部 API + 参考 KSP 的 LunaMultiplayer。
 
-**当前进度**:单船"幽灵船"联机原型**已跑通并通过 Steam 双账号公网实测**;已实现 body 级位姿同步、部件开关/控制输入同步、Vizzy 联机隔离、高延迟平滑(SP2 式连续外推)、延迟模拟调试工具、更新检查(ModUpdater)、**Steam 房间列表(大厅浏览器,2026-09-12 落地)**。**多 craft 同步仍是"方案研究阶段"(未实现)**。
+**当前进度**:单船"幽灵船"联机原型**已跑通并通过 Steam 双账号公网实测**;已实现 body 级位姿同步、部件开关/控制输入同步、Vizzy 联机隔离、高延迟平滑(SP2 式连续外推,2026-09-13 收工)、延迟模拟调试工具、更新检查(ModUpdater)、**Steam 房间列表(大厅浏览器,2026-09-12 落地)**;1.4.2 Experimental 兼容 P0 已执行(2026-09-13);远程船游戏侧速度缺自转项**根因已定位、修复未做**(2026-09-13);2 阶外推**已评估未实施**(2026-09-14)。**多 craft 同步仍是"方案研究阶段"(未实现)**。
 
 ## 1. 关键路径
 
@@ -22,9 +22,9 @@
 | SP2 联机参考(可抄的平滑/序列化实现) | `C:\renko\shitProgram\反编译的\sp2\Game\Assets\Scripts\` |
 | KSP 联机参考 | `C:\renko\unityProjects\LunaMultiplayer` |
 | 设计文档索引 | `plans/README.md` |
-| 活跃 plan | `multi-craft-sync-2026-08-16.md`、`body-sync-2026-08-18.md`、`part-switch-sync-2026-08-18.md`、`latency-smoothing-2026-08-22.md`、`vizzy-isolation-2026-08-22.md` |
+| 活跃 plan | `multi-craft-sync-2026-08-16.md`、`update-1.4.2-experimental-2026-09-03.md`、`remote-craft-velocity-2026-09-13.md`、`acceleration-smoothing-2026-09-14.md`(已完成文档见 `archive/`,索引见 `README.md`) |
 | 游戏内 UI 文案 | `Assets/Content/Languages/EN-US.xml` / `ZH-CN.xml`(key 前缀 `MultiPlayer.*`) |
-| 游戏内 UI 资源库 | `Assets/Content/XML UI/UIResourceDatabase.asset`(`PathPrefix: aMptest/` ← **与代码引用不一致,待修**) |
+| 游戏内 UI 资源库 | `Assets/Content/XML UI/UIResourceDatabase.asset`(`PathPrefix: MultiPlayer/`,条目 `MultiPlayer/Sprites/UIIcon`;代码 `MultiPlayerUI.cs:82` 请求同名完整路径——**运行时按条目路径逐字匹配,不自动拼前缀**,详见 README #2) |
 | 参考程序集(编译期) | `Assets/ModTools/Assemblies/`(含 `SimpleRockets2.dll`、`ModApi.dll`、`Jundroo.ModTools.dll`、`com.rlabrecque.steamworks.net.dll`、`0Harmony.dll` 等) |
 | Mod 元数据 / 版本 | `Assets/ModData.asset`(`_name: MultiPlayer`、`_versionMajor/_versionMinor`)+ 仓库根 `version.txt`(**发布用的 mod 版本**,ModUpdater 读它比对) |
 | 游戏本体(本地) | `C:\Program Files (x86)\Steam\steamapps\common\SimpleRockets2\`(**注意目录名没有空格**;Steam 里的显示名是 "Juno: New Origins") |
@@ -68,7 +68,7 @@
 - **传输**:Steam P2P 默认(`SteamNetworkingSockets`;游戏启动已 `SteamAPI.Init()`,mod **不重复 Init**);TCP 仅 VM/公网 debug(`TcpHostLobby`/`TcpJoinLobby`);LiteNetLib 备用未启用。
 - **房主 = 中继**:客户端之间的状态包经房主转发(`IsServer` 时 `Transport.Broadcast`)。
 - **FishNet 高层 API 被 codegen 否决**(运行时加载 mod DLL 无序列化器)→ 传输层自建、高层逻辑自持。
-- **加入方式**:Steam 房间列表(大厅浏览器)——"开房可见、点列表加入";`SteamLobbyBrowser`(SteamMatchmaking 直调)实现开房/列表(版本过滤)/加入(`GetLobbyOwner`→复用 `SteamTransport`)/好友邀请;**手动输入房主 SteamId 仍保留于控制台** `SteamJoinLobby <hostSteamId>`(见 `steam-lobby-2026-09-12.md`,已落地)。
+- **加入方式**:Steam 房间列表(大厅浏览器)——"开房可见、点列表加入";`SteamLobbyBrowser`(SteamMatchmaking 直调)实现开房/列表(版本过滤)/加入(`GetLobbyOwner`→复用 `SteamTransport`)/好友邀请;**手动输入房主 SteamId 仍保留于控制台** `SteamJoinLobby <hostSteamId>`(见 `archive/steam-lobby-2026-09-12.md`,已落地)。
 
 **幽灵船(remote craft)**
 - **幽灵模式**:`AllowPlayerControl=false` + 物理禁用 `SetPhysicsEnabled(false, PhysicsChangeReason.Warp)`(**必须用 Warp**:`UnloadPhysics` 会让 MapCraft 被销毁却留在注册表里 → MapView NRE)+ `CraftUtils.DisableCraftPhysicCalculation`(colliders off、`PreventDebris=true`、`IncludeInDrag=false`、`Damage`/`HeatShield` 拉满)+ 所有 body `RigidBody.isKinematic = true`。
@@ -85,7 +85,7 @@
 - **朝向同步 = `recdata.SrfRel`(相对地表朝向)**:解决①游戏每帧用 pod 座椅朝向覆盖根朝向、②跨机行星自转角差。`LateUpdate`(`[DefaultExecutionOrder(1000)]`)重写朝向抗游戏覆盖。
 - **速度必须是"地表相对速度"**:`PlanetVectorToSurfaceVector` 是**纯旋转,不减行星自转项**。发送端 = `PlanetVectorToSurfaceVector(craft.Velocity) − CalculateSurfaceVelocity(pos)`;接收端 = `SurfaceVectorToPlanetVector(data.Velocity) + SurfaceVectorToPlanetVector(CalculateSurfaceVelocity(data.Position))`。漏掉自转项会让静止船上报 ≈**158.85 m/s**,被外推放大成数十米瞬移。
 
-**接收端平滑(现行实现,见 `latency-smoothing-2026-08-22.md` §9)**
+**接收端平滑(现行实现,见 `archive/latency-smoothing-2026-08-22.md` §9)**
 - **不做插值缓冲**:始终取最新包(`TryGetNewest`)+ **连续外推(dead-reckoning)**:`ext = 单向延迟(RTT/2) + 包龄`,封顶 1.0s;包龄 `> max(3×gapEMA, 0.25s)` 时冻结为 `ext = 单向延迟`(防幽灵飞走)。
 - **平滑层** `ApplyRemoteSmoothing`:`k = Lerp(0.1, 1, min(1, |v|×0.02))`、`alpha = 1 − (1−k)^(dt×50)`、静止锁定 `|v|<0.5 && 误差<0.05m`、瞬移阈值 `>100m`、旋转 `2.5·dt`、每 body `10·dt` + `0.01` 快照。
 - **死代码警告**:`TryGetInterpolatedState` / `RenderDelayMs` / `UnderrunFrames` / `SnapFrames` / `ClearBuffer` / `ReuseInterpBody*` 仍存在但**已不参与渲染**(`snap=`/`interpPct=`/`posErr=` 因此是结构性常量)。看到这些标识符不要以为插值缓冲还在跑。
@@ -106,8 +106,8 @@
 
 ## 5. 开发流程约定
 
-1. **研究有明确结论 → 直接写进对应主题 plan**(加「【决策:…】」标记),并同步 `README.md` 的决策速查表。
-2. 完成主题 → 移入 `plans/archive/`(修订为最终状态 + 经验教训),并更新索引。
+1. **文档写入与维护规则一律以 [`README.md`](README.md) §四 为准**(命名 / 状态单一事实源 / 决策记录 / 交叉链接 / 归档流程 / 编码校验 / 改后自检清单)。研究有明确结论 → 直接写进对应主题 plan(加「【决策:YYYY-MM-DD】」),并同步 README 决策速查表。
+2. 完成主题 → 按 README §四 归档流程移入 `plans/archive/`(头部改「✅ 已归档」+ 修链接 + 更新索引)。
 3. 改代码前先 `read` 目标文件;新 Harmony patch 放 `Assets/Scripts/HarmonyPatches/`。
 4. 传输层改动需**双路径回归**:默认 Steam + TCP/NetSim debug 命令。
 5. 新增游戏内可见文案 → 同步改 `Assets/Content/Languages/EN-US.xml` 与 `ZH-CN.xml`(key 必须同前缀)。
@@ -124,4 +124,4 @@
 - **本地 VM debug**:本机 `TcpHostLobby 25555`(防火墙放行入站);VM `TcpJoinLobby <宿主IP> 25555`——**✅ 已实测可行**。
 - **Steam 双账号公网联机**:**✅ 已实测可行**,零 frp/零端口转发(见 [`archive/steam-integration-2026-08-13.md`](archive/steam-integration-2026-08-13.md) Step 4)。
 - 反编译源码用 Rider/VS 打开 `.sln` 浏览;`jnoCode` / `反编译的` 都是**只读参考**,不要改动。
-- **文本编码约定**:`.md` / `.cs` 一律 **UTF-8 无 BOM、LF**。历史上 `plans/` 曾被一次有损转码毁掉约 10~16% 汉字(提交 `16eb58d 狗屎`),已从父提交 `7d4925c` 恢复——**改文档时不要用会把非 UTF-8 字节替换成 `U+FFFD` 的工具**(尤其 PowerShell 5.1 的 `Set-Content -Encoding UTF8` 与 `-replace`,前者加 BOM、后者在处理含 `[`/反引号的 Markdown 链接时会吃字符)。
+- **文本编码约定**:`.md` / `.cs` 一律 **UTF-8 无 BOM、LF**。历史上 `plans/` 曾被一次有损转码毁掉约 10~16% 汉字(提交 `16eb58d 狗屎`),已从父提交 `7d4925c` 恢复——**改文档时不要用会把非 UTF-8 字节替换成 `U+FFFD` 的工具**(尤其 PowerShell 5.1 的 `Set-Content -Encoding UTF8` 与 `-replace`,前者加 BOM、后者在处理含 `[`/反引号的 Markdown 链接时会吃字符)。**完整写入规则 / 校验脚本 / 改后自检清单见 [`README.md`](README.md) §四。**

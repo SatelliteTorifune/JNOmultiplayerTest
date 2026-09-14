@@ -3,7 +3,7 @@
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod MultiPlayer)
 > 状态:**P0 已全部执行,代码侧完成;1.4.2 朝向/body 同步 bug 已定位并修复;新报"双飞静止一方抽搐"已加诊断日志待实测**(2026-09-13:程序集已刷新为 1.4.2 并由用户确认;`GetComponentsInCraft` 迁移与粒子遍历迁移已落地,`dotnet build` 0 错误;2026-09 实测发现远程船朝向+body 位置错误,根因为 1.4.2 body 脱离 craft 层级导致 `localRotation` 语义变化,已修复 `ApplyRemoteBodyPoses`(见「〇之三」);后续实测报"双飞静止一方抽搐",已加 `MP twitch`/`MP sendDiag` 1s 周期诊断日志,怀疑 comRot 连带移动反馈环/双写不一致/平滑(见「〇之四」))
 > 触发:devb 发布 **1.4.2 Experimental 分支**(版本 1.4.200;当前游戏为 1.4.102),反编译对比已完成(新反编译目录 `C:\renko\shitProgram\jnoCode` 即 1.4.2,`Game.Version = (1,4,200,0)`)
-> 关联:本文档是「版本兼容」专项,不改动既有 plan 的机制;但 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)、[`part-switch-sync-2026-08-18.md`](part-switch-sync-2026-08-18.md)、[`latency-smoothing-2026-08-22.md`](latency-smoothing-2026-08-22.md)、[`vizzy-isolation-2026-08-22.md`](vizzy-isolation-2026-08-22.md) 的既有功能都需在本版上回归
+> 关联:本文档是「版本兼容」专项,不改动既有 plan 的机制;但 [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md)、[`part-switch-sync-2026-08-18.md`](archive/part-switch-sync-2026-08-18.md)、[`latency-smoothing-2026-08-22.md`](archive/latency-smoothing-2026-08-22.md)、[`vizzy-isolation-2026-08-22.md`](archive/vizzy-isolation-2026-08-22.md) 的既有功能都需在本版上回归
 
 ---
 
@@ -25,7 +25,7 @@
 
 **顺带记录的两个当前真实风险(与 1.4.2 无关,但复核时发现)**:
 1. **mod 版本号自相矛盾**:`Assets/ModData.asset` 的 `_versionMajor/_versionMinor` = **1.4**,而仓库根 `version.txt` = **1.5**。`ModUpdater` 用 `ModInfo.Version`(即 1.4)与 `version.txt`(1.5)比较 ⇒ **每次启动都会弹"有新版本"**,只能靠"不再提醒"消掉。(版本策略待统一,不在本文档范围)
-2. **UI 起始引导图标路径不一致**:`MultiPlayerUI.cs:71` 请求 `MultiPlayer/Sprites/UIIcon`,但 `Assets/Content/XML UI/UIResourceDatabase.asset` 的 `PathPrefix` 仍是 `aMptest/`(条目 `aMptest/Sprites/UIIcon`)。资源库路径前缀需随改名同步,否则图标取不到。
+2. **UI 起始引导图标路径不一致** **✅ 已解决(2026-09-14,工作区未提交)**:`MultiPlayerUI.cs:82` 请求 `MultiPlayer/Sprites/UIIcon`,`UIResourceDatabase.asset` 的 `PathPrefix` 与两条 entry 已同步改为 `MultiPlayer/`(旧 `aMptest/` 是改名遗留)。**反编译 `XmlLayout.dll` 确认**:`sprite` 属性运行时按 `XmlLayoutResourceDatabase.GetResource` 的条目路径**逐字匹配**,不自动拼前缀,故必须等于 entry 全串;旧值 `/Sprites/UIIcon`(相对前缀假设)取不到,已一并修正。
 
 **执行顺序建议(不变)**:先做 P0-1(换程序集 + 重编译,这一步会把潜在的 P0-3 暴露成编译期提示)→ 再 P0-2(用 1.4.2 的 `GetComponentsInCraft` 或直接遍历 `craft.Data.Assembly.Bodies`)→ 双端实测 P0-2/P1-1/P1-2 → 再决定 P1-3/P1-4。
 
@@ -338,7 +338,7 @@ Update 与 LateUpdate 各写一次、各冻一次基准,进一步放大为帧内
 
 | 文档 | 关系 |
 |---|---|
-| [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md) / [`latency-smoothing-2026-08-22.md`](latency-smoothing-2026-08-22.md) / [`part-switch-sync-2026-08-18.md`](part-switch-sync-2026-08-18.md) / [`vizzy-isolation-2026-08-22.md`](vizzy-isolation-2026-08-22.md) | 既有机制的**版本回归**对象(P0-4);本方案不改动其方案 |
+| [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md) / [`latency-smoothing-2026-08-22.md`](archive/latency-smoothing-2026-08-22.md) / [`part-switch-sync-2026-08-18.md`](archive/part-switch-sync-2026-08-18.md) / [`vizzy-isolation-2026-08-22.md`](archive/vizzy-isolation-2026-08-22.md) | 既有机制的**版本回归**对象(P0-4);本方案不改动其方案 |
 | [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) | 其研究基于 1.4.102 反编译(`jnoCode`);1.4.2 后新结论需在本方案下复核(如 body 脱离层级对多 craft 同步的影响) |
 | [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md) | §4「游戏内部 API 依赖反编译源码导航,游戏更新可能破坏,需固定版本」——本文档即该风险的专项记录 |
 
