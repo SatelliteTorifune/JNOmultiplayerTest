@@ -2,7 +2,7 @@
 
 > 状态：✅ **已实施（代码落地 + MSBuild 编译验证），待游戏内实测**
 > 日期：2026-09-10
-> 源文件：`C:\renko\unityProjects\Volken2\Assets\Scripts\ModUpdater.cs`（353 行，含 Volken 2026-09-10 防卡死提交 `5e26184`）
+> 源文件：`<VOLKEN2>\Assets\Scripts\ModUpdater.cs`（353 行，含 Volken 2026-09-10 防卡死提交 `5e26184`）
 > 目标工程：`JNOMultiPlayer`（Mod 名 **MultiPlayer**，SimpleRockets 2 / JNO，Unity 2022.3.62f3）
 
 ---

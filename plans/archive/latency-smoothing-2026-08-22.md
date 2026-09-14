@@ -332,7 +332,7 @@ newest=(<F4>,<F4>,<F4>)  posErr=<F2>m
 > 评估结论:平移现为 1 阶(§9.3),旋转**零外推**(§9.4 仅 2.5·dt Slerp 追目标)→ 确为两个真实缺口;
 > 游戏侧 `CraftFlightData.Acceleration`(行星系含重力)/`AngularVelocity`(craft 局部系)可直接采样(反编译已核实)。
 > 完整方案(期 0 零协议接收端推导 / 期 1 协议尾部追加)、量级估算、风险与回归判据见
-> [`acceleration-smoothing-2026-09-14.md`](../acceleration-smoothing-2026-09-14.md)。**状态:仅评估,未实施**(2026-09-14 拍板)。
+> [`acceleration-smoothing-2026-09-14.md`](../acceleration-smoothing-2026-09-14.md)。**状态:仅评估,未实施**(2026-09-14 拍板);**同日期 1 已落地**(协议尾部追加字段 + 发送端采样 EMA/钳制 + 接收端平移 2 阶外推 `½·a·ext²` 生效;朝向外推待 ω 符号实测后开启),见该文档 §六之二。
 
 ---
 
@@ -371,47 +371,47 @@ SP2 反编译给出了完整药方:**用"测得延迟×速度外推"补足延迟
 
 ## 2. SP2 反编译参考(全部已核对,file:line)
 
-> 反编译源:`C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/`。SP2 是**远程船物理保持开启**、FishNet tick 时钟同步;SR2 幽灵 kinematic + 无时钟同步 → **平滑逻辑可抄,物理集成不抄**。
+> 反编译源:`<SP2_MP>/`。SP2 是**远程船物理保持开启**、FishNet tick 时钟同步;SR2 幽灵 kinematic + 无时钟同步 → **平滑逻辑可抄,物理集成不抄**。
 
 ### T1. 延迟×速度外推(SP2 核心,两处独立实现)
 
-- [`CraftStateSerializer.SerializeRead`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:55) `num2 = Clamp(physicsTime - num, 0, 0.25f)` = **网络延迟**(接收端当前物理时间 − 包内发送端时间,封顶 250ms);
-- [`:76`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:76) `vector5 = vector2 + vector + num2 * vector3`(**pos + velocity×延迟**)——把目标位置"播到应该现在的位",**不再需要大 renderDelay 去等延迟**,滞后被抵消;
-- 旋转同样外推:[`:88-94`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:88) 按 `angularVelocity × 延迟` 转一个增量角再 Slerp;
-- 松散 body 层同款:[`NetworkBodyScript.SerializeRead`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/NetworkBodyScript.cs:166) `SetPositionAndRotation(pos + delta + delay*vel, rot * AngleAxis(delay*angularVel))`。
+- `CraftStateSerializer.SerializeRead` `num2 = Clamp(physicsTime - num, 0, 0.25f)` = **网络延迟**(接收端当前物理时间 − 包内发送端时间,封顶 250ms);
+- `:76` `vector5 = vector2 + vector + num2 * vector3`(**pos + velocity×延迟**)——把目标位置"播到应该现在的位",**不再需要大 renderDelay 去等延迟**,滞后被抵消;
+- 旋转同样外推:`:88-94` 按 `angularVelocity × 延迟` 转一个增量角再 Slerp;
+- 松散 body 层同款:`NetworkBodyScript.SerializeRead` `SetPositionAndRotation(pos + delta + delay*vel, rot * AngleAxis(delay*angularVel))`。
 
 ### T2. 速度自适应指数平滑(消跳变,永远在"追"目标)
 
-- [`CraftStateSerializer.cs:84`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:84) `num4 = Lerp(0.1f, 1f, |v|*0.02f)`——**慢速船重平滑(0.1)、快速船近瞬移(≈1)**;
-- [`:85`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:85) `position = Vector3.Lerp(position, target, num4)`——逐帧指数收敛,无离散跳变;
-- 旋转 [`:94`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:94) `Slerp(rotation, target, 2.5f*Time.deltaTime)`。
+- `CraftStateSerializer.cs:84` `num4 = Lerp(0.1f, 1f, |v|*0.02f)`——**慢速船重平滑(0.1)、快速船近瞬移(≈1)**;
+- `:85` `position = Vector3.Lerp(position, target, num4)`——逐帧指数收敛,无离散跳变;
+- 旋转 `:94` `Slerp(rotation, target, 2.5f*Time.deltaTime)`。
 
 ### T3. 大误差直接瞬移(自愈,不慢滑)
 
-- [`CraftStateSerializer.cs:78-81`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:78) `(target-pos).sqrMagnitude > 10000`(**>100m**)→ 直接 `position = target`(生成/大修正/失步时秒对齐,避免全场慢滑)。
+- `CraftStateSerializer.cs:78-81` `(target-pos).sqrMagnitude > 10000`(**>100m**)→ 直接 `position = target`(生成/大修正/失步时秒对齐,避免全场慢滑)。
 
 ### T4. 每 body 相对位姿指数平滑 + 近距快照(对应我们的 BodyPositions/BodyRotations)
 
-- 子 body(有 ParentBody)收到状态只存 `SyncData.TargetPosition/TargetRotation`([`CraftStateSerializer.cs:109-123`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:109)),实际应用在 [`BodyScript.OnUpdate`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Craft/BodyScript.cs:660):
+- 子 body(有 ParentBody)收到状态只存 `SyncData.TargetPosition/TargetRotation`(`CraftStateSerializer.cs:109-123`),实际应用在 `BodyScript.OnUpdate`:
   - 偏差 < 0.01 → 直接快照并清 Target(防持续微抖);
-  - 否则 `localPosition = Vector3.Lerp(cur, target, 10f*Time.deltaTime)`、`localRotation = Quaternion.Slerp(cur, target, 10f*Time.deltaTime)`([`:667/679`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Craft/BodyScript.cs:667))。
+  - 否则 `localPosition = Vector3.Lerp(cur, target, 10f*Time.deltaTime)`、`localRotation = Quaternion.Slerp(cur, target, 10f*Time.deltaTime)`(`:667/679`)。
   - **要点:平滑在接收端"每帧"做、与包到达节奏解耦** → body 位姿在任意 tickrate 下都连续。
 
 ### T5. 远程船物理开 + 每物理步写速度(SP2 独有,SR2 不抄物理,但可抄"每帧写速度"思路)
 
-- [`NetworkAircraftScript.FixedUpdate`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/NetworkAircraftScript.cs:416) 远程船每物理步 `RigidBody.velocity/angularVelocity = SyncData` → 刚体积分提供包间连续运动,T2 的 lerp 只是小修正。
+- `NetworkAircraftScript.FixedUpdate` 远程船每物理步 `RigidBody.velocity/angularVelocity = SyncData` → 刚体积分提供包间连续运动,T2 的 lerp 只是小修正。
 - SR2 幽灵全 kinematic 不启用物理积分,但 `EngineVisualSync.InjectGhostMotion` 已在每帧给 kinematic 刚体写速度/角速度(烟雾用,[:499](../Assets/Scripts/Net/EngineVisualSync.cs:499));外推/速度注入思路可直接复用。
 
 ### T6. 角色混合插值+外推(另一个通用范式,供选型)
 
-- [`NetworkCharacterScript.FixedUpdate`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/NetworkCharacterScript.cs:289):
-  - `num = 当前物理时间 - 最近包时间`;`t = Clamp01(num / 0.1s)`([`:300-301`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/NetworkCharacterScript.cs:300))→ **上一包→目标 0.1s 内插值**;
-  - 外推候选 `target + velocity×num`([`:322`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/NetworkCharacterScript.cs:322))与插值按 `_currentExtrapolationBlend` 混合;
-  - 再叠加 `Lerp(cur, 结果, factor*dt*10)` 平滑([`:323`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/NetworkCharacterScript.cs:323));距离 >5m 直接瞬移([`:326-331`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/NetworkCharacterScript.cs:326))。
+- `NetworkCharacterScript.FixedUpdate`:
+  - `num = 当前物理时间 - 最近包时间`;`t = Clamp01(num / 0.1s)`(`:300-301`)→ **上一包→目标 0.1s 内插值**;
+  - 外推候选 `target + velocity×num`(`:322`)与插值按 `_currentExtrapolationBlend` 混合;
+  - 再叠加 `Lerp(cur, 结果, factor*dt*10)` 平滑(`:323`);距离 >5m 直接瞬移(`:326-331`)。
 
 ### T7. 发送端 Delta 兴趣 + top-N(带宽,非平滑)
 
-- [`CraftStateSerializer.SerializeWrite`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/CraftStateSerializer.cs:149) 根 body 全发、子 body 仅 `Delta>0.1f`,按 Delta 降序每包 top-5;`BodySyncData.Update/Delta`([`BodySyncData.cs:89-118`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/SyncData/BodySyncData.cs:89))。**与我们 body 顺序索引契约冲突(需先引 Id,见 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md) P2),不在此方案内。**
+- `CraftStateSerializer.SerializeWrite` 根 body 全发、子 body 仅 `Delta>0.1f`,按 Delta 降序每包 top-5;`BodySyncData.Update/Delta`(`BodySyncData.cs:89-118`)。**与我们 body 顺序索引契约冲突(需先引 Id,见 [`body-sync-2026-08-18.md`](body-sync-2026-08-18.md) P2),不在此方案内。**
 
 ---
 

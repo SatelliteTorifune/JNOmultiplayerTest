@@ -79,7 +79,7 @@ else if (this.InContactWithPlanet)
 
 | 事实 | 位置 |
 |---|---|
-| 表面锁定分支每帧 `SetStateVectorsAtDefaultTime(SurfaceVectorToPlanetVector(GroundedSurfaceVelocity))` | `jnoCode/.../Flight/Sim/CraftNode.cs:1235-1240` |
+| 表面锁定分支每帧 `SetStateVectorsAtDefaultTime(SurfaceVectorToPlanetVector(GroundedSurfaceVelocity))` | `<JNO_CODE>/.../Flight/Sim/CraftNode.cs:1235-1240` |
 | 游戏写 `GroundedSurfaceVelocity = CalculateSurfaceVelocity(...)`（地表系惯性速度约定） | `CraftNode.cs:1366-1371` |
 | `SurfaceVectorToPlanetVector` = 纯旋转 | `Flight/Sim/PlanetNode.cs:508-511` |
 | `CalculateSurfaceVelocity` = ω×r（行星空间东向切向） | `PlanetNode.cs:293-303` |

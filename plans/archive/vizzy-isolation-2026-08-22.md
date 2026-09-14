@@ -10,7 +10,7 @@
 
 ### 1.1 Vizzy 广播机制(反编译确认)
 
-游戏 Vizzy 编程系统通过 `FlightProgramScript.BroadcastMessage` 实现消息广播,有三个作用域([`BroadcastScope.cs`](file:///C:/renko/shitProgram/jnoCode/ModApi/Craft/Program/Craft/BroadcastScope.cs)):
+游戏 Vizzy 编程系统通过 `FlightProgramScript.BroadcastMessage` 实现消息广播,有三个作用域(`BroadcastScope.cs`):
 
 | 作用域 | 行为 | 联机风险 |
 |---|---|---|
@@ -18,7 +18,7 @@
 | `BroadcastScope.Craft` | 发送给**同一个 craft 上所有 FlightProgram** | 无(craft 内隔离天然正确) |
 | `BroadcastScope.AllCrafts` | 发送给**场景中所有已加载 CraftNode 的所有 FlightProgram** | ⚠️ **高**——跨 craft/跨玩家 |
 
-关键代码路径([`FlightProgramScript.cs:76-112`](file:///C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/FlightProgramScript.cs:76)):
+关键代码路径(`FlightProgramScript.cs:76-112`):
 
 ```csharp
 public void BroadcastMessage(BroadcastScope scope, string messageName, ExpressionResult data)

@@ -43,10 +43,10 @@
 | TcpTransport TCP | ✅ 可走 frp TCP 隧道，但仍是"需要内网穿透配置"的方案 |
 | **Steam P2P** | ✅ 玩家零配置穿透，最友好；SP2 官方就是这么做的 |
 
-### 2.2 已确认的可行性关键点（调研 `C:\renko\shitProgram\jnoCode` + 游戏安装目录）
+### 2.2 已确认的可行性关键点（调研 `<JNO_CODE>` + 游戏安装目录）
 1. **JNO 是 Steam 游戏**（App ID **870200** = SimpleRockets 2），Steamworks 已由游戏初始化；
 2. **游戏 Managed 目录已带 Steamworks.NET**：`com.rlabrecque.steamworks.net.dll`（`SimpleRockets2_Data/Managed/`）—— mod 可通过 `AssemblyResolve` 直接引用，**无需自带 DLL**；
-3. **游戏内部 Steam 入口**：`SocialExt`（`Assets.Packages.SocialPlatforms` 命名空间，在 `Packages.dll`），提供 `IsSteam` / `Active` / `Steam` 等；游戏自己的 [`ModManagerScript`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Mods/ModManagerScript.cs) 已证明 mod 代码路径可调 Steam API（Workshop）；
+3. **游戏内部 Steam 入口**：`SocialExt`（`Assets.Packages.SocialPlatforms` 命名空间，在 `Packages.dll`），提供 `IsSteam` / `Active` / `Steam` 等；游戏自己的 `ModManagerScript` 已证明 mod 代码路径可调 Steam API（Workshop）；
 4. **mod 侧两条访问路**：
    - A（推荐）：asmdef 引用 `"com.rlabrecque.steamworks.net"`（Steamworks.NET），直接 `SteamAPI` / `SteamUser` / `SteamNetworkingSockets`；
    - B（备选）：asmdef 引用 `"Packages"`，走 `SocialExt`。

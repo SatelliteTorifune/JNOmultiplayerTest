@@ -41,3 +41,6 @@ Assets/_ModAssets_.meta
 # ModTools 预编译 DLL(游戏/ModApi 程序集,属游戏本体,不随仓库分发)
 Assets/ModTools/*
 /ProjectSettings
+
+# ---- 本机隐私信息:真实路径映射(仅本地,严禁上传) ----
+plans/LOCAL_PATHS.md

@@ -2,7 +2,7 @@
 
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod MultiPlayer)
 > 状态:**P0 已全部执行,代码侧完成;1.4.2 朝向/body 同步 bug 已定位并修复;新报"双飞静止一方抽搐"已加诊断日志待实测**(2026-09-13:程序集已刷新为 1.4.2 并由用户确认;`GetComponentsInCraft` 迁移与粒子遍历迁移已落地,`dotnet build` 0 错误;2026-09 实测发现远程船朝向+body 位置错误,根因为 1.4.2 body 脱离 craft 层级导致 `localRotation` 语义变化,已修复 `ApplyRemoteBodyPoses`(见「〇之三」);后续实测报"双飞静止一方抽搐",已加 `MP twitch`/`MP sendDiag` 1s 周期诊断日志,怀疑 comRot 连带移动反馈环/双写不一致/平滑(见「〇之四」))
-> 触发:devb 发布 **1.4.2 Experimental 分支**(版本 1.4.200;当前游戏为 1.4.102),反编译对比已完成(新反编译目录 `C:\renko\shitProgram\jnoCode` 即 1.4.2,`Game.Version = (1,4,200,0)`)
+> 触发:devb 发布 **1.4.2 Experimental 分支**(版本 1.4.200;当前游戏为 1.4.102),反编译对比已完成(新反编译目录 `<JNO_CODE>` 即 1.4.2,`Game.Version = (1,4,200,0)`)
 > 关联:本文档是「版本兼容」专项,不改动既有 plan 的机制;但 [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md)、[`part-switch-sync-2026-08-18.md`](archive/part-switch-sync-2026-08-18.md)、[`latency-smoothing-2026-08-22.md`](archive/latency-smoothing-2026-08-22.md)、[`vizzy-isolation-2026-08-22.md`](archive/vizzy-isolation-2026-08-22.md) 的既有功能都需在本版上回归
 
 ---
@@ -221,7 +221,7 @@ Update 与 LateUpdate 各写一次、各冻一次基准,进一步放大为帧内
 
 ## 一、背景:1.4.2 更新内容(反编译对比已完成)
 
-对比目录:`jnoCode`(1.4.200,即 1.4.2 实验版)vs 1.4.102 旧版(早期反编译,已并入 `jnoCode` 更新;1.4.2 后无独立旧目录)。完整逐文件 diff 见 `jnoCode/.diff_1.4.2_report.txt`。
+对比目录:`<JNO_CODE>`(1.4.200,即 1.4.2 实验版)vs 1.4.102 旧版(早期反编译,已并入 `<JNO_CODE>` 更新;1.4.2 后无独立旧目录)。完整逐文件 diff 见 `<JNO_CODE>\.diff_1.4.2_report.txt`。
 
 | 类别 | 1.4.2 实质改动 | 对 mod 的影响 |
 |---|---|---|
@@ -339,14 +339,14 @@ Update 与 LateUpdate 各写一次、各冻一次基准,进一步放大为帧内
 | 文档 | 关系 |
 |---|---|
 | [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md) / [`latency-smoothing-2026-08-22.md`](archive/latency-smoothing-2026-08-22.md) / [`part-switch-sync-2026-08-18.md`](archive/part-switch-sync-2026-08-18.md) / [`vizzy-isolation-2026-08-22.md`](archive/vizzy-isolation-2026-08-22.md) | 既有机制的**版本回归**对象(P0-4);本方案不改动其方案 |
-| [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) | 其研究基于 1.4.102 反编译(`jnoCode`);1.4.2 后新结论需在本方案下复核(如 body 脱离层级对多 craft 同步的影响) |
+| [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) | 其研究基于 1.4.102 反编译(`<JNO_CODE>`);1.4.2 后新结论需在本方案下复核(如 body 脱离层级对多 craft 同步的影响) |
 | [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md) | §4「游戏内部 API 依赖反编译源码导航,游戏更新可能破坏,需固定版本」——本文档即该风险的专项记录 |
 
 ---
 
 ## 八、备注
 
-- 1.4.2 反编译目录:`C:\renko\shitProgram\jnoCode`(即 1.4.200,`Game.Version = (1,4,200,0)`;本文档早期所述 `jnoCode1.4.2` 目录不存在,1.4.2 反编译就在 `jnoCode`,1.4.102 已无独立反编译目录);完整 diff 报告:`C:\renko\shitProgram\jnoCode\.diff_1.4.2_report.txt`(逐文件、剔除 Token 噪音)。
-- 1.4.2 实际 DLL 位置:`C:\Program Files (x86)\Steam\steamapps\common\SimpleRockets2\SimpleRockets2_Data\Managed\SimpleRockets2.dll` / `ModApi.dll`(2026-09-02,已含 `GetComponentsInCraft`/`SetPose`/`pendingRecenterDelta`,即 1.4.2 实验版)。
+- 1.4.2 反编译目录:`<JNO_CODE>`(即 1.4.200,`Game.Version = (1,4,200,0)`;本文档早期所述 `<JNO_CODE>1.4.2` 目录不存在,1.4.2 反编译就在 `<JNO_CODE>`,1.4.102 已无独立反编译目录);完整 diff 报告:`<JNO_CODE>\.diff_1.4.2_report.txt`(逐文件、剔除 Token 噪音)。
+- 1.4.2 实际 DLL 位置:`<SR2_GAME>\SimpleRockets2_Data\Managed\SimpleRockets2.dll` / `ModApi.dll`(2026-09-02,已含 `GetComponentsInCraft`/`SetPose`/`pendingRecenterDelta`,即 1.4.2 实验版)。
 - devb 原话要点:高度实验性、触及核心机制、可能破坏、备份后测试——与本方案「保留回退 + 分档决策」一致。
 - 后续若 1.4.2 转正/出 1.4.3,把本 plan 的 P1 决策更新后移入 `archive/`。

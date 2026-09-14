@@ -9,29 +9,31 @@
 
 给 **SimpleRockets 2 / JNO**(Steam AppID **870200**)写**联机 mod `MultiPlayer`**(Unity **2022.3.62f3**,C#/.NET 4.x,C# 命名空间 `Assets.Scripts.*`)。思路:反编译游戏源码找内部 API + 参考 KSP 的 LunaMultiplayer。
 
-**当前进度**:单船"幽灵船"联机原型**已跑通并通过 Steam 双账号公网实测**;已实现 body 级位姿同步、部件开关/控制输入同步、Vizzy 联机隔离、高延迟平滑(SP2 式连续外推,2026-09-13 收工)、延迟模拟调试工具、更新检查(ModUpdater)、**Steam 房间列表(大厅浏览器,2026-09-12 落地)**;1.4.2 Experimental 兼容 P0 已执行(2026-09-13);远程船游戏侧速度缺自转项**根因已定位、修复未做**(2026-09-13);2 阶外推**已评估未实施**(2026-09-14)。**多 craft 同步仍是"方案研究阶段"(未实现)**。
+**当前进度**:单船"幽灵船"联机原型**已跑通并通过 Steam 双账号公网实测**;已实现 body 级位姿同步、部件开关/控制输入同步、Vizzy 联机隔离、高延迟平滑(SP2 式连续外推,2026-09-13 收工)、延迟模拟调试工具、更新检查(ModUpdater)、**Steam 房间列表(大厅浏览器,2026-09-12 落地)**;1.4.2 Experimental 兼容 P0 已执行(2026-09-13);远程船游戏侧速度缺自转项**根因已定位、修复未做**(2026-09-13);**2 阶外推期 1 已落地**(2026-09-14:协议字段 + 发送端采样 + 接收端平移 `½·a·ext²` 生效,朝向外推待 ω 符号实测,见 `acceleration-smoothing-2026-09-14.md`);**SP2 式物理同步(每 body 速度进协议 + 游戏侧速度修复)已评估未实施**(2026-09-14,见 `physics-sync-2026-09-14.md`,建议 P0+P1 约 3~5 天)。**多 craft 同步仍是"方案研究阶段"(未实现)**。
 
 ## 1. 关键路径
 
 | 用途 | 路径 |
 |---|---|
-| 工程目录 | `C:\renko\unityProjects\JNOMultiPlayer` |
+| 工程目录 | `<PROJECT>` |
 | Mod 源码 | `Assets/Scripts/`(命名空间 `Assets.Scripts.*`) |
-| **反编译游戏源码** | `C:\renko\shitProgram\jnoCode\SimpleRockets2\Assets\Scripts\`(即 `SimpleRockets2.sln`,只读参考) |
-| **ModApi 源码** | `C:\renko\shitProgram\jnoCode\ModApi\`(即 `ModApi.sln`,只读参考) |
-| SP2 联机参考(可抄的平滑/序列化实现) | `C:\renko\shitProgram\反编译的\sp2\Game\Assets\Scripts\` |
-| KSP 联机参考 | `C:\renko\unityProjects\LunaMultiplayer` |
+| **反编译游戏源码(SR2)** | `<JNO_CODE>\SimpleRockets2\Assets\Scripts\`(即 `SimpleRockets2.sln`,只读参考;**2026-09-14 已核实**) |
+| **ModApi 源码(官方公共 API)** | `<MOD_API>\`(即 `ModApi.sln`,只读参考;**2026-09-14 已核实**;接口如 `ICraftFlightData`/`ICraftScript` 在此,反编译游戏源码里搜不到接口定义) |
+| SP2 联机参考(可抄的平滑/序列化实现) | `<SP2_MP>\`(只读参考;联机核心在 `Multiplayer\` 子目录;**2026-09-14 已核实**) |
+| KSP 联机参考 | `<LUNA_MP>` |
 | 设计文档索引 | `plans/README.md` |
-| 活跃 plan | `multi-craft-sync-2026-08-16.md`、`update-1.4.2-experimental-2026-09-03.md`、`remote-craft-velocity-2026-09-13.md`、`acceleration-smoothing-2026-09-14.md`(已完成文档见 `archive/`,索引见 `README.md`) |
+| 活跃 plan | `multi-craft-sync-2026-08-16.md`、`update-1.4.2-experimental-2026-09-03.md`、`remote-craft-velocity-2026-09-13.md`、`acceleration-smoothing-2026-09-14.md`、`physics-sync-2026-09-14.md`(SP2 式物理同步评估:每 body 速度进协议 + 游戏侧速度修复,开销≈0、工期约 3~5 天,已完成文档见 `archive/`,索引见 `README.md`) |
 | 游戏内 UI 文案 | `Assets/Content/Languages/EN-US.xml` / `ZH-CN.xml`(key 前缀 `MultiPlayer.*`) |
 | 游戏内 UI 资源库 | `Assets/Content/XML UI/UIResourceDatabase.asset`(`PathPrefix: MultiPlayer/`,条目 `MultiPlayer/Sprites/UIIcon`;代码 `MultiPlayerUI.cs:82` 请求同名完整路径——**运行时按条目路径逐字匹配,不自动拼前缀**,详见 README #2) |
 | 参考程序集(编译期) | `Assets/ModTools/Assemblies/`(含 `SimpleRockets2.dll`、`ModApi.dll`、`Jundroo.ModTools.dll`、`com.rlabrecque.steamworks.net.dll`、`0Harmony.dll` 等) |
 | Mod 元数据 / 版本 | `Assets/ModData.asset`(`_name: MultiPlayer`、`_versionMajor/_versionMinor`)+ 仓库根 `version.txt`(**发布用的 mod 版本**,ModUpdater 读它比对) |
-| 游戏本体(本地) | `C:\Program Files (x86)\Steam\steamapps\common\SimpleRockets2\`(**注意目录名没有空格**;Steam 里的显示名是 "Juno: New Origins") |
-| 游戏运行日志 | `C:\Users\usami\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log` |
+| 游戏本体(本地) | `<SR2_GAME>\`(**注意目录名没有空格**;Steam 里的显示名是 "Juno: New Origins") |
+| 游戏运行日志 | `<USERPROFILE>\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log` |
+| 本机路径映射(真实值,**仅本地**) | `plans/LOCAL_PATHS.md`(已被 `.gitignore` 排除,严禁上传;公开文档的 `<TOKEN>` 按它解析,示例见 `README.md` §四 隐私红线) |
 
 要点:
 - 游戏内部命名空间是 `Assets.Scripts.*`(如 `Assets.Scripts.Flight.Sim.CraftNode`)——mod 直接 `using` 内部 API,因此**依赖反编译源码导航,游戏更新可能破坏**。
+- **`<JNO_CODE>` 根目录结构(2026-09-14 核实)**:`SimpleRockets2/`(游戏内部 API 源码,`Assets.Scripts.*`)+ `ModApi/`(官方公共 API 源码,`ModApi.*`,编译为 `ModApi.dll`)+ `sr2_curves/`;两个 `.sln`(`SimpleRockets2.sln` / `ModApi.sln`)都在 `<JNO_CODE>` 根。同属反编译源码库的还有 `KSP`(KSP 参考)、`Fenxi`、`Utils` 目录——全部只读参考。
 - ModApi 命名空间 `ModApi.*`(public API);ModTools 运行时 API 是 `Jundroo.ModTools`(`Jundroo.ModTools.dll`)。
 - `Assets/ModTools/Assemblies/*.dll` 是 precompiled DLL,自动被 [`MultiPlayer.asmdef`](../Assets/MultiPlayer.asmdef) 引用(asmdef 只显式列了 `UnityEngine.UI / Unity.TextMeshPro / Unity.Mathematics / FishNet.Runtime`;Steamworks/Harmony/游戏程序集都不必显式列)。
 - **命名遗留**:工程原名 `aMptest`,已改名 **MultiPlayer**(asmdef → `MultiPlayer.asmdef`、输出 `MultiPlayer.dll`、csproj → `MultiPlayer.csproj`、日志前缀 `[MultiPlayer]`)。文档/代码里仍可能残留 `aMptest`,见到即视为旧名。**注意 `version.txt` 是 mod 版本,与"游戏版本"无关,不要混用。**
@@ -77,7 +79,7 @@
 - 可见性**每帧强制恢复**(`EnforceRemoteCraftVisuals`,所有子 Renderer `enabled = true`)。
 
 **状态包(recdata,`Mod.cs` 的 `RemoteDataPack`)**
-- Position/Velocity/Heading(行星空间)+ `SrfRel`(相对地表朝向)+ Pitch/Yaw/Roll/Throttle/Brake/Sliders/Translate + `ActivationGroupStates` + `Stage` + `BodyRotations`(每 body 相对 comRot 欧拉)+ `BodyPositions`(每 body 相对 comRot 位置)+ `EngineThrottles` + `PartActivated`。
+- Position/Velocity/Heading(行星空间)+ `SrfRel`(相对地表朝向)+ Pitch/Yaw/Roll/Throttle/Brake/Sliders/Translate + `ActivationGroupStates` + `Stage` + `BodyRotations`(每 body 相对 comRot 欧拉)+ `BodyPositions`(每 body 相对 comRot 位置)+ `EngineThrottles` + `PartActivated` + `Paused`(暂停标记)+ `Acceleration`/`AngularVelocity`(2 阶外推,2026-09-14;尾部追加字段,EOF 容错)。
 - **无燃料/资源数值、无部件损伤**(已知限制);**无 craft id / 无多船数组**(多 craft 未做)。
 - 消息类型(`MpMessageType`):Hello=1、Welcome=2、PlayerJoin=3、PlayerLeave=4、State=5、Pause=6、CraftData=7、Ping=8、Pong=9、CraftDataAck=10、PlayerJoinAck=11、CraftXmlRequest=12、CraftXmlResponse=13、TickRate=14、Kick=15。
 
@@ -89,6 +91,7 @@
 - **不做插值缓冲**:始终取最新包(`TryGetNewest`)+ **连续外推(dead-reckoning)**:`ext = 单向延迟(RTT/2) + 包龄`,封顶 1.0s;包龄 `> max(3×gapEMA, 0.25s)` 时冻结为 `ext = 单向延迟`(防幽灵飞走)。
 - **平滑层** `ApplyRemoteSmoothing`:`k = Lerp(0.1, 1, min(1, |v|×0.02))`、`alpha = 1 − (1−k)^(dt×50)`、静止锁定 `|v|<0.5 && 误差<0.05m`、瞬移阈值 `>100m`、旋转 `2.5·dt`、每 body `10·dt` + `0.01` 快照。
 - **死代码警告**:`TryGetInterpolatedState` / `RenderDelayMs` / `UnderrunFrames` / `SnapFrames` / `ClearBuffer` / `ReuseInterpBody*` 仍存在但**已不参与渲染**(`snap=`/`interpPct=`/`posErr=` 因此是结构性常量)。看到这些标识符不要以为插值缓冲还在跑。
+- **2 阶外推(2026-09-14,见 `acceleration-smoothing-2026-09-14.md`)**:协议尾部追加 `Acceleration`(地表系)/`AngularVelocity`(craft 局部系,发送端 EMA 0.2 + 钳制 60 m/s² / 3 rad/s + NaN 防御);接收端平移加 `½·a·ext²`(ext 已×mRate → 自动 mRate²,暂停/慢放兼容)**已生效**;朝向外推 `SrfRel *= Euler(Flip(ω)·ext·sign)` 已实现但 `EnableRotationExtrap=false` **默认关闭**(ω 符号约定待 sendDiag 自校验 `errF+/errF-/errR+` 实测定案后一行开启)。
 
 **约定约束**
 - 所有玩家**同一行星系统**(房主指定),暂不做跨行星/生涯;MVP 锁定 **1x 实时**(无 warp 同步);不做燃料/资源/Vizzy 同步。
@@ -123,5 +126,5 @@
   - spike(历史):`FishNetSpike` / `SteamSpike`。
 - **本地 VM debug**:本机 `TcpHostLobby 25555`(防火墙放行入站);VM `TcpJoinLobby <宿主IP> 25555`——**✅ 已实测可行**。
 - **Steam 双账号公网联机**:**✅ 已实测可行**,零 frp/零端口转发(见 [`archive/steam-integration-2026-08-13.md`](archive/steam-integration-2026-08-13.md) Step 4)。
-- 反编译源码用 Rider/VS 打开 `.sln` 浏览;`jnoCode` / `反编译的` 都是**只读参考**,不要改动。
+- 反编译源码用 Rider/VS 打开 `.sln` 浏览;`<JNO_CODE>` / `<SP2_MP>` 均属**只读参考**,不要改动。
 - **文本编码约定**:`.md` / `.cs` 一律 **UTF-8 无 BOM、LF**。历史上 `plans/` 曾被一次有损转码毁掉约 10~16% 汉字(提交 `16eb58d 狗屎`),已从父提交 `7d4925c` 恢复——**改文档时不要用会把非 UTF-8 字节替换成 `U+FFFD` 的工具**(尤其 PowerShell 5.1 的 `Set-Content -Encoding UTF8` 与 `-replace`,前者加 BOM、后者在处理含 `[`/反引号的 Markdown 链接时会吃字符)。**完整写入规则 / 校验脚本 / 改后自检清单见 [`README.md`](README.md) §四。**

@@ -155,9 +155,9 @@ DevConsoleApi.RegisterCommand<string, int>("TcpJoinLobby", new Action<string, in
 
 ## 五、本地 VM debug 测试流程
 
-1. **本机（房主）**：控制台 `TcpHostLobby 25555`；日志应出现 `TcpTransport.Start SUCCESS`。用 `ipconfig` 看宿主对虚拟机可达的 IP（VirtualBox host-only 常为 192.168.56.1，或桥接 LAN IP）。
+1. **本机（房主）**：控制台 `TcpHostLobby 25555`；日志应出现 `TcpTransport.Start SUCCESS`。用 `ipconfig` 看宿主对虚拟机可达的 IP（VirtualBox host-only 常为 <VM_IP>，或桥接 LAN IP）。
 2. **防火墙**：放行入站 TCP 25555（或临时关防火墙）。
-3. **虚拟机（客户端）**：`TcpJoinLobby 192.168.56.1 25555`。
+3. **虚拟机（客户端）**：`TcpJoinLobby <VM_IP> 25555`。
 4. **验证日志链**：`TcpTransport.StartClient SUCCESS` → 房主 `OnHello (host): ... joined as PlayerId=1` → `OnCraftData (host): broadcast PlayerJoin` → 客户端 `OnCraftXmlResponse: received craft xml` → 飞船互见。
 5. **回归**：不敲 `Tcp*` 命令时仍走 Steam，`SteamJoinLobby` 正常。
 

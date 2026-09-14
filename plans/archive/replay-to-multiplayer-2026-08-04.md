@@ -1,7 +1,7 @@
 # Replay 模组 → 联机模组 可行性分析报告
 
 > 项目：JNOMultiPlayer（SR2 模组 MultiPlayer）
-> 参照源码：`C:\renko\shitProgram\jnoCode`（SimpleRockets2 反编译 + ModApi）
+> 参照源码：`<JNO_CODE>`（SimpleRockets2 反编译 + ModApi）
 > 日期：2026-08-04
 
 ## 〇、归档修订 · 经验教训（2026-08 追记）
@@ -42,22 +42,22 @@
 - **不存在**任何 Socket/TCP/UDP 多人框架、房间、同步逻辑。网络层需完全自建。
 
 ### 2.2 飞行场景原生支持多艘飞船 ✅（最关键基础）
-- [`FlightState.CraftNodes`](C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/State/FlightState.cs:120) 是 `List<CraftNode>`，公开只读，游戏本身就管理多艘飞船（残骸、对接、多节点）。
-- 有 `CraftNodeAdded` / `CraftNodeRemoved` 事件（[`FlightState.cs`](C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/State/FlightState.cs:111)），可监听玩家加入/离开。
-- **运行时动态添加飞船节点**：公开方法 [`FlightState.AddCraft(CraftNode, CraftNode originalNode)`](C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/State/FlightState.cs:320)，自动分配 `NodeId`、注册到 MapView、触发 `CraftNodeAdded`。
+- [`FlightState.CraftNodes`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/State/FlightState.cs:120) 是 `List<CraftNode>`，公开只读，游戏本身就管理多艘飞船（残骸、对接、多节点）。
+- 有 `CraftNodeAdded` / `CraftNodeRemoved` 事件（[`FlightState.cs`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/State/FlightState.cs:111)），可监听玩家加入/离开。
+- **运行时动态添加飞船节点**：公开方法 [`FlightState.AddCraft(CraftNode, CraftNode originalNode)`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/State/FlightState.cs:320)，自动分配 `NodeId`、注册到 MapView、触发 `CraftNodeAdded`。
 
 ### 2.3 可在飞行场景中生成"别的玩家"的飞船 ✅
-- 公开方法 [`FlightSceneScript.SpawnCraft(string name, CraftData craftData, LaunchLocation location, XElement pendingXml)`](C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/FlightSceneScript.cs:735)：输入飞船设计数据 + 发射位置，在飞行场景实例化一艘新飞船并加入 FlightState。
-- 公开接口 [`ICraftLoader.LoadCraftImmediate(XElement craftXml)`](C:/renko/shitProgram/jnoCode/ModApi/Craft/ICraftLoader.cs:13)：从 **craft XML 字符串**直接加载 `CraftData`。
+- 公开方法 [`FlightSceneScript.SpawnCraft(string name, CraftData craftData, LaunchLocation location, XElement pendingXml)`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/Flight/FlightSceneScript.cs:735)：输入飞船设计数据 + 发射位置，在飞行场景实例化一艘新飞船并加入 FlightState。
+- 公开接口 [`ICraftLoader.LoadCraftImmediate(XElement craftXml)`](<MOD_API>/Craft/ICraftLoader.cs:13)：从 **craft XML 字符串**直接加载 `CraftData`。
 - 组合使用：**收到其他玩家的 craft XML → LoadCraftImmediate → SpawnCraft**，即可在他机器上复现对方飞船。
-- 参考运行时创建 CraftNode 的完整范例：[`CraftSplitter.SplitCraftNode`](C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/Sim/CraftSplitter.cs:105)（残骸分裂）展示如何创建 CraftNode、挂接物理 CraftScript、加入 FlightState。
+- 参考运行时创建 CraftNode 的完整范例：[`CraftSplitter.SplitCraftNode`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/Flight/Sim/CraftSplitter.cs:105)（残骸分裂）展示如何创建 CraftNode、挂接物理 CraftScript、加入 FlightState。
 
 ### 2.4 玩家控制权可精细控制 ✅
 - `CraftNode.AllowPlayerControl`：模组在 [`Record()`](Assets/Scripts/Mod.cs:403) 中已使用（`node.AllowPlayerControl = false`）。
 - 联机策略：**本机玩家飞船 `AllowPlayerControl = true`；远程飞船 `false`**，避免本地玩家误操控他人飞船。
 
 ### 2.5 时间系统统一驱动所有节点 ✅（需同步）
-- [`TimeManager`](C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/TimeManager.cs:21) 多档时间：暂停(0) / 慢动作 / 实时(1x) / 快进 / 时间加速(warp)。
+- [`TimeManager`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/Flight/TimeManager.cs:21) 多档时间：暂停(0) / 慢动作 / 实时(1x) / 快进 / 时间加速(warp)。
 - 所有 `CraftNode.UpdateCraft(elapsedTime, currentTime)` 由统一时间驱动，`FlightState.Time` 是全局飞行时间（`IGameTime`）。
 - 联机策略：**限制 1x 实时（NormalSpeedMode），暂停需主机广播**；warp 会让同步复杂度剧增，MVP 阶段禁用。
 
@@ -177,7 +177,7 @@ MPStatePacket
 - 【已决策 2026-08】确认为硬约束：**所有玩家同一行星系统（房主指定），暂不做跨行星**；"广播行星系统文件"未实施（见 [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) §8.1-1）。
 
 ### 6.5 低 · 模组对反编译内部代码的依赖
-- 模组依赖 `Assets.Scripts.Flight / Craft / State` 内部命名空间（通过 `jnoCode` 源码引用编译），**游戏更新可能破坏 API**。需固定游戏版本。
+- 模组依赖 `Assets.Scripts.Flight / Craft / State` 内部命名空间（通过 `<JNO_CODE>` 源码引用编译），**游戏更新可能破坏 API**。需固定游戏版本。
 
 ---
 

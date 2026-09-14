@@ -67,6 +67,26 @@ namespace Assets.Scripts.Net
 		/// </summary>
 		private const float RemoteFreezeBlendSec = 0.15f;
 
+		// --- 2 阶外推(acceleration-smoothing-2026-09-14):发送端采样 EMA/钳制 + 接收端开关 ---
+		/// <summary>发送端加速度 EMA 系数(每包 20Hz;Acceleration 是刚体速度差分测量,一帧滞后+噪声,必须平滑)。</summary>
+		private const float SenderAccelEmaRate = 0.2f;
+		/// <summary>发送端角速度 EMA 系数(每包)。</summary>
+		private const float SenderAngVelEmaRate = 0.2f;
+		/// <summary>加速度幅值钳制(m/s²):外推项 ½·a·ext² 在 ext≤1s 时 ≤30m,超钳制值视为噪声/坏数据。</summary>
+		private const float MaxAccelMs = 60f;
+		/// <summary>角速度幅值钳制(rad/s,≈0.5 rev/s):防快速自旋/异常包让朝向外推过量。</summary>
+		private const float MaxAngVelRad = 3f;
+		/// <summary>接收端平移 2 阶外推(½·a·ext²)总开关。加速度域无符号约定问题,可安全开启。</summary>
+		private const bool EnableSecondOrderExtrap = true;
+		/// <summary>
+		/// 接收端朝向外推(ω·ext 右乘)总开关。ω 的 SR2 符号翻转约定待实测
+		/// (发送端 sendDiag 自校验 errF+/errF-/errR+ 取最小者,见 plans/acceleration-smoothing-2026-09-14.md §六-1),
+		/// 确认前默认关闭,避免朝向外推方向错误反而劣化现有平滑。
+		/// </summary>
+		private const bool EnableRotationExtrap = false;
+		/// <summary>朝向外推符号(实测确认后 ±1)。</summary>
+		private const float RotationExtrapSign = 1f;
+
 		private readonly Dictionary<int, MpPeer> _playersByPlayerId = new Dictionary<int, MpPeer>();
 		private readonly Dictionary<int, RemoteCraft> _remoteCrafts = new Dictionary<int, RemoteCraft>();
 		private readonly HashSet<int> _spawnMissLogged = new HashSet<int>();
@@ -77,6 +97,12 @@ namespace Assets.Scripts.Net
 		private Vector3? _diagBody0Rel;
 		private float rcDiagBody0RelDelta;
 		private float _diagBody0RelLogTime;
+		// --- 2 阶外推(发送端):加速度/角速度 EMA 状态 + 原始采样诊断 + ω 符号自校验状态 ---
+		private Vector3 _accelEma; private bool _hasAccelEma;
+		private Vector3 _angVelEma; private bool _hasAngVelEma;
+		private Vector3 _accelRawDiag; private Vector3 _angVelRawDiag;
+		private Quaternion? _diagPrevSrfRel;   // 上一 sendDiag 时刻的 SrfRel(ω 符号自校验)
+		private float _diagPrevSrfTime;
 		private float _craftResendTimer; // 客户端重发 CraftData 节流计时
 		private float _hostCraftResendTimer; // 房主重发 host craft（PlayerJoin）节流计时
 		private bool _craftReported;      // 本机飞船已上报且被房主确认（客户端收到 CraftDataAck 才置 true）
@@ -637,12 +663,44 @@ namespace Assets.Scripts.Net
 				{
 					body0Rel = data.BodyPositions[0].magnitude;
 				}
+				// ω 符号自校验(2026-09-14,acceleration-smoothing §六-1):用上一 sendDiag 时刻的 SrfRel 按
+				// 本段 ω(EMA 值,假设恒定)外推,与实际 SrfRel 对比。稳态转弯段误差最小者 = 正确符号约定:
+				// errF+ / errF- = 对 ω 做 (-x,y,-z) 翻转还原 Unity 局部系后 sign± 右乘的预测误差;
+				// errR+ = 不翻转直接用 ω sign+ 的预测误差。另 srfΔ(实际 SrfRel 转角) vs wΔ(|ω|×Δt)
+				// 验证角速度量级是否与朝向变化一致。
+				string wSignDiag = "-";
+				try
+				{
+					if (_diagPrevSrfRel.HasValue && data.AngularVelocity.magnitude > 0.001f)
+					{
+						float dtDiag = Time.unscaledTime - _diagPrevSrfTime;
+						Vector3 wEma = data.AngularVelocity;
+						Vector3 wFlip = new Vector3(-wEma.x, wEma.y, -wEma.z);
+						float wMag = wEma.magnitude;
+						float srfDeltaDeg = Quaternion.Angle(_diagPrevSrfRel.Value, data.SrfRel.ToQuaternion());
+						float wDeltaDeg = wMag * dtDiag * Mathf.Rad2Deg;
+						Quaternion cur = data.SrfRel.ToQuaternion();
+						float errFp = Quaternion.Angle(_diagPrevSrfRel.Value * Quaternion.Euler(wFlip * dtDiag * Mathf.Rad2Deg), cur);
+						float errFm = Quaternion.Angle(_diagPrevSrfRel.Value * Quaternion.Euler(-wFlip * dtDiag * Mathf.Rad2Deg), cur);
+						float errRp = Quaternion.Angle(_diagPrevSrfRel.Value * Quaternion.Euler(wEma * dtDiag * Mathf.Rad2Deg), cur);
+						wSignDiag = "srfΔ=" + srfDeltaDeg.ToString("F2") + "deg wΔ=" + wDeltaDeg.ToString("F2") + "deg" +
+							" errF+=" + errFp.ToString("F2") + " errF-=" + errFm.ToString("F2") + " errR+=" + errRp.ToString("F2");
+					}
+					_diagPrevSrfRel = data.SrfRel.ToQuaternion();
+					_diagPrevSrfTime = Time.unscaledTime;
+				}
+				catch { }
 				Mod.LogLobby("MP sendDiag P" + PlayerId +
 					": vel=" + data.Velocity.magnitude.ToString("F3") + "m/s" +
 					" paused=" + (data.Paused ? 1 : 0) +
+					" accRaw=" + _accelRawDiag.magnitude.ToString("F2") + "m/s²" +
+					" acc=" + data.Acceleration.magnitude.ToString("F2") + "m/s²" +
+					" wRaw=" + _angVelRawDiag.magnitude.ToString("F2") + "rad/s" +
+					" w=" + data.AngularVelocity.magnitude.ToString("F2") + "rad/s" +
 					" body0RelΔ=" + rcDiagBody0RelDelta.ToString("F4") + "m" +
 					" body0Rel=" + body0Rel.ToString("F4") + "m" +
-					" bodyCnt=" + (data.BodyPositions != null ? data.BodyPositions.Count : 0));
+					" bodyCnt=" + (data.BodyPositions != null ? data.BodyPositions.Count : 0) +
+					" " + wSignDiag);
 			}
 			if (IsServer)
 			{
@@ -1286,6 +1344,8 @@ namespace Assets.Scripts.Net
 			public bool HasPktFreezePos;
 			public Vector3d PktFreezePos;
 			public double LastAgeNowSec;           // 本帧实际使用的外推量(诊断)
+			public float LastAccelTermM;           // 2 阶外推:本帧加速度项位移(½|a|·ext²,m)
+			public float LastAngExtRad;            // 2 阶外推:本帧朝向外推角(|ω|·ext,rad)
 
 			// --- 发送端时间倍率(2026-09:慢放时外推按真实时间推进而包位置按发送端缩放时间走 → 每包向后锯齿) ---
 			// 相邻两包 FlightState.Time(发送端游戏时间)增量 / 真实到达时间增量;正常=1,慢放<1,暂停→0。
@@ -2010,6 +2070,40 @@ namespace Assets.Scripts.Net
 						ext *= rc.SenderMotionRate;
 						if (ext > 1.0f) ext = 1.0f; // 安全上限 1s
 						latest.Position = latest.Position + latest.Velocity * ext;
+						// 2 阶外推(2026-09-14,acceleration-smoothing):加速度项 ½·a·ext²。
+						// ext 已 ×SenderMotionRate 换算到发送端时间基 → 加速度项 = ½·a·(ext·mRate)²,
+						// 慢放/暂停天然兼容(暂停 mRate→0 → 两项都→0,与冻结逻辑无冲突)。
+						// 发送端已 EMA+钳制,这里做二次防御(NaN/幅值),坏包不污染外推。
+						rc.LastAccelTermM = 0f;
+						rc.LastAngExtRad = 0f;
+						if (EnableSecondOrderExtrap && ext > 0f)
+						{
+							Vector3 a = latest.Acceleration;
+							if (!IsFinite(a)) a = Vector3.zero;
+							float aMag = a.magnitude;
+							if (aMag > MaxAccelMs) a *= (MaxAccelMs / aMag);
+							if (aMag > 0.0001f)
+							{
+								latest.Position += a * (0.5f * ext * ext);
+								rc.LastAccelTermM = 0.5f * aMag * ext * ext;
+							}
+						}
+						// 朝向外推(2 阶域:旋转速率)。ω 为 craft 局部系(ModApi 约定),右乘
+						// SrfRel *= Euler(ω_local·ext);符号约定待实测(EnableRotationExtrap 默认 false)。
+						if (EnableRotationExtrap && ext > 0f)
+						{
+							Vector3 w = latest.AngularVelocity;
+							if (!IsFinite(w)) w = Vector3.zero;
+							float wMag = w.magnitude;
+							if (wMag > MaxAngVelRad) w *= (MaxAngVelRad / wMag);
+							if (wMag > 0.0001f)
+							{
+								Vector3 wLocal = new Vector3(-w.x, w.y, -w.z) * RotationExtrapSign;
+								latest.SrfRel = Quaterniond.FromQuaternion(
+									latest.SrfRel.ToQuaternion() * Quaternion.Euler(wLocal * ext * Mathf.Rad2Deg));
+								rc.LastAngExtRad = wMag * ext;
+							}
+						}
 						rc.ExtrapolatedFrames++; // 计数(SP2 风格:每帧按速度外推)
 						if (rc.RemotePausedRamp >= 1f) rc.FrozenFrames++;
 						rc.InterpPct = 1f;       // 始终在最新包(无缓冲插值)
@@ -2043,13 +2137,15 @@ namespace Assets.Scripts.Net
 						double move3s = rc.MoveSumM, pktJump = rc.PktJumpM;
 						double headDeg = rc.HeadDeg3s;
 						rc.MoveSumM = 0; rc.PktJumpM = 0; rc.HeadDeg3s = 0;
-						string newestPos = "?", vel = "?";
+						string newestPos = "?", vel = "?", accStr = "?", wStr = "?";
 						try
 						{
 							if (rc.TryGetNewest(out Mod.RemoteDataPack nw))
 							{
 								newestPos = nw.Position.x.ToString("F4") + "," + nw.Position.y.ToString("F4") + "," + nw.Position.z.ToString("F4");
 								vel = nw.Velocity.magnitude.ToString("F3");
+								accStr = nw.Acceleration.magnitude.ToString("F1");
+								wStr = nw.AngularVelocity.magnitude.ToString("F2");
 							}
 						}
 						catch { }
@@ -2069,7 +2165,8 @@ namespace Assets.Scripts.Net
 							" moveDelta=" + rc.LastMoveDeltaM.ToString("F2") + "m bodyDelta=" + rc.LastBodyPoseDeltaM.ToString("F2") + "m" +
 							" tfDrift=" + rc.LastTfDriftM.ToString("F2") + "m" +
 							" move3s=" + move3s.ToString("F3") + "m pktJump=" + pktJump.ToString("F3") + "m" +
-							" vel=" + vel + "m/s headYaw=" + headYaw + "deg head3s=" + headDeg.ToString("F1") + "deg" +
+							" vel=" + vel + "m/s acc=" + accStr + "m/s² aExt=" + rc.LastAccelTermM.ToString("F2") + "m" +
+							" w=" + wStr + "rad/s headYaw=" + headYaw + "deg head3s=" + headDeg.ToString("F1") + "deg" +
 							" newest=(" + newestPos + ") posErr=" + rc.LastPosErrorM.ToString("F2") + "m");
 					}
 
@@ -2394,6 +2491,28 @@ namespace Assets.Scripts.Net
 		{
 			return !double.IsNaN(v.x) && !double.IsNaN(v.y) && !double.IsNaN(v.z) &&
 				!double.IsInfinity(v.x) && !double.IsInfinity(v.y) && !double.IsInfinity(v.z);
+		}
+
+		/// <summary>Vector3 是否全为有限值(2 阶外推的加速度/角速度坏值防御)。</summary>
+		private static bool IsFinite(Vector3 v)
+		{
+			return !float.IsNaN(v.x) && !float.IsNaN(v.y) && !float.IsNaN(v.z) &&
+				!float.IsInfinity(v.x) && !float.IsInfinity(v.y) && !float.IsInfinity(v.z);
+		}
+
+		/// <summary>EMA 更新(指数移动平均;首次采样直接初始化)。</summary>
+		private static Vector3 UpdateEma(Vector3 ema, ref bool has, Vector3 sample, float rate)
+		{
+			if (!has) { has = true; return sample; }
+			return Vector3.Lerp(ema, sample, rate);
+		}
+
+		/// <summary>幅值钳制(保留方向;maxMag≤0 → 归零)。</summary>
+		private static Vector3 ClampMagnitude(Vector3 v, float maxMag)
+		{
+			if (maxMag <= 0f) return Vector3.zero;
+			float m = v.magnitude;
+			return m > maxMag ? v * (maxMag / m) : v;
 		}
 
 		/// <summary>把 target 的 body 位姿快照进平滑数组(首帧 / body 数量变化时调用)。</summary>
@@ -2771,6 +2890,34 @@ namespace Assets.Scripts.Net
 						}
 					}
 				}
+
+				// 2 阶外推数据(2026-09-14,acceleration-smoothing):采样加速度与角速度。
+				// - Acceleration:行星系(含重力,根 body 刚体速度差分测量)→ 转地表系(纯旋转,同速度路径;
+				//   Coriolis/离心项在 SR2 尺度 ≈0.1 m/s² 可忽略)。接收端外推加 ½·a·ext²。
+				// - AngularVelocity:craft 局部系(ModApi 约定,SR2 符号翻转已内嵌)。接收端按 ω·ext 右乘外推朝向
+				//   (符号约定待实测,见 plans/acceleration-smoothing-2026-09-14.md §六-1)。
+				// ⚠️ 测量值必须 EMA + 钳制后才入包,否则差分噪声成为新抖动源;NaN/Inf 防御(坏值不污染)。
+				Vector3 accelSurfaceRaw = Vector3.zero;
+				Vector3 angVelLocalRaw = Vector3.zero;
+				try
+				{
+					ICraftFlightData fd = craft.CraftScript.FlightData;
+					if (fd != null)
+					{
+						accelSurfaceRaw = craft.Parent.PlanetVectorToSurfaceVector(fd.Acceleration).ToVector3();
+						angVelLocalRaw = fd.AngularVelocity.ToVector3();
+					}
+				}
+				catch { }
+				// 原始采样保存给 sendDiag(accRaw=/wRaw=,ω 符号自校验数据源)
+				_accelRawDiag = accelSurfaceRaw;
+				_angVelRawDiag = angVelLocalRaw;
+				if (!IsFinite(accelSurfaceRaw)) accelSurfaceRaw = Vector3.zero;
+				if (!IsFinite(angVelLocalRaw)) angVelLocalRaw = Vector3.zero;
+				_accelEma = UpdateEma(_accelEma, ref _hasAccelEma, accelSurfaceRaw, SenderAccelEmaRate);
+				_angVelEma = UpdateEma(_angVelEma, ref _hasAngVelEma, angVelLocalRaw, SenderAngVelEmaRate);
+				data.Acceleration = ClampMagnitude(_accelEma, MaxAccelMs);
+				data.AngularVelocity = ClampMagnitude(_angVelEma, MaxAngVelRad);
 
 				ICommandPod cp = craft.CraftScript.ActiveCommandPod;
 				if (cp != null)

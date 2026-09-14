@@ -1,6 +1,6 @@
 # 远程船 2 阶外推方案(acceleration-smoothing)— 加速度 + 旋转速率
 
-> 状态:📋 **评估完成,未实施**(2026-09-14 与 dev 讨论后用户拍板「先记录、不急着动手」)
+> 状态:🔧 **期 1 已落地(dotnet build 0 错误 0 警告,2026-09-14)**:协议字段 + 发送端采样(EMA/钳制/NaN 防御)+ 接收端**平移 2 阶外推已生效**;接收端**朝向外推默认关闭**(`EnableRotationExtrap=false`),待 ω 符号实测(sendDiag 自校验 `errF+/errF−/errR+`)后一行开启。
 > 关联:[`latency-smoothing-2026-08-22.md`](archive/latency-smoothing-2026-08-22.md)(本方案是 §9 现行 1 阶外推管线的 **2 阶扩展**,§9.18 有交叉引用);[`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md)(每 body 位姿域;本方案只做 craft 级,body 级角速度外推列为后续,不在 P0/P1)
 > 目标:恒加速段(爬升/重力转弯/刹车)不再系统性滞后/每包纠偏;转弯船朝向不再恒定滞后。
 
@@ -97,8 +97,28 @@
 
 ## 六、待办 / 开工顺序(实施时按此推进并回填)
 
-1. **数据有效性验证(必须先做)**:发送端临时日志打印 `FlightData.Acceleration / AngularVelocity`(量级/方向/暂停时行为),真实飞行 + 转弯/自旋段各一次;
-2. 期 1:协议尾部追加两个字段(`RemoteDataPack` + `WriteRecdata/ReadRecdata` EOF 容错);
-3. 期 1:接收端 2 阶外推(平移 `½·a·ext²·mRate²` + 朝向 `ω·ext` 右乘)+ 钳制/防御/诊断;
-4. NetSim(150ms/30ms)+ §四 回归判据双端实测;
-5. 完成 → 更新本文件状态与 `plans/README.md` 索引。
+1. ✅ **数据有效性验证的数据源已落地**:发送端 `MP sendDiag` 行新增 `accRaw=`/`acc=`/`wRaw=`/`w=`(原始采样与 EMA 后入包值),并新增 **ω 符号自校验**:`srfΔ=`(实际 SrfRel 转角)/`wΔ=`(|ω|×Δt)/`errF+=`/`errF-=`/`errR+=`(按 Flip(ω)±sign 与不翻转+sign 三种约定的 1s 预测误差)。**待实测**:稳态转弯段误差最小者 = 正确符号约定(见 §六之二-4)。
+2. ✅ **期 1:协议尾部追加两个字段**(`RemoteDataPack.Acceleration/AngularVelocity` + `WriteRecdata/ReadRecdata` EOF 容错,同 `Paused` 模式)。
+3. ✅ **期 1:接收端 2 阶外推**——平移 `½·a·ext²`(ext 已×mRate,即 `½·a·(ext·mRate)²`)已开启(`EnableSecondOrderExtrap=true`),NaN/幅值双防御,`MP smoothing` 行加 `acc=`/`aExt=`/`w=`;**朝向外推** `SrfRel *= Euler(Flip(ω)·ext·sign)` 已实现但 `EnableRotationExtrap=false`(待 ω 符号实测后开启)。
+4. ⏳ NetSim(150ms/30ms)+ §四 回归判据双端实测(实测指令见 §六之二)。
+5. ⏳ 完成 → 更新本文件状态与 `plans/README.md` 索引。
+
+## 六之二、实施记录(2026-09-14,dotnet build 0 错误 0 警告)
+
+**改动文件**:
+- `Assets/Scripts/Mod.cs`:`RemoteDataPack` 新增 `Acceleration`/`AngularVelocity`(Vector3,尾部字段)。
+- `Assets/Scripts/Net/MpMessage.cs`:`WriteRecdata` 在 `Paused` 之后追加 6 floats;`ReadRecdata` try/catch EOF → 零值。
+- `Assets/Scripts/Net/MpNetworkManager.cs`:
+  - 常量:`SenderAccelEmaRate/SenderAngVelEmaRate=0.2`、`MaxAccelMs=60`、`MaxAngVelRad=3`、`EnableSecondOrderExtrap=true`、`EnableRotationExtrap=false`、`RotationExtrapSign=1`;
+  - 发送端 `TrySampleLocalCraft`:采样 `FlightData.Acceleration`(行星系→地表系纯旋转)与 `FlightData.AngularVelocity`(craft 局部系)→ NaN 防御 → EMA → 幅值钳制 → 入包;`ProcessOutgoing` 的 sendDiag 行加 `accRaw/acc/wRaw/w` + ω 符号自校验(`errF+/errF-/errR+`);
+  - 接收端 `UpdateRemoteCrafts`:外推后追加 `½·a·ext²`(开启)与 `SrfRel *= Euler(Flip(ω)·ext·sign)`(关闭,待验证);`RemoteCraft` 加 `LastAccelTermM/LastAngExtRad`;`MP smoothing` 行加 `acc/aExt/w`。
+
+**关键实现决策**:
+1. 加速度项直接用"已×mRate 的 ext"平方 → 自动满足慢放 `mRate²` 缩放;暂停 mRate→0 → 两项都→0,与冻结逻辑天然兼容;
+2. 朝向外推采用游戏自身运动学范式(`SubStructureRotateScript`:`transform.Rotate(ω_local·dt)` = 局部系右乘 `q *= Euler(ω·dt)`);对 `FlightData.AngularVelocity` 先做 `(-x,y,-z)` 翻转还原 Unity 局部系(该 getter 的翻转自逆,翻转两次=恒等);
+3. ω 符号约定无游戏内积分范式可抄(该属性仅 inspector 显示用)→ 用 sendDiag **发送端自校验**替代双端试错:稳态转弯段 `errF+`/`errF-`/`errR+` 最小者即正确约定,一趟单机飞行即可定案,无需先联网。
+
+**待实测内容(2026-09-14)**:
+- 单端(可不联网):启动爬升(持续加速)看 `accRaw/acc` 量级;稳态转弯 ≥3s 看 `errF+/errF-/errR+` 谁最小;快速自旋看 `wRaw` 是否被钳到 3 rad/s;暂停看 `wRaw→0` 行为;
+- 双端:NetSim 150ms/30ms 下看 `MP smoothing` 的 `aExt`(加速段应>0 且 `moveDelta/pktJump` 比期前小)、回归(`b0dLate=0`、`gapEMA≈50ms`、暂停/慢放/切换速度模式不回归);
+- ω 符号定案后:设 `EnableRotationExtrap=true` + `RotationExtrapSign=±1`,重编译,补测转弯段朝向无超前/滞后。

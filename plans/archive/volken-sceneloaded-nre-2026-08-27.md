@@ -67,7 +67,7 @@ private void OnSceneLoaded(object Sender, SceneEventArgs e)
 
 ### 4.1 JNO 侧(根因,建议修复)`MultiPlayerUI.OnSceneLoaded` 加 null 保护
 
-文件:`C:\renko\unityProjects\JNOMultiPlayer\Assets\Scripts\MultiPlayerUI.cs`(L618-626)
+文件:`<PROJECT>\Assets\Scripts\MultiPlayerUI.cs`(L618-626)
 
 ```csharp
 private void OnSceneLoaded(object Sender, SceneEventArgs e)

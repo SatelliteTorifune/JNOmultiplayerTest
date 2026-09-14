@@ -1,8 +1,8 @@
 # MP 远程飞船朝向同步 —— 最终方案(LunaMultiplayer srfRel 相对地表朝向)
 
 > 项目:JNOMultiPlayer(SimpleRockets 2 多人联机 mod)
-> 反编译参考:`C:/renko/shitProgram/jnoCode`
-> KSP 参考:`C:/renko/unityProjects/LunaMultiplayer`
+> 反编译参考:`<JNO_CODE>`
+> KSP 参考:`<LUNA_MP>`
 > 状态:✅ 已修复并双端实测通过(相对地表朝向一致、warp 无漂移、Pitch/Bank 两端一致)
 
 ---
@@ -15,10 +15,10 @@
 
 ## 2. 反编译根因(坐标系链)
 
-- 朝向权威来源:`CraftScript.FrameHeading = CenterOfMass.rotation`([`CraftScript.cs:385`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/CraftScript.cs:385));游戏 [`CraftScript.cs:2049`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/CraftScript.cs:2049) 每帧把质心朝向覆盖为命令舱座椅朝向。
+- 朝向权威来源:`CraftScript.FrameHeading = CenterOfMass.rotation`(`CraftScript.cs:385`);游戏 `CraftScript.cs:2049` 每帧把质心朝向覆盖为命令舱座椅朝向。
 - 行星自转:`RotationAngle = InitialRotation + AngularVelocity × Time`;双端时间不同 → 自转角度不同 → 同一表面点行星空间坐标/朝向不同。
-- `craft.ReferenceFrame = _gameView.ReferenceFrame`([`CraftNode.cs:477`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/Sim/CraftNode.cs:477),行星固定、纯绕 Y)。
-- `FlightData.Pitch/Bank` 依赖 `CraftForward/PositionNormalized/CraftRight`(反编译 [`CraftFlightData.cs`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/FlightData/CraftFlightData.cs))。
+- `craft.ReferenceFrame = _gameView.ReferenceFrame`(`CraftNode.cs:477`,行星固定、纯绕 Y)。
+- `FlightData.Pitch/Bank` 依赖 `CraftForward/PositionNormalized/CraftRight`(反编译 `CraftFlightData.cs`)。
 
 ## 3. 方案演进(已试)
 
@@ -34,7 +34,7 @@
 
 ## 4. 最终方案:LunaMultiplayer srfRel(相对地表朝向)
 
-KSP LunaMultiplayer([`VesselPositioner.cs`](../C:/renko/unityProjects/LunaMultiplayer/LmpClient/Systems/VesselPositionSys/ExtensionMethods/VesselPositioner.cs)):
+KSP LunaMultiplayer(`VesselPositioner.cs`):
 
 ```csharp
 vessel.srfRelRotation = currentSurfaceRelRotation;   // 表面相对旋转(相对行星地表)
@@ -53,10 +53,10 @@ var rotation = (Quaternion)lerpedBody.rotation * currentSurfaceRelRotation;  // 
 ### 5.1 坐标系关键事实(反编译确认)
 
 - `Transform.rotation` / `CenterOfMass.rotation` 是**帧空间**(GameView 参考系即"世界")。
-- 帧↔行星转换([`ReferenceFrame.cs`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/GameView/ReferenceFrame.cs:136)):
+- 帧↔行星转换(`ReferenceFrame.cs`):
   - `FrameToPlanetRotation(q) = RotateY(θ_frame) * q`
   - `PlanetToFrameRotation(q) = RotateY(-θ_frame) * q`
-- 表面锁定帧:`θ_frame = θ_planet + _planetLocalRotation`(常量偏移,[`ReferenceFrame.cs:274`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/GameView/ReferenceFrame.cs:274))。
+- 表面锁定帧:`θ_frame = θ_planet + _planetLocalRotation`(常量偏移,`ReferenceFrame.cs:274`)。
 
 ### 5.2 原 bug(已修正)
 

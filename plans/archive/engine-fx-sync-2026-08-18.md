@@ -1,7 +1,7 @@
 # 同步发动机尾焰与粒子效果 — 可行性分析
 
 > 项目:JNOMultiPlayer(MultiPlayer)
-> 反编译参考:`C:/renko/shitProgram/jnoCode`
+> 反编译参考:`<JNO_CODE>`
 > 状态:**✅ 已归档**。尾焰(液体+航发两段加力)、烟雾(速度注入)、过膨胀(膨胀比)同步均已实现并实测通过(2026-08)。本文档为开发经验存档,细节以代码内注释为准。
 > 定位:~~[`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) 的补充分析~~ → 已由「尾焰/烟雾/过膨胀同步」实测闭环,移入 `plans/archive/`。回答"幽灵船的引擎尾焰/烟雾/热畸变能否同步、怎么同步、代价多大"
 > 结论先行:**火焰(尾焰)可同步且成本几乎为零;烟雾/热畸变/RCS 只能做"输入同步 + 本地仿真"(形态一致、非逐粒子一致);粒子级精确同步不可行;幽灵重开物理不可取。**
@@ -42,10 +42,10 @@
 
 | 效果 | 实现 | 关键代码 | 本质 |
 |---|---|---|---|
-| **尾焰本体** | `ExhaustSystemScript`:`MeshRenderer` + 自定义 shader,由材质参数驱动 | `UpdateExhaust(throttle)` → `UpdateProperties`([ExhaustSystemScript.cs:507](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/ExhaustSystemScript.cs:507)) | **确定性**:形状/长度/扩张/亮度/颜色全是 throttle 的纯函数;唯一随时间的是 `_TextShift` 纹理滚动(装饰性) |
-| **引擎烟雾** | `SmokeTrailScript`:`ParticleSystem` 本地发粒子 | `EngineNozzleScript.FlightUpdate` → `smokeTrail.FlightUpdate(surfaceVelocity)` + `LateUpdate` 里 `FlightScene.EmitParticle(EngineSmoke,…)`([SmokeTrailScript.cs:149](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/SmokeTrailScript.cs:149)) | 发射率/速度/大小/朝向由 **throttle × 速度 × 排气方向 × 大气密度** 决定——输入全可共享 → 本地仿真 |
-| **热畸变** | `DistortionEffectScript`:`ParticleSystem` + `_Distortion` 材质 float | `FlightUpdate(intensity)`([DistortionEffectScript.cs:50](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/DistortionEffectScript.cs:50)) | intensity → emission enable + 材质值,本地仿真 |
-| **RCS** | `ReactionControlNozzleScript`:独立 `ParticleSystem` | `ToggleParticles(bool)` + `FlightUpdate` 读 RCS 输入([ReactionControlNozzleScript.cs:362](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ReactionControlNozzleScript.cs:362)) | 由控制输入驱动,本地仿真 |
+| **尾焰本体** | `ExhaustSystemScript`:`MeshRenderer` + 自定义 shader,由材质参数驱动 | `UpdateExhaust(throttle)` → `UpdateProperties`(ExhaustSystemScript.cs:507) | **确定性**:形状/长度/扩张/亮度/颜色全是 throttle 的纯函数;唯一随时间的是 `_TextShift` 纹理滚动(装饰性) |
+| **引擎烟雾** | `SmokeTrailScript`:`ParticleSystem` 本地发粒子 | `EngineNozzleScript.FlightUpdate` → `smokeTrail.FlightUpdate(surfaceVelocity)` + `LateUpdate` 里 `FlightScene.EmitParticle(EngineSmoke,…)`(SmokeTrailScript.cs:149) | 发射率/速度/大小/朝向由 **throttle × 速度 × 排气方向 × 大气密度** 决定——输入全可共享 → 本地仿真 |
+| **热畸变** | `DistortionEffectScript`:`ParticleSystem` + `_Distortion` 材质 float | `FlightUpdate(intensity)`(DistortionEffectScript.cs:50) | intensity → emission enable + 材质值,本地仿真 |
+| **RCS** | `ReactionControlNozzleScript`:独立 `ParticleSystem` | `ToggleParticles(bool)` + `FlightUpdate` 读 RCS 输入(ReactionControlNozzleScript.cs:362) | 由控制输入驱动,本地仿真 |
 | 撞击/地形尘 | `BodyCollisionHandler` / `EjectaProjectileScript` / `ExhaustDamageScript._dust` | 物理事件触发 | 瞬态、物理驱动,不值得同步 |
 
 ---
@@ -54,9 +54,9 @@
 
 幽灵物理禁用后,游戏自己的引擎逻辑**强制把视觉关掉**:
 
-1. [`EngineCommon.FlightFixedUpdate`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/EngineCommon.cs:213) 里 `OnActivated()` 被 `partScript.CraftScript.IsPhysicsEnabled` **门控** → 幽灵引擎永远不激活(`_active=false`);
-2. [`EngineCommon.FlightUpdate`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/EngineCommon.cs:263):`!this._active → UpdateEngineThrottle(0f)` → 每帧把视觉 throttle 归零 → 尾焰 `UpdateExhaust(0)` 隐藏;
-3. `OnDeactivated` 在物理禁用时额外调 `DisableSmokeParticleSystem()`([EngineNozzleScript.cs:490](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/EngineNozzleScript.cs:490)) → 烟雾也被隐藏。
+1. `EngineCommon.FlightFixedUpdate` 里 `OnActivated()` 被 `partScript.CraftScript.IsPhysicsEnabled` **门控** → 幽灵引擎永远不激活(`_active=false`);
+2. `EngineCommon.FlightUpdate`:`!this._active → UpdateEngineThrottle(0f)` → 每帧把视觉 throttle 归零 → 尾焰 `UpdateExhaust(0)` 隐藏;
+3. `OnDeactivated` 在物理禁用时额外调 `DisableSmokeParticleSystem()`(EngineNozzleScript.cs:490) → 烟雾也被隐藏。
 
 **结论:必须绕过游戏这套"激活门控",直接驱动视觉。**
 
@@ -64,9 +64,9 @@
 
 ## 3. 关键发现:游戏提供了现成钩子 `ExhaustThrottleOverride`
 
-- [`EngineCommon.ExhaustThrottleOverride`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/EngineCommon.cs:130) 是 **public 可写 `Func<float>`**,在 `FlightUpdate` 里**无视 `_active` 与否**直接覆盖最终喂给 nozzle 的视觉 throttle;
+- `EngineCommon.ExhaustThrottleOverride` 是 **public 可写 `Func<float>`**,在 `FlightUpdate` 里**无视 `_active` 与否**直接覆盖最终喂给 nozzle 的视觉 throttle;
 - 三种引擎(`EngineScript` / `RocketEngineScript` / `JetEngineScript`)**全部**走同一个 `EngineCommon`;
-- **JetEngine 已用它做加力(afterburner)**([JetEngineScript.cs:604](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/JetEngineScript.cs:604))——说明这是官方留的"视觉覆盖"通道,不是 hack;
+- **JetEngine 已用它做加力(afterburner)**(JetEngineScript.cs:604)——说明这是官方留的"视觉覆盖"通道,不是 hack;
 - 只需给每个幽灵引擎的 `_engineCommon` 设 `ExhaustThrottleOverride = () => 同步的throttle[i]`,火焰就会按同步值渲染,游戏自己每帧驱动它(前提已由 §3.5 定论成立)。
 
 ### 3.5 定论:幽灵引擎 modifier **确实**收到 `IFlightUpdate` / `IFlightFixedUpdate`
@@ -75,11 +75,11 @@
 
 | 环节 | 证据 | 结论 |
 |---|---|---|
-| 注册 | `MonoBehaviourBase.OnEnable → Game.Loop.Register`([MonoBehaviourBase.cs:22](../C:/renko/shitProgram/jnoCode/ModApi/GameLoop/MonoBehaviourBase.cs:22));引擎 modifier 继承链 `PartModifierScript → MonoBehaviourBase` | 注册只看 MonoBehaviour 是否 enabled,**无物理过滤** |
-| 分组 | `FlightUpdateGroupCollection.Register`([FlightUpdateGroupCollection.cs:160](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/GameLoop/FlightUpdateGroupCollection.cs:160))按接口(`IFlightUpdate`/`IFlightFixedUpdate`)入组 | **无 `IsPhysicsEnabled` 检查** |
-| 关物理 | `SetPhysicsEnabled(false) → CraftScript.EnablePhysics(false)`([CraftScript.cs:1635](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/CraftScript.cs:1635))只置 flag + body kinematic + 调 `OnBeforePhysicsChanged/OnPhysicsChanged` 虚钩子 | **不**禁用 MonoBehaviour、**不**隐藏 GameObject → 不触发 `OnDisable` 反注册 |
+| 注册 | `MonoBehaviourBase.OnEnable → Game.Loop.Register`(MonoBehaviourBase.cs:22);引擎 modifier 继承链 `PartModifierScript → MonoBehaviourBase` | 注册只看 MonoBehaviour 是否 enabled,**无物理过滤** |
+| 分组 | `FlightUpdateGroupCollection.Register`(FlightUpdateGroupCollection.cs:160)按接口(`IFlightUpdate`/`IFlightFixedUpdate`)入组 | **无 `IsPhysicsEnabled` 检查** |
+| 关物理 | `SetPhysicsEnabled(false) → CraftScript.EnablePhysics(false)`(CraftScript.cs:1635)只置 flag + body kinematic + 调 `OnBeforePhysicsChanged/OnPhysicsChanged` 虚钩子 | **不**禁用 MonoBehaviour、**不**隐藏 GameObject → 不触发 `OnDisable` 反注册 |
 | 幽灵处理 | `CraftUtils.DisableCraftPhysicCalculation`([CraftUtils.cs:97](../Assets/Scripts/CraftUtils.cs:97))只清碰撞体/置标记 | 不影响注册 |
-| 派发 | `FlightGameLoop.FixedUpdate/Update`([FlightGameLoop.cs:153](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/GameLoop/FlightGameLoop.cs:153))对全部已注册项调用 | 非暂停/非 warp(本 mod 常态)下正常派发 |
+| 派发 | `FlightGameLoop.FixedUpdate/Update`(FlightGameLoop.cs:153)对全部已注册项调用 | 非暂停/非 warp(本 mod 常态)下正常派发 |
 
 **结论:幽灵的引擎 modifier 每帧收 `IFlightUpdate.FlightUpdate`、每 FixedUpdate 收 `IFlightFixedUpdate.FlightFixedUpdate`。** 现有注释([MpNetworkManager.cs:1477](../Assets/Scripts/Net/MpNetworkManager.cs:1477))"幽灵飞船不参与 IFlightUpdate"与代码不符(FlightData 陈旧更可能是执行序:游戏 FlightUpdate 读 `CenterOfMass` 先于 mod 写入,至多一帧滞后)。
 
@@ -94,7 +94,7 @@
 - ⚠️ RocketEngine 特有:`FlightUpdate` 传 `smokeOpacity = num²·num`(num=`AdjustedThrottle()`,幽灵上=0)→ **烟雾 opacity=0 不发射**。火焰 MVP 不受影响;做烟雾时需额外 shim 或直接注入。
 
 **航发尾焰(`JetEngineScript`):两段 —— 非加力 + 加力,必须先中和它自己的 `FlightFixedUpdate`**
-- 幽灵的 JetEngineScript `FlightFixedUpdate` 每 FixedUpdate:性能分支失败 → `_afterburnerThrottle=0`([JetEngineScript.cs:401](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/JetEngineScript.cs:401))+ `_rocketExhaustSystem.UpdateExhaust(0)`([JetEngineScript.cs:441](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/JetEngineScript.cs:441))→ **每帧反打**,不能只注入 `_afterburnerThrottle`(会被重置);
+- 幽灵的 JetEngineScript `FlightFixedUpdate` 每 FixedUpdate:性能分支失败 → `_afterburnerThrottle=0`(JetEngineScript.cs:401)+ `_rocketExhaustSystem.UpdateExhaust(0)`(JetEngineScript.cs:441)→ **每帧反打**,不能只注入 `_afterburnerThrottle`(会被重置);
 - 做法:用 Harmony prefix 跳过幽灵 JetEngineScript 的 `IFlightFixedUpdate`(与 8.1-3 拦总入口同套路),然后 mod 每帧直接驱动:
   - **非加力段**(主喷嘴火焰/烟雾门控)= 同步 `EngineThrottle`,经 `ExhaustThrottleOverride=()=>sync[i]` + `EngineCommon.FlightUpdate(1f,1f)` 驱动(主 nozzle 的 ExhaustSystemScript);
   - **加力段** = 接收端用幽灵自身 `JetEngineData`(`hasAfterburner`/`afterburnerThrottleStart`,双端同 XML)从同步 `EngineThrottle` 推导
@@ -133,7 +133,7 @@
    - 枚举幽灵上 `IReactionEngine`(`EngineScript`/`RocketEngineScript`/`JetEngineScript`),反射取私有 `_engineCommon`,设 `ExhaustThrottleOverride = () => syncThrottle[i]`;可选 `DistortionIntensity = () => throttle`。
 2. **副作用净化**(重要):
    - 幽灵碰撞体已被 [`CraftUtils.DisableCraftPhysicCalculation`](../Assets/Scripts/CraftUtils.cs:97) 全部 `enabled=false` → 尾焰 trigger collider 不会触发碰撞/加热;
-   - 但 [`ExhaustDamageScript`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Propulsion/ExhaustDamageScript.cs:74) 仍会每 FixedUpdate 跑(发地形尘 `_dust`) → 建议把其 MonoBehaviour `enabled=false`。
+   - 但 `ExhaustDamageScript` 仍会每 FixedUpdate 跑(发地形尘 `_dust`) → 建议把其 MonoBehaviour `enabled=false`。
 3. **烟雾速度**(关键细节):
    - 幽灵 body 全 kinematic,而 `RecalculateFrameState` 只对非 kinematic 刚体累加速度([CraftUtils.cs:63](../Assets/Scripts/CraftUtils.cs:63)) → 幽灵 `rigidbody.velocity≈0` → 烟迹不拖尾;
    - 解决:每帧把同步 `recdata.Velocity`(转帧空间)写入幽灵 kinematic rigidbody 的 `velocity`,`SmokeTrailScript.LateUpdate` 即会发出正确拖尾。
@@ -235,16 +235,16 @@
 
 `SmokeTrailScript` 的发射链,关键两处:
 
-1. **`FlightUpdate(surfaceVelocity)`([SmokeTrailScript.cs:149](file:///C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/SmokeTrailScript.cs:149))**,第 171 行:
+1. **`FlightUpdate(surfaceVelocity)`(SmokeTrailScript.cs:149)**,第 171 行:
    `_smoothedCraftVelocity = rigidBody.velocity + Cross(rigidBody.angularVelocity, offset)`
    —— **用的是刚体 velocity,不是传入的 `surfaceVelocity` 参数**。
-2. **`LateUpdate`(发射)([SmokeTrailScript.cs:186](file:///C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/SmokeTrailScript.cs:186))**:
+2. **`LateUpdate`(发射)(SmokeTrailScript.cs:186)**:
    - 第 217 行 `vector3 = rigidBody.velocity` → 发射率相对速度、粒子位置回插(第 265 行)都靠它;
    - 第 213 行 `emissionFrame.Velocity = _smoothedCraftVelocity + 排气方向*(maxParticleSpeed*Throttle*SpeedOverride)`;
    - 第 268 行粒子速度 = `vector4(-FrameSurfaceVelocity) + (vector6-vector4)*exp(-AirDensity*dt)`(向空气帧拖拽衰减)。
    - 结论:粒子**速度/位置插值/发射率**全部读 `rigidBody.velocity`。
 
-**幽灵上的后果**:全 kinematic + `RecalculateFrameState` 只对非 kinematic 累加速度([CraftUtils.cs:63](file:///C:/renko/unityProjects/JNOMultiPlayer/Assets/Scripts/CraftUtils.cs:63))
+**幽灵上的后果**:全 kinematic + `RecalculateFrameState` 只对非 kinematic 累加速度(CraftUtils.cs:63)
 → `rigidbody.velocity≈0` → 即使放开烟雾,粒子也在喷嘴原地堆积成一坨,不拖尾。**必须注入速度。**
 
 ### 10.2 其它烟雾输入:当前已就绪(无需额外同步)
@@ -253,7 +253,7 @@
 |---|---|---|
 | `EmissionEnabled` / `Throttle` / `Intensity` | ✅ 正确 | 由 `EngineNozzleScript.FlightUpdate` 按同步 throttle 设置(尾焰驱动链已带出) |
 | `EmissionOpacity` | ✅ 正确 | `EngineCommon.FlightUpdate(smokeOpacity=1,…)` × 大气密度 |
-| `AtmosphereSample`(AirDensity 门槛/透明度) | ✅ 正确 | `CraftFlightData.Update` 每帧按当前位置 `SampleAltitude` 刷新([CraftFlightData.cs:570](file:///C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/FlightData/CraftFlightData.cs:570)) |
+| `AtmosphereSample`(AirDensity 门槛/透明度) | ✅ 正确 | `CraftFlightData.Update` 每帧按当前位置 `SampleAltitude` 刷新(CraftFlightData.cs:570) |
 | `ExhaustSystemScript.ExpansionRatio`(烟雾门槛 num>5) | ✅ 正确 | 由 `UpdateExhaust` 从幽灵自身大气/throttle 计算 |
 | `ExhaustDamageScript`(地形尘/加热) | ✅ 已禁用 | §9 已处理 |
 | **`rigidBody.velocity`(拖尾)** | ❌ ≈0(写入会触发 Unity kinematic velocity 告警,见 §10.3.1) | **唯一缺口,见 §10.3** |
@@ -275,7 +275,7 @@ if needWrite:
             body.RigidBody.isKinematic = true
 ```
 
-- **空间自洽**:发送端 `recdata.Velocity = PlanetVectorToSurfaceVector(craft.Velocity)`([MpNetworkManager.cs:1891](file:///C:/renko/unityProjects/JNOMultiPlayer/Assets/Scripts/Net/MpNetworkManager.cs:1891)),
+- **空间自洽**:发送端 `recdata.Velocity = PlanetVectorToSurfaceVector(craft.Velocity)`(MpNetworkManager.cs:1891),
   而发送端 `rigidBody.velocity` 是帧相对速度;`PlanetToFrameVelocity` 把行星空间速度转成接收端帧相对速度
   (与发送端同语义;`FrameSurfaceVelocity` 双端同为帧表面速度,`vector4` 相互抵消)。
 - **角速度**:用 `rc.LastAppliedHeading`(上一次应用的帧空间朝向)与本次 `headingFrame` 之差,
@@ -308,7 +308,7 @@ Unity 2022.3 对 kinematic 刚体**每次**写 `Rigidbody.velocity` / `angularVe
 
 1. **角速度注入**:`_smoothedCraftVelocity` 还含 `Cross(angularVelocity, offset)`(翻滚时排气口切向速度)。
    从每帧朝向旋转增量算 `rigidBody.angularVelocity` 写入(物理面无副作用;日志面告警按 §10.3.1 的临时切非 kinematic 处理);不做则翻滚中的幽灵烟迹略"呆"。
-2. **发射率精确化**:`num5` 用 `FlightData.SurfaceVelocityFrame`([CraftFlightData.cs:582](file:///C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/FlightData/CraftFlightData.cs:582))
+2. **发射率精确化**:`num5` 用 `FlightData.SurfaceVelocityFrame`(CraftFlightData.cs:582)
    = `_craftScript.FrameVelocity + FrameSurfaceVelocity`,而幽灵 `FrameVelocity` 可能陈旧 → 发射率偏差。
    可反射写 `CraftScript._frameVelocity` 或用 `num5` 兜底(`_smoothedCraftVelocity.magnitude`)。
    不做也能出正确拖尾,只是发射密度略差。

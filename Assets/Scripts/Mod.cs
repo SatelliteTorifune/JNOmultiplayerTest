@@ -267,6 +267,18 @@ namespace Assets.Scripts
 			/// </summary>
 			public bool Paused;
 
+			/// <summary>
+			/// 2 阶外推数据(2026-09-14,acceleration-smoothing):
+			/// Acceleration = 发送端飞船加速度(行星系,含重力,根 body 刚体速度差分测量)
+			/// 转"地表系"后的值(纯旋转,Coriolis/离心项在 SR2 尺度 ≈0.1 m/s² 可忽略);
+			/// 接收端外推加 ½·a·ext²。
+			/// AngularVelocity = 发送端飞船角速度,**craft 局部系**(ModApi 约定,SR2 符号翻转已内嵌);
+			/// 接收端按 ω·ext 右乘外推朝向(符号约定待实测,见 plans/acceleration-smoothing-2026-09-14.md §六-1)。
+			/// 协议尾部追加字段:旧对端包读到 EOF → 零值(退化到 1 阶外推,行为不变)。
+			/// </summary>
+			public Vector3 Acceleration;
+			public Vector3 AngularVelocity;
+
 			
 			public RemoteDataPack(Vector3d position, Vector3d velocity, Quaterniond heading)
 			{
@@ -298,6 +310,8 @@ namespace Assets.Scripts
 				EngineThrottles = new List<float>();
 				PartActivated = new List<bool>();
 				Paused = false;
+				Acceleration = Vector3.zero;
+				AngularVelocity = Vector3.zero;
 			}
 
 		}

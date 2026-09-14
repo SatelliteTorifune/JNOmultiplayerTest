@@ -4,7 +4,7 @@
 > **新会话先读:[`AGENT_CONTEXT.md`](AGENT_CONTEXT.md)**(项目路径 / 反编译源码 / ModApi / 已定技术事实 / 开发约定,可直接作为提示词)。
 > 说明:本文档是 `plans/` 的导航页。**当前活跃文档:`multi-craft-sync-2026-08-16.md`(多 craft)、`update-1.4.2-experimental-2026-09-03.md`(1.4.2 Experimental 兼容适配)、`remote-craft-velocity-2026-09-13.md`(远程船游戏侧速度缺失根因)、`acceleration-smoothing-2026-09-14.md`(2 阶外推评估:加速度+旋转速率)**,其余已完成/历史文档已移入 [`archive/`](archive/)。
 > 约定:新 plan 建议单一主题一个文件,写清「状态 + 决策记录」,完成后移入 `archive/` 并在此更新索引;**完整文档写入规则见 [§四](#四文档写入规则维护约定)**。
-> **调试日志路径**:`C:\Users\usami\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log`(Unity 运行时日志;`Mod.LogLobby` / `MP smoothing` 等输出在这里)。
+> **调试日志路径**:`<USERPROFILE>\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log`(Unity 运行时日志;`Mod.LogLobby` / `MP smoothing` 等输出在这里)。
 
 ---
 
@@ -12,10 +12,11 @@
 
 | 文档 | 主题 | 状态 | 一句话摘要 |
 |---|---|---|---|
-| [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) | **多 Craft 同步**(研究阶段,**代码零实现**) | 📋 方案研究 + 边界排查 | 多节点身份/生命周期/对接/切换/EVA/无 pod 残骸/边界情况(jnoCode 排查),含 MC1~MC4 里程碑;⚠️ **现状是每玩家一船、`_remoteCrafts` 按 `int playerId` 索引、无任何 `Guid`、状态包无船标识**(见该文档 §〇) |
+| [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) | **多 Craft 同步**(研究阶段,**代码零实现**) | 📋 方案研究 + 边界排查 | 多节点身份/生命周期/对接/切换/EVA/无 pod 残骸/边界情况(`<JNO_CODE>` 排查),含 MC1~MC4 里程碑;⚠️ **现状是每玩家一船、`_remoteCrafts` 按 `int playerId` 索引、无任何 `Guid`、状态包无船标识**(见该文档 §〇) |
 | [`update-1.4.2-experimental-2026-09-03.md`](update-1.4.2-experimental-2026-09-03.md) | **游戏 1.4.2 Experimental 兼容适配** | 📋 **P0 已全部执行,代码侧完成**(程序集已刷新;`GetComponentsInCraft` 迁移已落地;1.4.2 朝向/body bug 已修;**新报「双飞静止一方抽搐」已加诊断日志待实测**) | ①刷新参考程序集并重编译(已完成,2026-09-13);②`GetComponentsInChildren` → `GetComponentsInCraft`/逐 body(已完成);③1.4.2 body 脱离 craft 层级导致 `localRotation` 语义变化 → 已修 `ApplyRemoteBodyPoses`(见该文档「〇之三」);另:`GroundedSurface*` 走反射(改名会静默失效)、全仓库无游戏版本检查/实验版开关;P1 各项仍待定 |
 | [`remote-craft-velocity-2026-09-13.md`](remote-craft-velocity-2026-09-13.md) | **远程飞船游戏侧速度缺失(缺自转项)根因分析** | 📋 **分析完成,修复未做** | 状态包链路带速度,但接收端 `ApplyRemoteGroundedSurface` 写 `GroundedSurfaceVelocity=data.Velocity`(地表相对速度)漏行星自转项 → 游戏 `CraftNode.UpdateCraft` 每帧纯旋转换算出的 `craft.Velocity`/`FlightData.Velocity` 缺 ω×r(测试行星 158.85 m/s,静止船≈0),相对速度等功能出错;修复方向:字段补自转项 + FlightData 速度字段刷新(见该文档 §五) |
-| [`acceleration-smoothing-2026-09-14.md`](acceleration-smoothing-2026-09-14.md) | **远程船 2 阶外推评估**(加速度 + 旋转速率;平移 1 阶 / 旋转 0 阶的两个缺口) | 📋 **评估完成,未实施**(2026-09-14 拍板"先记录") | dev 讨论:飞船时刻变速度/变朝向,只有 1 阶外推必然"每包跳状态";2 阶 + 旋转速率是 key,输入突变 unavoidable 但会更 subtle;游戏侧 `FlightData.Acceleration/AngularVelocity` 可直接采样(反编译已核实);期 0 零协议接收端推导 / 期 1 协议尾部追加;开工顺序见该文档 §六、回归判据 §四 |
+| [`acceleration-smoothing-2026-09-14.md`](acceleration-smoothing-2026-09-14.md) | **远程船 2 阶外推**(加速度 + 旋转速率;平移 1 阶 / 旋转 0 阶的两个缺口) | 🔧 **期 1 已落地**(2026-09-14,dotnet build 0 错误 0 警告) | dev 讨论:飞船时刻变速度/变朝向,只有 1 阶外推必然"每包跳状态";2 阶 + 旋转速率是 key,输入突变 unavoidable 但会更 subtle。**已实现**:协议尾部追加 `Acceleration/AngularVelocity`(EOF 容错)、发送端 `FlightData` 采样(EMA+钳制+NaN 防御)、接收端**平移 2 阶外推 `½·a·ext²` 已生效**、sendDiag ω 符号自校验(`errF+/errF-/errR+`);**朝向外推默认关闭**(待 ω 符号实测后一行开启);回归判据见该文档 §四、实测指令 §六之二 |
+| [`physics-sync-2026-09-14.md`](physics-sync-2026-09-14.md) | **SP2 式物理同步移植评估**(每 body 速度注入 + 开销/工期两问) | 📋 **研究完成,未实施**(2026-09-14;建议 P0+P1 约 3~5 天,待拍板) | 解析 SP2「每 body 速度注入真实刚体」机制 → 差距表 G1~G4;开销=每包 +24B/body(≈9.6 KB/s@20Hz×20body,可忽略)、CPU≈0;工期=P0(协议速度+游戏侧速度修复 #10)1~2 天 + P1(旋转 1 阶外推)0.5~1 天;**不建议照搬 SP2 真实刚体架构(P3,1~2 周高风险)**;实施路径见该文档 §六 |
 
 ---
 
@@ -58,13 +59,13 @@
 | 起落架等部件开关同步 | **✅ 方案 B(P0)已实测通过**(per-part `Activated` 位);分离器/整流罩/对接 **只记录不处理**(归 body-sync);降落伞走 **专用视觉驱动**(P2,未排期);**P3 控制输入应用已实现**(写幽灵 Controls + 放开输入驱动部件 Activated:rotator/舵面/活塞/螺旋桨/车轮/RCS/电机) | [archive/part-switch-sync-2026-08-18.md](archive/part-switch-sync-2026-08-18.md) §3/§4/§9/§10/§11 |
 | body 级姿态同步(转轴连接部件整体移动) | **✅ 方案定稿:BodyPoses**(`BodyRotations`→相对 comRot 的位置+旋转;SP2 验证方向;**P0 已实现**);残骸小碎片位置缺口一并覆盖;不做 SP2 的 ParentBody 树/物理平滑 | [archive/body-sync-2026-08-18.md](archive/body-sync-2026-08-18.md) |
 | 远程船高延迟平滑(>100ms 不卡顿) | **✅ 已实现,架构已换代**:①**速度帧修正**(发送端 `PlanetVectorToSurfaceVector` 不减行星自转 ω×r → 静止船报 158.85 m/s → 外推放大成瞬移,已修);②接收端**弃用插值缓冲**,改为 **SP2 式连续外推(dead-reckoning)**:始终取最新包 + `ext = 单向延迟(RTT/2) + 包龄`(封顶 1s、长静默冻结)+ 每帧指数平滑(`dt×50` 收敛、静止锁定、>100m 瞬移、每 body `10·dt`);调试工具(`LagSimTransport` + UI NetSim 分组 + `MP smoothing` 3s 日志)已落地;**2026-09-13 收工** | [archive/latency-smoothing-2026-08-22.md](archive/latency-smoothing-2026-08-22.md) §9(现行实现) |
-| 远程船 2 阶外推(加速度/旋转速率) | 📋 **已评估未实施**(2026-09-14 拍板"先记录"):平移 1 阶→2 阶(加 `½·a·ext²`)、旋转 0 阶→按 `ω·ext` 右乘外推;游戏侧 `CraftFlightData.Acceleration`(行星系含重力)/`AngularVelocity`(craft 局部系)可直接采样;期 0 零协议 / 期 1 尾部追加,开工先做发送端数据验证 | [acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md) |
+| 远程船 2 阶外推(加速度/旋转速率) | 🔧 **期 1 已落地**(2026-09-14):平移加 `½·a·ext²`(ext 已×mRate → 自动 mRate²,慢放/暂停兼容)已生效;旋转按 `ω·ext` 右乘外推已实现但默认关闭(`EnableRotationExtrap=false`,待 ω 符号实测——sendDiag 自校验 `errF+/errF-/errR+` 定案);发送端 `FlightData.Acceleration/AngularVelocity` 采样 + EMA/钳制/NaN 防御 | [acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md) |
 | 游戏 1.4.2 Experimental 兼容(P0) | 📋 **P0 已全部执行**(2026-09-13):①ModTools 程序集已刷新为 1.4.2 并重编译;②`GetComponentsInChildren` → `GetComponentsInCraft`/逐 body 迁移已落地;③1.4.2 body 脱离层级 → `ApplyRemoteBodyPoses` 已修复;仍待:游戏版本检查/实验版开关、新报「双飞静止一方抽搐」诊断实测 | [update-1.4.2-experimental-2026-09-03.md](update-1.4.2-experimental-2026-09-03.md) |
 | 更新检查(ModUpdater) | **✅ 已实现并接线**(`Mod.OnModInitialized` 末尾调用):GitHub Releases API → 仓库根 `version.txt` 兜底;15s 总看门狗 + 10s 单请求超时;三按钮弹窗(Download / Later / 不再提醒) | [archive/update-reminder-port-2026-09-10.md](archive/update-reminder-port-2026-09-10.md) |
 | Volken 冲突(SceneLoaded 事件链 NRE) | **✅ 根因已定位并修复**:`MultiPlayerUI.OnSceneLoaded` 空值护栏已提交(`MultiPlayerUI.cs:791`);Volken 侧自愈初始化已实施 | [archive/volken-sceneloaded-nre-2026-08-27.md](archive/volken-sceneloaded-nre-2026-08-27.md) |
 | 多 craft 同步 | 📋 **方案研究,代码零实现**:仍是**每玩家一船**、`_remoteCrafts` 按 `int playerId` 索引、**无任何 `Guid`**、状态包无船标识、无残骸路径 | [multi-craft-sync-2026-08-16.md](multi-craft-sync-2026-08-16.md) §〇 |
 
-**当前待定(尚未拍板/未调研)**:A1 方案选型(推荐 A+B 混合,待正式决策)、A2 里程碑顺序、A3 残骸同步策略、A4 观察他人第二艘船(部件开关方案 B 已于 2026-08-18 拍板,见上表;但"观察他人控制"本身待定);B1 跨机身份(Guid+InitialCraftNodeIds 溯源)、B2 对账参数、B3 轨道残骸 spawn 可行性、B4 未加载节点采样、B5 MapView 多船回归、B6 时钟对齐;D 类已决策项的实现暂缓。**游戏 1.4.2(Experimental)相关待定**(详见 [update-1.4.2-experimental-2026-09-03.md](update-1.4.2-experimental-2026-09-03.md)):新报「双飞静止一方抽搐」待实测定位、P1-1 参考系重居中叠加(PreSimulation+pendingRecenterDelta vs mod 帧补偿,双重平移风险)、P1-2 GroundedSurface×`SetPose` 接地放置、P1-3 游戏版本检查/实验版开关、P1-4 1.4.2 调试设施接入(GameLoopTypeProfiler/SetFlatDecorationCulling)——均待 1.4.2 实验版双端实测后拍板。**部件同步剩余项**(已归档 [archive/part-switch-sync-2026-08-18.md](archive/part-switch-sync-2026-08-18.md)):降落伞专用视觉驱动(P2)、`ExtensionPercent` 相位对齐(P1)、`Stage` 应用(目前只采样不应用)。**平滑剩余项**:2 阶外推(加速度+旋转速率)已评估未实施([acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md))。**速度修复项**:远程船游戏侧速度缺自转项,分析完成待实施([remote-craft-velocity-2026-09-13.md](remote-craft-velocity-2026-09-13.md))。
+**当前待定(尚未拍板/未调研)**:A1 方案选型(推荐 A+B 混合,待正式决策)、A2 里程碑顺序、A3 残骸同步策略、A4 观察他人第二艘船(部件开关方案 B 已于 2026-08-18 拍板,见上表;但"观察他人控制"本身待定);B1 跨机身份(Guid+InitialCraftNodeIds 溯源)、B2 对账参数、B3 轨道残骸 spawn 可行性、B4 未加载节点采样、B5 MapView 多船回归、B6 时钟对齐;D 类已决策项的实现暂缓。**SP2 式物理同步(新,2026-09-14)**:研究完成待拍板——建议 P0(每 body 速度进协议 + 游戏侧速度修复 #10)+ P1(旋转 1 阶外推)合计约 3~5 天,不做真实刚体架构(见 [physics-sync-2026-09-14.md](physics-sync-2026-09-14.md))。**游戏 1.4.2(Experimental)相关待定**(详见 [update-1.4.2-experimental-2026-09-03.md](update-1.4.2-experimental-2026-09-03.md)):新报「双飞静止一方抽搐」待实测定位、P1-1 参考系重居中叠加(PreSimulation+pendingRecenterDelta vs mod 帧补偿,双重平移风险)、P1-2 GroundedSurface×`SetPose` 接地放置、P1-3 游戏版本检查/实验版开关、P1-4 1.4.2 调试设施接入(GameLoopTypeProfiler/SetFlatDecorationCulling)——均待 1.4.2 实验版双端实测后拍板。**部件同步剩余项**(已归档 [archive/part-switch-sync-2026-08-18.md](archive/part-switch-sync-2026-08-18.md)):降落伞专用视觉驱动(P2)、`ExtensionPercent` 相位对齐(P1)、`Stage` 应用(目前只采样不应用)。**平滑剩余项**:2 阶外推——平移 `½·a·ext²` 已落地(期 1,2026-09-14),**朝向外推待 ω 符号实测**(sendDiag 自校验 `errF+/errF-/errR+` 定案后一行开启 `EnableRotationExtrap`),见 [acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md)。**速度修复项**:远程船游戏侧速度缺自转项,分析完成待实施([remote-craft-velocity-2026-09-13.md](remote-craft-velocity-2026-09-13.md));其修复已并入 [physics-sync-2026-09-14.md](physics-sync-2026-09-14.md) 的 P0。
 
 ---
 
@@ -116,7 +117,7 @@
 - 一律相对路径;同目录内互链用裸文件名 `x.md`。
 - root 引用归档:`archive/x.md`;归档引用 root:`../x.md`;**归档内互链:裸文件名(不要加 `../`)**。
 - **移动 / 归档一个文档后,必须全仓库 grep 修正所有指向它的链接**,并跑一次死链校验(见 8)。
-- 站内不写绝对路径(`C:\...`);源码引用用工程相对路径 `Assets/Scripts/...`。
+- 站内不写本机绝对路径(一律用令牌,见 §10「隐私红线」);源码引用用工程相对路径 `Assets/Scripts/...`。
 
 ### 5. 归档流程(完成一个主题后)
 1. 头部状态改「✅ 已归档(原状态:…)」;
@@ -152,3 +153,23 @@ $bom = $b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0x
 - [ ] 新决策已进 README「决策速查」表(出处带链接)
 - [ ] 归档文档已从 §一 移入 §二,且全仓库无指向旧位置的链接
 - [ ] 涉及代码/文案的改动已与文档同批提交
+- [ ] 无本机绝对路径 / 用户名 / IP / SteamID(一律令牌化,见 §10)
+
+### 10. 隐私红线(公开仓库强制)
+- **本机绝对路径 / 用户名 / IP / SteamID 一律不进被跟踪文档**:本机路径统一用 `<TOKEN>` 引用。令牌→真实路径的映射**只存在本机被 `.gitignore` 排除的 `plans/LOCAL_PATHS.md`**(严禁提交;公开仓库不含该文件)。
+- **令牌速查**(真实值见本机 `plans/LOCAL_PATHS.md`,此处只给含义,不给真实路径):
+
+| 令牌 | 含义 |
+|---|---|
+| `<JNO_CODE>` | 反编译游戏源码根(只读;含 `SimpleRockets2/`、`ModApi/` 与两个 `.sln`) |
+| `<MOD_API>` | ModApi 官方公共 API 源码 |
+| `<SP2_MP>` | SP2(SimplePlanes 2)反编译联机参考 |
+| `<LUNA_MP>` | KSP LunaMultiplayer 参考 |
+| `<VOLKEN2>` | Volken2 参考 |
+| `<SR2_GAME>` | 本机游戏安装目录 |
+| `<USERPROFILE>` | 本机用户目录(日志等用,如 `<USERPROFILE>\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log`) |
+| `<PROJECT>` | 本工程目录 |
+| `<VM_IP>` | 联机测试虚拟机地址 |
+
+- 引用反编译源码时,保留「文件名 + 行号」(如 `` `CraftNode.cs:1235-1240` ``),**不要**写本机路径形式的站外链接(在 GitHub 上是死链,且泄路径)。
+- **上传前自查**(工具脚本 / CI 已不维护,靠约定 + 自查维持):全仓库搜索确认无盘符绝对路径、file URI、SteamID 类长数字、IPv4、本机链接残留;发现即改为令牌并核对 `plans/LOCAL_PATHS.md`。

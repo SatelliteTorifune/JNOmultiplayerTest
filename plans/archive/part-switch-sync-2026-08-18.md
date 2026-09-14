@@ -1,7 +1,7 @@
 # 同步"起落架开关等"部件展开/开关状态 — 可行性分析
 
 > 项目:JNOMultiPlayer(MultiPlayer)
-> 反编译参考:`C:/renko/shitProgram/jnoCode`
+> 反编译参考:`<JNO_CODE>`
 > 定位:[`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) 的补充分析——回答"幽灵船的起落架收放/货舱门/太阳能板/灯等**开关与展开状态**能否同步、怎么同步、代价多大"
 > 状态:✅ **已归档**(核心功能已实现:P0 方案 B + P3 控制输入;剩余 P1 相位对齐 / P2 降落伞专用驱动**未排期**,见 README「当前待定」)。**① 方案 B(P0)已实现并实测通过(起落架/货舱同步 OK,2026-08-18)**;**② P3 控制输入应用已实现**(§11,2026-08-18,编译通过待实测;**激活组 off-by-one 已于 2026-08-22 修复**,见 §11.5)。① 方案 B(per-part `Activated` 位);② 分离器/级间、整流罩、对接等**涉及 body 改动的部件只记录、不处理**(归后续 body 同步);③ 降落伞等特殊部件**先反编译确定原理**(见 §9),走专用视觉驱动(P2,**尚未实现**);④ 输入驱动部件(rotator/舵面等)**靠"开关+输入"双驱动**,由 P3 控制输入应用解决(§11,用户 2026-08-18 指出)。实现记录见 §10/§11.5;P1(相位对齐)/P2(伞专用驱动)**未排期**。
 
@@ -21,8 +21,8 @@
 
 ## 1. 起落架真实实现(反编译确认)
 
-- **开关 = `PartData.Activated`**:`LandingGearScript.FlightUpdate` 每帧读 `base.Data.Part.Activated` → `SetExtended(...)`([`LandingGearScript.cs:155`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/LandingGear/LandingGearScript.cs:155))。
-- **动画是纯 Transform**:`ConfigurableGearScript.SetExtended` 只是转发给 `_animator`([`ConfigurableGearScript.cs:502`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/LandingGear/ConfigurableGearScript.cs:502));`LandingGearAnimator` 走 Unity 原生 `Update`(不受物理门控),按 `Time.deltaTime` 做 ~4s 收放 + 舱门旋转([`LandingGearAnimator.cs:311/373`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/LandingGear/LandingGearAnimator.cs:311))。
+- **开关 = `PartData.Activated`**:`LandingGearScript.FlightUpdate` 每帧读 `base.Data.Part.Activated` → `SetExtended(...)`(`LandingGearScript.cs:155`)。
+- **动画是纯 Transform**:`ConfigurableGearScript.SetExtended` 只是转发给 `_animator`(`ConfigurableGearScript.cs:502`);`LandingGearAnimator` 走 Unity 原生 `Update`(不受物理门控),按 `Time.deltaTime` 做 ~4s 收放 + 舱门旋转(`LandingGearAnimator.cs:311/373`)。
 - **真正的轮子物理**在 `ResizableWheelColliderNew`,幽灵上已被 `DisableCraftPhysicCalculation` 关闭(不影响动画)。
 - 幽灵 modifier 每帧收 `IFlightUpdate`(engine-fx §3.5 定论:注册只看 MonoBehaviour enabled,`EnablePhysics(false)` 不禁用 MonoBehaviour);动画器走原生 Update 也照跑。
 
@@ -43,15 +43,15 @@
 | 应用 | 幽灵遍历 parts,`ActivationGroup==i` 的按位调 `Activate()/Deactivate()` | 同,按确定顺序(`Data.Assembly.Parts`,与 EngineThrottles 同一顺序契约),**排除 Detacher** |
 | 漏网 | 不挂组的起落架/伞/引擎点火/检查器直切 | 无 |
 
-- 应用入口:每包(或**变沿**——变化才调)调用 `PartScript.Activate()/Deactivate()`([`PartScript.cs:521`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/PartScript.cs:521),幂等,内部有 `if(!Activated)` 守卫)。
+- 应用入口:每包(或**变沿**——变化才调)调用 `PartScript.Activate()/Deactivate()`(`PartScript.cs:521`,幂等,内部有 `if(!Activated)` 守卫)。
 - **持续应用的自愈好处**:幽灵本地任何偏差(如伞按本地大气密度自切断)下一包(50ms)即被纠正。
 - 进阶(可选):起落架额外同步 `ExtensionPercent`(float)用 `SnapToExtensionPercent` 对齐动画相位;货舱 `OpenAmount`、SubPartRotator `CurrentEnabledPercent` 同理。MVP 可省(4s 动画自愈)。
 
 **【决策(2026-08-18):采用方案 B per-part `Activated` 位——P0 已实现,见 §10】**,覆盖完整、带宽可忽略。**接收端应用过滤(只记录不处理 / 特殊处理)见 §4/§9**:`Detacher`、`Fairing`、`DockingPort` 位照常传输但**不应用**;`Parachute` 不应用 `Activated`,走专用视觉驱动。**应用位清单(白名单驱动):起落架 / 货舱门 / 着陆腿 / 太阳能 / 灯·信标 / SubPartRotator。** 阶段可用 `PartScript.Data.Activated` 直接驱动(不依赖激活组)。**
 
 **为什么不用 SP2 式"整机控制输入位/激活组位"(2026-08-18 决策依据,反编译对比)**:
-- SP2 起落架 = 整机输入 `AircraftControls.LandingGearDown`,收放动画统一 `AnimateLandingGear(Controls.LandingGearDown)`([sp2 `NetworkAircraftControls.cs:89/116/149`](../C:/renko/shitProgram/反编译的/sp2/Game/Assets/Scripts/Multiplayer/NetworkAircraftControls.cs:89)),控制包 1 bit + `SetInputOverride` 即可带动全部起落架本地动画——**能这么做是因为 SP2 起落架被设计成"纯整机输入驱动",部件层没有第二条驱动路径**;
-- **SR2 的 `Part.Activated` 有三条入口**:激活组(`ActivatePartsInActivationGroup`)、Stage(`ActivateStage`)、**飞行检查器手动 override**(`PartScript.cs:830-831` 的 Activate/Deactivate 按钮 → `PartScript.Activate()/Deactivate()` [`PartScript.cs:521/666`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/PartScript.cs:521))。手动 override **不产生激活组位变化、不产生 Stage 变化** → SP2 式输入位/激活组位抓不到 → **必须 per-part 位才能全覆盖**;
+- SP2 起落架 = 整机输入 `AircraftControls.LandingGearDown`,收放动画统一 `AnimateLandingGear(Controls.LandingGearDown)`(sp2 `NetworkAircraftControls.cs:89/116/149`),控制包 1 bit + `SetInputOverride` 即可带动全部起落架本地动画——**能这么做是因为 SP2 起落架被设计成"纯整机输入驱动",部件层没有第二条驱动路径**;
+- **SR2 的 `Part.Activated` 有三条入口**:激活组(`ActivatePartsInActivationGroup`)、Stage(`ActivateStage`)、**飞行检查器手动 override**(`PartScript.cs:830-831` 的 Activate/Deactivate 按钮 → `PartScript.Activate()/Deactivate()` `PartScript.cs:521/666`)。手动 override **不产生激活组位变化、不产生 Stage 变化** → SP2 式输入位/激活组位抓不到 → **必须 per-part 位才能全覆盖**;
 - 附带稳健性:幽灵端游戏自身也可能驱动 `Part.Activated`(如 `PartScript.cs:714` 的 `AutoActivateIfNoStageOrActivationGroup`),per-part **持续每包应用自带自愈**,SP2 的输入覆盖没有这个(但 SP2 无手动 override 所以也不需要)。
 
 **应用前提(2026-08-18 补,防"开关≠姿态"的穿模)**:
@@ -64,16 +64,16 @@
 | 部件 | 开关来源 | 幽灵行为 | 可行性 |
 |---|---|---|---|
 | **起落架** LandingGear | `Part.Activated` → 纯动画 | 轮子物理已关,动画照播 | ✅ 干净 |
-| **货舱门** CargoBay | `Part.Activated` → `Data.Open`([`CargoBayScript.cs:55`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/CargoBayScript.cs:55)) | 门动画,碰撞体已关 | ✅ 干净 |
-| **着陆腿** LandingLeg | `Part.Activated`([`LandingLegCommon.cs:92/105`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/LandingLeg/LandingLegCommon.cs:92)) | 收放视觉 | ✅ 干净 |
-| **太阳能板** Solar | `Part.Activated` → Open+展开([`SolarPanelArrayScript.cs:233`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Solar/SolarPanelArrayScript.cs:233)) | 本地太阳位置自足 | ✅ 干净 |
-| **灯/信标** Light/Beacon | `Activated && HasPower`([`LightScript.cs:308`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Lights/LightScript.cs:308)) | ⚠️ 幽灵电池可能空/陈旧 → 需强制 HasPower 或接受 | ⚠️ 小坑 |
-| **SubPartRotator** | `Part.Activated`,自带 `SyncActivationGroup`([`SubPartRotatorScript.cs:84`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/SubPartRotatorScript.cs:84)) | 反向写激活组,方案 A/B 都覆盖 | ⚠️/✅ |
+| **货舱门** CargoBay | `Part.Activated` → `Data.Open`(`CargoBayScript.cs:55`) | 门动画,碰撞体已关 | ✅ 干净 |
+| **着陆腿** LandingLeg | `Part.Activated`(`LandingLegCommon.cs:92/105`) | 收放视觉 | ✅ 干净 |
+| **太阳能板** Solar | `Part.Activated` → Open+展开(`SolarPanelArrayScript.cs:233`) | 本地太阳位置自足 | ✅ 干净 |
+| **灯/信标** Light/Beacon | `Activated && HasPower`(`LightScript.cs:308`) | ⚠️ 幽灵电池可能空/陈旧 → 需强制 HasPower 或接受 | ⚠️ 小坑 |
+| **SubPartRotator** | `Part.Activated`,自带 `SyncActivationGroup`(`SubPartRotatorScript.cs:84`) | 反向写激活组,方案 A/B 都覆盖 | ⚠️/✅ |
 | **轮子转向/刹车** | 控制输入驱动 | 控制输入接收端未应用(死字段);视觉转向会读幽灵本地输入 | ⚠️ 另一条线,视觉小偏差 |
-| **分离器/级间** Detacher | `OnActivated → Detach()`([`DetacherScript.cs:150`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/DetacherScript.cs:150)) | **不受物理门控**:销毁关节+施加冲量+相机震动+声音([`DetacherScript.cs:37`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/DetacherScript.cs:37)) → **body 图改动**(body 分离) | 🔒 **只记录,不处理**(归 body 同步) |
-| **整流罩** Fairing | `OnActivated → _jettisonNextFrame → InitiateJettison`([`FairingScript.cs:89`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/FairingScript.cs:89)) | `QueuePartGroupForDestruction` + 新建 `FairingDebris` body + 声音([`FairingScript.cs:151`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/FairingScript.cs:151)) → **body 图改动** | 🔒 **只记录,不处理**(归 body 同步) |
-| **对接** DockingPort | `Activated` 使能对接 collider([`DockingPortScript.cs:152`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/DockingPortScript.cs:152)) | 对接 = body merge(走 `CraftNodeRemoved` + 重发 dominant XML,见 multi-craft-sync §8.1-4),幽灵不模拟 | 🔒 **只记录,不处理**(归 body 同步) |
-| **降落伞** Parachute | `Activated → DeployParachute`([`ParachuteScript.cs:262`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:262)) | **激活时新建 collider+rigidbody+SpringJoint** + 密度/高度门控 + 自动切伞(详见 §9) | 🎯 **专用视觉驱动**(不应用 `Activated`,见 §9) |
+| **分离器/级间** Detacher | `OnActivated → Detach()`(`DetacherScript.cs:150`) | **不受物理门控**:销毁关节+施加冲量+相机震动+声音(`DetacherScript.cs:37`) → **body 图改动**(body 分离) | 🔒 **只记录,不处理**(归 body 同步) |
+| **整流罩** Fairing | `OnActivated → _jettisonNextFrame → InitiateJettison`(`FairingScript.cs:89`) | `QueuePartGroupForDestruction` + 新建 `FairingDebris` body + 声音(`FairingScript.cs:151`) → **body 图改动** | 🔒 **只记录,不处理**(归 body 同步) |
+| **对接** DockingPort | `Activated` 使能对接 collider(`DockingPortScript.cs:152`) | 对接 = body merge(走 `CraftNodeRemoved` + 重发 dominant XML,见 multi-craft-sync §8.1-4),幽灵不模拟 | 🔒 **只记录,不处理**(归 body 同步) |
+| **降落伞** Parachute | `Activated → DeployParachute`(`ParachuteScript.cs:262`) | **激活时新建 collider+rigidbody+SpringJoint** + 密度/高度门控 + 自动切伞(详见 §9) | 🎯 **专用视觉驱动**(不应用 `Activated`,见 §9) |
 | **引擎** | `Part.Activated` | OnActivated 被 `IsPhysicsEnabled` 门控 | ✅ 安全(尾焰已由 EngineVisualSync 管) |
 | **发生器/陀螺仪/RCS** | `Activated` | 幽灵电池副作用/无物理意义 | ⚠️ 低风险 |
 
@@ -92,7 +92,7 @@
   - 应用循环:1000 次 bool 比较/包 × 20Hz = 2 万次/秒,可忽略;`Activate()` 守卫使无变化时为空操作;
   - 动画期间:仅收放的 ~4s 窗口内做少量 Transform 写入。
 - **真正的开销是游戏自身对 1000 个 gear 组件的模拟**(每 gear 每帧 `FlightUpdate` + 动画器 `Update` + **4 个 AudioSource**),且**双端都存在、与同步无关**——1000 起落架的 craft 单机就卡成个位数 FPS,是病态 craft 本身不可玩,不是同步引入。
-- SR2 沙盒**无硬性部件数上限**(仅生涯模式有可配置 `Craft.MaxPartCount`,见 [`CareerValidator.cs:229`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/State/Validation/CareerValidator.cs:229))。
+- SR2 沙盒**无硬性部件数上限**(仅生涯模式有可配置 `Craft.MaxPartCount`,见 `CareerValidator.cs:229`)。
 - 极端防护(如需要):**增量/变沿压缩**(只传变化的 (index,value),空闲 0 字节)+ 位打包(8bit/字节)+ 距离 LOD(MC2 慢发对象不发)。采样侧复用 EngineThrottles 的"确定顺序"遍历,一次循环采多类字段。
 
 ## 7. 与现有 plan 的关系
@@ -128,13 +128,13 @@
 
 | 环节 | 行为 | 反编译证据 |
 |---|---|---|
-| **展开触发** | `FlightUpdate`:若 `Part.Activated && !_deployed` → `DeployParachute()` | [`ParachuteScript.cs:262`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:262) |
-| **展开门控** | `SurfaceVelocity < MaxDeploymentSpeed` 且 高度/大气密度 满足(`ASLDeployment`/`DeploymentDensity`)才展开 | [`ParachuteScript.cs:110`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:110) |
-| **DeployParachute** | 置 `_deployed=true`;缩放 base collider;**新建 SphereCollider**(chutePackage 上)+ **新建 Rigidbody `_chuteBody`**(质量/无重力)+ **新建 SpringJoint** 连部件 body Rigidbody;置 chuteBody 位置/速度;激活 chute mesh | [`ParachuteScript.cs:108-150`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:108) |
-| **充气+阻力** | `FlightFixedUpdate`:充气动画 `_chute.localScale` 按 `_inflateTime` 涨;`_chuteCollider.radius` 同步;**对部件 body 与 chuteBody `AddForce` 施加阻力** | [`ParachuteScript.cs:165-257`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:165) |
-| **自动切伞** | 本地 `AirDensity < CutDensity`(或高度)时 `Part.Activated=false` | [`ParachuteScript.cs:190`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:190) |
-| **拉断** | 阻力超阈值时 `Activated=false` + 日志 | [`ParachuteScript.cs:235`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:235) |
-| **收起** | `FlightUpdate`:若 `!Activated && _deployTime>0` → 销毁 joint + 销毁 chuteBody + 禁用 collider + 隐藏 chute | [`ParachuteScript.cs:267-279`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/ParachuteScript.cs:267) |
+| **展开触发** | `FlightUpdate`:若 `Part.Activated && !_deployed` → `DeployParachute()` | `ParachuteScript.cs:262` |
+| **展开门控** | `SurfaceVelocity < MaxDeploymentSpeed` 且 高度/大气密度 满足(`ASLDeployment`/`DeploymentDensity`)才展开 | `ParachuteScript.cs:110` |
+| **DeployParachute** | 置 `_deployed=true`;缩放 base collider;**新建 SphereCollider**(chutePackage 上)+ **新建 Rigidbody `_chuteBody`**(质量/无重力)+ **新建 SpringJoint** 连部件 body Rigidbody;置 chuteBody 位置/速度;激活 chute mesh | `ParachuteScript.cs:108-150` |
+| **充气+阻力** | `FlightFixedUpdate`:充气动画 `_chute.localScale` 按 `_inflateTime` 涨;`_chuteCollider.radius` 同步;**对部件 body 与 chuteBody `AddForce` 施加阻力** | `ParachuteScript.cs:165-257` |
+| **自动切伞** | 本地 `AirDensity < CutDensity`(或高度)时 `Part.Activated=false` | `ParachuteScript.cs:190` |
+| **拉断** | 阻力超阈值时 `Activated=false` + 日志 | `ParachuteScript.cs:235` |
+| **收起** | `FlightUpdate`:若 `!Activated && _deployTime>0` → 销毁 joint + 销毁 chuteBody + 禁用 collider + 隐藏 chute | `ParachuteScript.cs:267-279` |
 
 ### 9.2 为什么不能走通用 `Activated` 应用(幽灵上)
 
@@ -182,19 +182,19 @@
 **结论**:P3 可行且干净,已落地。幽灵 `CraftControls`(活动舱)**游戏从不刷新**,每包直接写同步控制值即可驱动所有**绑定 CraftControls 的输入驱动部件**(舵面/gimbal/Rotator/活塞/螺旋桨桨距/车轮转向/RCS);配合方案 B 的 per-part `Activated` 位**放开输入驱动部件**,完整复现"开关+输入"姿态(这正是用户 2026-08-18 指出的 `rotator 等还需开启 + inputController 输入才会动` 的正确解法)。
 
 **11.1 幽灵 Controls 无人写(唯一写者是玩家 FlightControls)**
-- 飞行中每帧写 `Controls.X` 的只有 `FlightControls.Update`([`FlightControls.cs:302-388`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/FlightControls.cs:302)):`Controls.Pitch/Yaw/Roll/Brake/Sliders = 原始输入 + Offset*`(原始输入为玩家键鼠/杆);
-- 它是**单例**:`FlightSceneScript` 只 `new FlightControls` 一个([`FlightSceneScript.cs:907`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/FlightSceneScript.cs:907)),`SetCraftNode`([`:1551`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Flight/FlightSceneScript.cs:1551))只绑定玩家 craft;远程幽灵 **永远不是目标** → 幽灵 Controls 恒为 XML 初值、可自由写;
+- 飞行中每帧写 `Controls.X` 的只有 `FlightControls.Update`(`FlightControls.cs:302-388`):`Controls.Pitch/Yaw/Roll/Brake/Sliders = 原始输入 + Offset*`(原始输入为玩家键鼠/杆);
+- 它是**单例**:`FlightSceneScript` 只 `new FlightControls` 一个(`FlightSceneScript.cs:907`),`SetCraftNode`(`:1551`)只绑定玩家 craft;远程幽灵 **永远不是目标** → 幽灵 Controls 恒为 XML 初值、可自由写;
 - 其余写点均不碰非玩家 craft:设计师(`DesignerControls.cs`)、UI 滑杆(`InputSliderPanelController`/`ThrottleInputScript`,绑玩家 FlightControls)、地图导航(`NodeNavigator`,玩家)、EVA 乘组舱复制(`EvaScript.cs:1789`,仅带乘组舱的 craft);
-- 舱间复制:活动舱 → 其余舱 `CraftControls.CopyControls`([`CommandPodScript.cs:329`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/CommandPodScript.cs:329))→ **单点写 `ActiveCommandPod.Controls` 即全舱生效**。
+- 舱间复制:活动舱 → 其余舱 `CraftControls.CopyControls`(`CommandPodScript.cs:329`)→ **单点写 `ActiveCommandPod.Controls` 即全舱生效**。
 
 **11.2 输入链(读 Controls 的路径)**
-- `GetInputController((CraftControls x)=>x.Pitch)` 找不到部件上的输入 modifier 时,回退 **`SimpleInputController`**([ModApi `SimpleInputController.cs:74-85`](../C:/renko/shitProgram/jnoCode/ModApi/Craft/Parts/Input/SimpleInputController.cs:74)):`Value = getValue(commandPod.Controls)`,**门控 `partData.Activated || IgnorePartActivated`**(未激活返回 0);
-- 部件上的 **`InputControllerScript`**(操纵杆/滑块/自定义轴,`Assets/Scripts/Craft/Parts/Modifiers/Input/`):从 `_primaryInput`(物理轴或 CraftControls 属性)算 `Value`([`InputControllerScript.cs:135-219`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Input/InputControllerScript.cs:135)),并受 `Activated` / **`ActivationGroup` 门控**([`:158-164`](../C:/renko/shitProgram/jnoCode/SimpleRockets2/Assets/Scripts/Craft/Parts/Modifiers/Input/InputControllerScript.cs:158),`commandPod.Controls.GetActivationGroup(组)`)。
+- `GetInputController((CraftControls x)=>x.Pitch)` 找不到部件上的输入 modifier 时,回退 **`SimpleInputController`**(ModApi `SimpleInputController.cs:74-85`):`Value = getValue(commandPod.Controls)`,**门控 `partData.Activated || IgnorePartActivated`**(未激活返回 0);
+- 部件上的 **`InputControllerScript`**(操纵杆/滑块/自定义轴,`Assets/Scripts/Craft/Parts/Modifiers/Input/`):从 `_primaryInput`(物理轴或 CraftControls 属性)算 `Value`(`InputControllerScript.cs:135-219`),并受 `Activated` / **`ActivationGroup` 门控**(`:158-164`,`commandPod.Controls.GetActivationGroup(组)`)。
 
 **11.3 落地路径(✅ 已实现)**
 1. **每帧写幽灵 Controls**:在 `ApplyRemoteState`(与 PartActivated 同处)写 `ActiveCommandPod.Controls.Pitch/Yaw/Roll/Brake/Throttle/Slider1-4/TranslateForward/Right/Up`(recdata 已传,现为死字段);
 2. **放开输入驱动部件的 Activated 应用**:方案 B 已对所有部件传 `PartActivated` 位,只是 `ShouldApply` 白名单过滤;P3 把输入驱动部件(舵面/gimbal/JointRotator/Rotator/活塞/螺旋桨/车轮转向等)加入应用集合 → 激活门控满足 → 配合写入的 Controls 完整复现姿态("开关≠姿态"不再成立);
-3. **激活组门控**:`InputControllerScript` 受激活组门控时,应用 recdata 的 `ActivationGroupStates` → `Controls.SetActivationGroup(i, state)`([`CraftControls.cs:422-426`](../C:/renko/shitProgram/jnoCode/ModApi/Craft/CraftControls.cs:422) 已存在);
+3. **激活组门控**:`InputControllerScript` 受激活组门控时,应用 recdata 的 `ActivationGroupStates` → `Controls.SetActivationGroup(i, state)`(`CraftControls.cs:422-426` 已存在);
 4. **Throttle**:写 `Controls.Throttle` 也生效(幽灵无 FlightControls/油门 UI),驱动航发推力与推进器视觉;火箭尾焰/引擎仍走 EngineVisualSync,不冲突。
 
 **11.4 已知边界/风险**
