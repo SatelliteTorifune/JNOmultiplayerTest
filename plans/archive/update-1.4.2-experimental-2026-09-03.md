@@ -1,9 +1,10 @@
 # 游戏 1.4.2(Experimental 分支)兼容适配方案
 
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod MultiPlayer)
-> 状态:**P0 已全部执行,代码侧完成;1.4.2 朝向/body 同步 bug 已定位并修复;新报"双飞静止一方抽搐"已加诊断日志待实测**(2026-09-13:程序集已刷新为 1.4.2 并由用户确认;`GetComponentsInCraft` 迁移与粒子遍历迁移已落地,`dotnet build` 0 错误;2026-09 实测发现远程船朝向+body 位置错误,根因为 1.4.2 body 脱离 craft 层级导致 `localRotation` 语义变化,已修复 `ApplyRemoteBodyPoses`(见「〇之三」);后续实测报"双飞静止一方抽搐",已加 `MP twitch`/`MP sendDiag` 1s 周期诊断日志,怀疑 comRot 连带移动反馈环/双写不一致/平滑(见「〇之四」))
+> 状态:✅ **已归档**(2026-09,用户确认修复并双端实测完成;原状态:🔧 部分落地 — P0 已全部执行,代码侧完成;1.4.2 朝向/body 同步 bug 已定位并修复;Vizzy 隔离已在 1.4.2 核证(见「〇之五」)并按双端实测结论补封断线缺口 G3 + 附带修掉一处 `MultiPlayerUI.OnSceneLoaded` NRE(见「〇之六」);部件开关同步 1.4.2 回归已实测结案 = 链路完好、任一方暂停时不跟随(用户判定可接受,不修,见「〇之七」);新报"双飞静止一方抽搐"已加诊断日志待实测**(2026-09-13:程序集已刷新为 1.4.2 并由用户确认;`GetComponentsInCraft` 迁移与粒子遍历迁移已落地,`dotnet build` 0 错误;2026-09 实测发现远程船朝向+body 位置错误,根因为 1.4.2 body 脱离 craft 层级导致 `localRotation` 语义变化,已修复 `ApplyRemoteBodyPoses`(见「〇之三」);后续实测报"双飞静止一方抽搐",已加 `MP twitch`/`MP sendDiag` 1s 周期诊断日志,怀疑 comRot 连带移动反馈环/双写不一致/平滑(见「〇之四」);2026-09-16 VM 双端实测定位断线窗口 G3,已修)
+> 归档补充(2026-09):P1-1~P1-4(重居中叠加/GroundedSurface×`SetPose`/版本闸/调试设施)与「双飞静止一方抽搐」经用户双端实测,**不再待定**(已从 README 待定段移除);文档内 §〇之四 / §3.2 / 决策表保留原「待实测」记录作历史。
 > 触发:devb 发布 **1.4.2 Experimental 分支**(版本 1.4.200;当前游戏为 1.4.102),反编译对比已完成(新反编译目录 `<JNO_CODE>` 即 1.4.2,`Game.Version = (1,4,200,0)`)
-> 关联:本文档是「版本兼容」专项,不改动既有 plan 的机制;但 [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md)、[`part-switch-sync-2026-08-18.md`](archive/part-switch-sync-2026-08-18.md)、[`latency-smoothing-2026-08-22.md`](archive/latency-smoothing-2026-08-22.md)、[`vizzy-isolation-2026-08-22.md`](archive/vizzy-isolation-2026-08-22.md) 的既有功能都需在本版上回归
+> 关联:本文档是「版本兼容」专项,不改动既有 plan 的机制;但 [`body-sync-2026-08-18.md`](../archive/body-sync-2026-08-18.md)、[`part-switch-sync-2026-08-18.md`](../archive/part-switch-sync-2026-08-18.md)、[`latency-smoothing-2026-08-22.md`](../archive/latency-smoothing-2026-08-22.md)、[`vizzy-isolation-2026-08-22.md`](../archive/vizzy-isolation-2026-08-22.md) 的既有功能都需在本版上回归
 
 ---
 
@@ -13,7 +14,7 @@
 
 | 项 | 计划要求 | 现状 | 证据 |
 |---|---|---|---|
-| **P0-1 刷新参考程序集并重编译** | 用 1.4.2 的 `SimpleRockets2.dll` / `ModApi.dll` 替换后重编译 | ✅ **已做(用户,2026-09-13)** | `Assets/ModTools/Assemblies/**` 与 `EditorAssemblies/**` 的 `SimpleRockets2.dll`/`ModApi.dll` 已更新(大小与 1.4.2 安装目录一致);二进制内 `GetComponentsInCraft`/`SetPose`/`pendingRecenterDelta` 全部命中;`dotnet build MultiPlayer.csproj` **0 错误** |
+| **P0-1 刷新参考程序集并重编译** | 用 1.4.2 的 `SimpleRockets2.dll` / `ModApi.dll` 替换后重编译 | ✅ **已做(用户,2026-09-13)** | `Assets/ModTools/Assemblies/**` 与 `EditorAssemblies/**` 的 `SimpleRockets2.dll`/`ModApi.dll` 已更新(二进制内 `GetComponentsInCraft`/`SetPose`/`pendingRecenterDelta` 全部命中);`dotnet build MultiPlayer.csproj` **0 错误**。⚠️ **修正(2026-09,见「〇之五」)**:ModTools 副本与安装目录 DLL **大小/MVID/SHA256 均不同**(语义一致:方法表与 patch 目标 IL 逐条相同),原"大小与安装目录一致"的表述不成立 |
 | **P0-2 `GetComponentsInChildren` → `GetComponentsInCraft`** | 迁移到 1.4.2 新 API | ✅ **已做(2026-09-13)** | `MpNetworkManager.cs` 三处 renderer 遍历(:1260 spawnDiag / :1354 EnforceRemoteCraftVisuals / :1758 visualDiag)全部改用 `CraftUtils.GetComponentsInCraft`(逐 body 遍历,`includeInactive=true` 保留旧行为,热路径复用 `RemoteCraft.ReuseRenderers` 防每帧 GC) |
 | **P0-3 `RecenterTransformOnCoM` 签名适配** | 旧二进制 1 参调用 → 新 DLL 无此重载 ⇒ `MissingMethodException` | ✅ **随 P0-1 重编译自动修复** | `CraftUtils.cs:41` `RecenterTransformOnCoM(true)` 对 1.4.2 签名 `(bool, Vector3? pendingRecenterDelta = null)` 仍合法(可选参数,默认补 null);重编译后不再有 1 参调用 |
 | **P0-3b 粒子遍历迁移** | `CraftUtils.cs:78` 粒子遍历覆盖脱离层级的 body | ✅ **已做(2026-09-13)** | `craft.gameObject.GetComponentsInChildren<ParticleSystem>()` → `CraftUtils.GetComponentsInCraft(craft, list, false)`(逐 body 遍历,等价 1.4.2 `CraftScript.GetComponentsInCraft<T>`) |
@@ -210,6 +211,235 @@ Update 与 LateUpdate 各写一次、各冻一次基准,进一步放大为帧内
 
 ---
 
+## 〇之五、Vizzy 隔离 1.4.2 核证 + 缺口加固(2026-09,重要)
+
+> 触发:P0-4 要求确认既有机制在 1.4.2 不回归,其中「Vizzy 隔离」此前只有方案文档、**没有在 1.4.2 上核证过**。
+> 结论:**在 1.4.2 上未失效**(代码侧核证通过),并按核证中发现的缺口做了加固(`dotnet build` 0 错误)。
+
+### 核证方法(与既往"只读反编译目录"不同)
+
+用 Mono.Cecil 直接读**安装目录的实际运行二进制** `%SR2%\SimpleRockets2_Data\Managed\SimpleRockets2.dll`,与 mod 编译参照程序集 `Assets/ModTools/Assemblies/SimpleRockets2.dll` 逐条比对 IL 文本 —— 避免"反编译目录 ≠ 实际安装版本"的误差。
+
+### 核证结论(全部通过)
+
+| 检查项 | 实测结果 |
+|---|---|
+| `FlightProgramScript.BroadcastMessage(BroadcastScope,string,ExpressionResult)` | 存在;108 条 IL **逐条文本与参照程序集完全相同**(IL 文本指纹一致) |
+| `FlightProgramScript.FlightUpdate(in FlightFrameData)` | 存在;139 条 IL 逐条相同 |
+| `OnReceiveMessage` / `FlightStart` | 同样逐条相同(patch 依赖的内部行为无漂移) |
+| `BroadcastScope` 枚举值 | 游戏 `ModApi.dll` 与参照 `ModApi.dll` 均为 `Program=0 / Craft=1 / AllCrafts=2` ⇒ 作用域判断不错位 |
+| `FlightProgramScript` / `CraftScript` 方法表 | **62 / 163 个方法签名完全一致**(无语义级增删) |
+| `FlightProgramScript` 接口实现 | 仍声明 `IFlightStart / IGameLoopItem / IFlightUpdate`,显式实现转发到 public 方法(`FlightProgramScript.cs:774-777`) ⇒ patch 挂在 public 方法上可被接口分发命中 |
+| 游戏循环分发路径 | `FlightGameLoop.Update` 仍用 `UpdateMultiple<…IFlightUpdate…>` + `x.FlightUpdate(in frame)` 注册在 `_scripts.Update`(`FlightGameLoop.cs:390-405`) ⇒ patch 会被调用 |
+| **Vizzy 指令唯一执行入口** | `Process.Update` 在 1.4.2 **全局只有 1 处调用者**,即 public `FlightUpdate`(:171) ⇒ patch 2 是完整封堵(`StartProgram` 只反序列化 XML,不执行指令) |
+| `FlightUpdatePaused` 侧信道 | `FlightProgramScript` **未实现** `IFlightUpdatePaused`,暂停时游戏只跑该接口 ⇒ 暂停下 Vizzy 本就不执行,**无需额外 patch**(文档原「一劳永逸封堵所有侧信道」表述据此收严) |
+| `CraftService.BroadcastMessage`(`CraftService.cs:250`) | 是 Vizzy 指令的直通包装 → 最终仍进 patch 1,无绕过口 |
+| 运行时日志(Player.log,2026-09-15,MultiPlayer 1.51) | 有 `remote craft initialized (ghost mode)` ×2,**0 条 `VizzyIsolation/…` 报错、0 条 `MissingMethodException`** ⇒ patch 已挂载且未抛异常 |
+
+### 顺带纠正:ModTools 程序集与安装目录 DLL 并非同一二进制
+
+§〇之二 P0-1 表格称"大小与 1.4.2 安装目录一致",**实测不成立**:
+
+| 来源 | 大小 | MVID |
+|---|---|---|
+| 安装目录 `SimpleRockets2.dll` | 5 247 488 B | `b2a017bd-a373-4bcf-b667-c4bb6f345daf` |
+| `Assets/ModTools/Assemblies/SimpleRockets2.dll` | 5 248 000 B | `65928720-4721-4968-9c3d-143331c36882` |
+| `Assets/ModTools/Assemblies/EditorAssemblies/SimpleRockets2.dll` | 5 670 912 B | `425b804c-9fbf-42f4-bf19-11730350cde6` |
+
+两者 SHA256 不同、MVID 不同,**但方法表与 patch 目标方法 IL 逐条相同** ⇒ 属同一份 1.4.2 源码的不同构建产物,**patch 正确性不受影响**;仅"二进制一致"的说法应改为「语义一致、MVID/哈希不同」。
+
+### 缺口加固(2026-09 落地,`VizzyIsolationPatch.cs`)
+
+核证中确认了两个**真实存在但与 1.4.2 无关**的缺口,按"只加固、不改机制"处理:
+
+| # | 缺口 | 加固 |
+|---|---|---|
+| G1 | **生成窗口**:`SpawnRemoteCraftAtPosition` 里 `SpawnCraft` 返回后 craft 已进场景,而 `_remoteCrafts[playerId]=rc` 赋值在其后;若中间抛异常(该路径整体包 try/catch),该幽灵永久留在场景且 `IsRemoteCraftNode` **永远返回 false** ⇒ patch 1/2 对它双双失效(幽灵 Vizzy 会跑、其 `AllCrafts` 广播会漏) | 幽灵判定提升为统一 `VizzyIsolationPatch.IsGhostCraft(IPartScript)`,并加 ③ **命名兜底** = 命名约定「对方玩家名 + 竖线 + 船名」(见 `MpNetworkManager.cs:1634`,已核实 `CraftNode.Name` 存在且由 `CraftNodeDataStatic` 赋值)逐在册玩家名比对 |
+| **G3** | **断线/移除窗口**(双端实测后确认,见「〇之六」):`RemoveRemoteCraft` 先 `_remoteCrafts.Remove()` 再 `DestroyCraft()`,而 `DestroyCraft()` 只置 `IsDestroyed`,节点要到**下一帧** `ProcessDestroyedCraftNodes()` 才消失 ⇒ 该帧内这个"已销毁但仍在场景"的幽灵会被 `FlightProgramScript.FlightUpdate` 跑一次 = **漏执行 + 漏广播** | 判定升为**三层**,新增 ② **NodeId 记忆**(`_ghostNodeIds`):① 命中时记下 `node.NodeId`,① 失效后继续拦截;命中记一次日志 `VizzyIsolation: ghost nodeId=N still guarded after removal (destroy window)`;记忆按飞行场景生命周期重置(`MpNetworkManager.OnFlightSceneLoaded` → `ClearGhostNodeCache()`) |
+| G2 | **广播静默丢弃**(原实现 `craft == null` 时直接 `return false`,不留痕),与 patch 2"记录并放行"的策略方向相反,一旦触发难以定位 | 丢弃时记一次性日志 `VizzyIsolation/Broadcast: dropped AllCrafts broadcast '…'`,按 `FlightProgramScript` 实例 ID 去重,防刷屏 |
+
+> 注意:patch 2 的异常分支仍为"记录并**放行**"(`return true`),保持原设计(宁可放行、不误杀真实飞船的 Vizzy);只有广播路径在无法定位同 craft 时"宁可少广播"。
+
+### 待双端实测(仍属 P0-4)
+
+- [ ] A 端 Vizzy 做 `AllCrafts` 广播 → B 端 craft **不应**收到;B 端的 A 幽灵船**不应**执行;
+- [ ] A 端 `AllCrafts` 广播在 A 自己船上仍正常(降级为同 craft 广播,不要退化成"完全不广播");
+- [ ] 双端各跑一艘带 Vizzy 的船:本地船 Vizzy 全功能正常(无被误杀),幽灵船 `LastUpdateInstructions`/进度无增长;
+- [ ] **断线专项(G3)**:飞行中让对方"离开房间",宿主日志应出现 `VizzyIsolation: ghost nodeId=N still guarded after removal (destroy window)`;
+- [ ] 日志无 `VizzyIsolation/…` 报错;若出现 `dropped AllCrafts broadcast`,检查是否为 G1 兜底路径命中(说明发生了"幽灵未登记")。
+
+---
+
+## 〇之六、双端实测(2026-09-16,宿主 + VM 客户端):断线相关缺口 G3 + 一处 NRE
+
+> 触发:用户在 VM 上做宿主/客户端双端实测,反馈"问题仍出现,似乎与断开连接有关"。
+> 输入:`%USERPROFILE%\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log`(宿主)与 `<SHARED>\Player.log`(VM 客户端)。
+> 两侧 `Mod Loaded: MultiPlayer, Version 1.51 - 9/16/2026 3:22:08 AM` ⇒ 跑的确实是含 G1/G2 加固的新 build。
+
+### 实测链路(日志原文)
+
+| 侧 | 行 | 日志 | 判读 |
+|---|---|---|---|
+| 宿主 | 751/759 | `MP: spawned remote craft for player 1 …` / `MP: remote craft initialized (ghost mode) for player 1` | 幽灵生成正常,① 登记表判定命中 |
+| VM | 282/283 | `MP: spawned remote craft for player 0 …` / `MP spawnDiag p0: goActive=null, craftScript=notBuilt, renderers=0/…` | **幽灵生成是异步的**:节点先入场景,`CraftScript`/`GameObject` 后建 ⇒ 必须依赖 G1 的命名兜底覆盖这段 |
+| VM | 693-695 | `StopLobby()` → `MP.Stop: wasServer=False, wasConnected=True …` → `TcpTransport: peer … read loop ended` | 客户端主动退出 |
+| 宿主 | 880-883 | `TcpTransport: peer 127.0.0.1:57975 read loop ended` → `MP peer timeout: … (PlayerId=1, NodeId=3)` → `broadcast PlayerLeave playerId=1` → `MP: destroyed remote craft for player 1, nodeId=2158, inFlightState=True` | **G3 现场**:`DestroyCraft()` 在当帧执行,节点下一帧才真正消失,中间那一帧的 Vizzy 执行/广播原实现拦不住 |
+| 两侧 | — | **0 条 `VizzyIsolation/…` 报错、0 条 `MissingMethodException`** | patch 挂载正确、未抛异常(1.4.2 核证再次得到运行时佐证) |
+
+### G3 根因与修复
+
+```
+RemoveRemoteCraft(playerId):
+    _remoteCrafts.Remove(playerId);      // ← ① IsRemoteCraftNode 从这里起恒返回 false
+    rc.Node.DestroyCraft();              // ← 只置 IsDestroyed=true,节点仍在 FlightState
+                                         //   下一帧 FlightState.ProcessDestroyedCraftNodes() 才真正移除
+```
+
+若这段发生在当帧 `FlightUpdate` 之前,该幽灵的 `FlightProgramScript.FlightUpdate` 会被跑一次:
+**patch 2 放行(幽灵的 Vizzy 执行一次)**、其 `AllCrafts` 广播也按"非幽灵"路径走。这与用户反馈的"和断开连接有关"吻合。
+
+**修复**(`VizzyIsolationPatch`,判定升为三层):① 登记表命中时把 `node.NodeId` 记入 `_ghostNodeIds`;
+① 失效后由 ② 记忆继续拦截;记忆在 `MpNetworkManager.OnFlightSceneLoaded()` 里经 `ClearGhostNodeCache()` 重置
+(NodeId 仅在单次飞行内唯一,由游戏 `FlightState.GetNextNodeId()` 单调分配 ⇒ 场景内不会误判本地船,
+跨场景必须清,否则新场景复用同 id 时会把本地船的 Vizzy 误杀)。
+
+### 顺带修掉的一处真实 NRE(非隔离机制,但同样是"断线/切场景"触发)
+
+VM 客户端日志 711-714:
+
+```
+NullReferenceException
+  at Assets.Scripts.Ui.Inspector.InspectorPanelScript.set_Visible
+  at Assets.Scripts.MultiPlayerUI.OnSceneLoaded
+  at Assets.Scripts.Scenes.SceneManager.OnSceneLoaded
+```
+
+- **根因**:`MultiPlayerUI` 自身是 `DontDestroyOnLoad`,但面板 GameObject 会随场景卸载被销毁;
+  此时既有守卫 `inspectorPanel != null` 仍为 true(Unity "假 null" 已销毁对象),下一句
+  `inspectorPanel.Visible = false` 在 game 侧 setter 里访问 `this.gameObject` 抛 NRE。
+- **危害**:该异常**中断 `SceneLoaded` 事件链**(与 [archive/volken-sceneloaded-nre-2026-08-27.md](../archive/volken-sceneloaded-nre-2026-08-27.md) 同一类问题),
+  链中其后注册的 mod 的 `OnSceneLoaded` 都不执行。
+- **修复**(`MultiPlayerUI.OnSceneLoaded`):Unity 显式销毁判定(`panel is UnityEngine.Object uo && uo == null`)+
+  try/catch 双保险,异常绝不允许冒泡出本回调;面板被销毁时清引用,下次打开面板按需重建。
+
+### 用户反馈的真实症状:「对方用需要输入的组件时,我这里也弹输入框」
+
+> 这是**报告的问题本身**(此前我只看到日志、看不到现象,故先按诊断噪音推 G3)。用户确认:对方执行
+> 需要用户输入的 Vizzy 指令时,**本机也弹出输入请求**。
+
+**反编译确认的现象链路(输入框的唯一来源)**:
+
+```
+UserInputInstruction.Execute(IThreadContext)
+  → context.Craft.RequestUserInput(msg, content)        // ModApi/Craft/Program/Instructions/UserInputInstruction.cs:52
+  → CraftService.RequestUserInput                       // Vizzy/Craft/CraftService.cs:548-585
+  → Game.Instance.UserInterface.CreateInputDialog(null) // ← 只有这一条路径会弹输入框
+```
+
+**推论**:输入框能弹出 ⇒ **本机确实执行了某条 `UserInputInstruction`**。因此有两种可能,必须用日志区分:
+
+| 可能 | 含义 | 处理方向 |
+|---|---|---|
+| A. **本地船在执行** | patch 无责(本地 Vizzy 本来该跑);弹框是本地行为 | 属预期行为,不是隔离缺陷 |
+| B. **幽灵船在执行** | 隔离确实漏了 —— 要看清漏在哪一层(登记表 / NodeId 记忆 / 命名兜底) | 按日志层次结果补漏 |
+
+**已加诊断(不改变行为,可长期保留)**:`VizzyIsolationPatch_UserInputDiag` —— `UserInputInstruction.Execute` 的
+Prefix,在联机会话中每船首次执行该指令时输出:
+
+```
+VizzyIsolation/UserInput: craft='<船名>' nodeId=N craftScript=yes isGhost=<bool>
+    [registry=<bool> nodeIdMemo=<bool> nameFallback=<bool>] ⇒ GHOST should have been blocked by patch 2 (isolation hole!) | local craft (patch 无责)
+```
+
+- 目标方法已核实存在于 **ModApi.dll**(1.4.2 安装目录):`Execute(ModApi.Craft.Program.IThreadContext)`,`public virtual`,`HasBody=True` ⇒ patch 可挂。
+- 判读:`⇒ local craft` = 可能 A(预期行为);`⇒ GHOST …(isolation hole!)` = 可能 B,且方括号里三层结果直接指出漏点。
+
+**复测结论(2026-09-16 第二轮,新 build 3:54:34)—— 可能是 A:弹框来自本地船自己,隔离未漏**
+
+```
+(VM 客户端,出现 2 次) VizzyIsolation/UserInput: craft='New' nodeId=4 craftScript=yes isGhost=False
+                      [registry=False nodeIdMemo=False nameFallback=False] ⇒ local craft (patch 无责)
+(宿主)                同一诊断 0 次
+```
+
+- `craft='New' nodeId=4` 就是**客户端自己的本地船**(其 `MP.Join SUCCESS: … LocalNodeId=4`);
+  宿主的幽灵船在客户端是 `nodeId=2158 / localNode=5 / craft='J-10-ABlockB'`(358 部件卫星)。
+- 三层判定全 false + `isGhost=False` ⇒ **执行者是本地船**。结合"输入框唯一来源是本机 `CraftService.RequestUserInput`",
+  可判定:本轮弹框是本机自己 Vizzy 的行为,**隔离 patch 无责**。
+- 同一轮 **G3 得到实测确认**(修复生效,不再是推测):
+
+| 侧 | 次数 | 触发场景 |
+|---|---|---|
+| 宿主 | 2 | 玩家 1 被踢(`nodeId=2159`)、玩家 2 掉线(`nodeId=2160`) |
+| VM 客户端 | 1 | 宿主掉线(`nodeId=5`) |
+
+- 两侧 `VizzyIsolation` 报错均为 **0**。
+- **若仍认为弹框与对方动作严格同步**:剩下唯一解释是"两台机器跑着同一份带输入指令的程序"
+  (各自本地执行、各自弹框),而非跨 craft 泄漏 —— 需要用户自查该 Vizzy 程序是否两边都装。
+
+### 本轮新发现并修掉的 UI 生命周期缺陷(非隔离机制)
+
+客户端被踢时(VM 日志 814/817):`MultiPlayerUI: ForceRebuildPanel failed` / `ReplaceGroup players failed`。
+
+- **根因**:`Update()` 里的 `inspectorPanel != null` 对"已被场景销毁的面板"仍为 true(Unity 假 null),
+  而"玩家离开"事件恰好在场景卸载瞬间到达 ⇒ `ReplaceGroup`/`RebuildModelElements` 抛 NRE(被 catch 吞掉,
+  故上一轮日志里看不到 NRE 堆栈,只看到我们的 failed 文案)。
+- **后果**:面板静默失效且引用不清,玩家列表需手动关开面板才恢复。
+- **修复**:`MultiPlayerUI` 新增 `IsPanelAlive()`(`is UnityEngine.Object uo && uo != null`),
+  在 `Update()` / `ForceRebuildPanel()` / `RebuildPlayersIfChanged()` 三处入口判定:已销毁则清引用并跳过,
+  下次打开面板正常重建。**第三轮实测(2026-09-16)确认修好**:两侧 `failed` 日志均为 0,只剩预期内
+  `inspector panel was destroyed by scene change, will rebuild on next open`。
+
+### 第三轮实测(2026-09-16,build 4:04:56):症状"消失"但指令仍在执行 ⇒ 间歇性,未闭环
+
+用户反馈"弹框真的没弹,而且两边程序都没改"。日志事实:
+
+| 项 | 宿主 | VM 客户端 |
+|---|---|---|
+| `VizzyIsolation/UserInput` | 0 次 | **1 次**(`craft='New' nodeId=5 isGhost=False ⇒ local craft`) |
+| G3 守护命中 | 1 次(`nodeId=2160`) | 1 次(`nodeId=6`) |
+| `MultiPlayerUI … failed` | 0 | 0 |
+
+- 客户端本地船**这一轮仍执行了** `UserInputInstruction`,但**没看到弹框** ⇒ 症状是**间歇性**,不是已修复。
+- 宿主侧三轮 `UserInput` **始终为 0** ⇒ "对方的输入动作让我这边弹框"这一因果链**从未在日志中出现**。
+- 唯一能解释"同一指令时弹时不弹"的已知机制:`CraftService.RequestUserInput` 只在
+  `this._userInputRequest == null && !Game.Instance.UserInterface.AnyDialogsOpen` 时才真正建框(`CraftService.cs:550-553`)
+  —— 即**本机当时是否有其它对话框打开**决定这一次是否弹出。**尚未实测确认,不当结论**。
+- 未排查项:VM 为 800×600(`Fixing resolution` 行),弹框是否落在 VM 窗口外未验证。
+- **处置**:按用户决定**停在此处收尾**(G3 与 UI 两修复已实测确认);诊断保留,下次复现看 `isGhost` 一行即可定性。
+
+---
+
+## 〇之七、部件开关同步 1.4.2 回归实测(2026-09-16):失败条件 = **任一方暂停**(已知限制,用户判定可接受)
+
+> 触发:用户报「1.4.2 后部件开关同步似乎坏了」。
+> **静态复核结论:链路完好,不是 1.4.2 造成的代码回归。** 逐一核对了 mod 侧收发全链(采样 `SamplePartActivated` → 协议 `WriteRecdata/ReadRecdata` 对称 → 每帧 `ApplyRemoteState` 末尾无条件调用 `ApplyRemotePartActivated` + `ApplyRemoteControls`)、白名单 17 个 modifier 类型全部存在于 1.4.2、`PartScript.Activate/Deactivate`(Activated 语义)、`LandingGearScript.FlightUpdate`(:155 每帧 `SetExtended(Part.Activated)`)、`LandingGearAnimator`(原生 Update)、`MonoBehaviourBase` 注册(只看 enabled)、`UpdateGroup` 分发(不按物理门控过滤);1.4.2 对相关文件的改动逐条读过,均为**性能/重构/碰撞层/签名变更,未触及激活机制**;Player.log 中 0 条 `PartVisualSync/ControlVisualSync` 异常。
+> **实测定论(用户):host 与 client 任一方处于暂停状态 → 幽灵端起落架/货舱/太阳能等开关部件不跟随;双端均正常运行时同步正常。**
+> **处置:接受该缺陷,不修。** 定位用的诊断代码已全部移除,`PartVisualSync.cs` / `MpNetworkManager.cs` 回到加诊断之前的状态。
+
+### 失败条件矩阵
+
+| 场景 | 开关部件同步 |
+|---|---|
+| 双端均正常运行(飞行/落地/滑行) | ✅ 正常(与 1.4.102 行为一致) |
+| 发送端(船主)暂停 | ❌ 观察方幽灵不跟随 |
+| 接收端(观察方)暂停 | ❌ 幽灵不跟随 |
+| 双端都暂停 | ❌(同上) |
+
+### 机制(含已核实与推断两部分)
+
+- **观察侧(接收端)暂停 —— 与已核实的循环事实吻合**:暂停时游戏循环走暂停分支,只分发 `*Paused` 系接口(本文档「〇之五」已用 IL 核证:`FlightProgramScript` 未实现 `IFlightUpdatePaused`,故暂停期间其 `FlightUpdate` 不执行)。幽灵的 `LandingGearScript.FlightUpdate` 同理属 `IFlightUpdate` ⇒ **暂停期间不被调用** ⇒ `SetExtended` 不被调用,收放动作无法推进;动画器按 `Time.deltaTime` 也停。即"开关位照样能写进 `Part.Activated`,但没有东西驱动动画"。
+- **发送侧暂停 —— 部分推断(未逐行验证)**:发送端暂停时 mod 仍按 `PausedSendIntervalMs`(125ms≈8Hz)降频发包(`MpNetworkManager.cs:640-645`,已实现),位置外推冻结逻辑也只影响位姿、**不影响部件位应用路径**;但发送端自身部件状态在暂停期间不再推进,暂停中改动的开关是否被送出未逐行验证。
+- 结论:两种暂停都属"暂停语义的必然结果" —— 与「〇之四」的暂停外推冻结(`rate→0`)、「〇之五」的暂停不跑 `IFlightUpdate` 属同一类既有取舍,**不是部件开关同步本身的设计缺陷**。
+
+### 影响与结论
+
+- 影响面:仅"暂停观赛/暂停调试"窗口内的开关视觉;不影响飞行中的正常联机(核心场景)。
+- 用户结论(2026-09-16):**「这是可以接受的缺陷」** ⇒ 不排期、不打补丁、不再加诊断。
+- 若将来要做(记录,当前不做):需为暂停态单独设计(观察侧解冻特定部件驱动的 `*Paused` 侧信道,或发送侧在暂停期间仍推进部件状态采样),成本明显高于收益。
+
+---
+
 ## 〇、结论摘要(TL;DR)
 
 1. **1.4.2 是一次「大优化」更新,不是新内容版**:剔除 ILSpy 的 `Token: 0x` 元数据噪音后,约 **105 个游戏脚本有实质改动 + 11 个新增文件**(GC/复用缓冲、渲染网格合并、参考系重居中重写、本地化重构、性能分析设施)。
@@ -246,7 +476,7 @@ Update 与 LateUpdate 各写一次、各冻一次基准,进一步放大为帧内
   - **可选参数不是重载**:旧二进制编译出 1 参调用,新 DLL 里没有 1 参方法 → 运行时 `MissingMethodException`(在远程船帧补偿路径,取决于调用点 try/catch,表现为远程船不校正或刷异常日志)。
   - **重新编译即修复**(源码 `(true)` 仍合法,默认参数补 `null`)。
 - 其余用到的 API **全部验证仍存在**:`CraftScript.FramePosition/FrameVelocity/DestroyBody/RootPart/IsPhysicsEnabled/RepositionParticleSystem`、`CraftNode.SetStateVectors`、`GroundedSurfacePosition/Velocity/Rotation`(反射)、`BodyScript.Transform/RigidBody/IsDebris/Disconnected/OnRecentered`、`FlightSceneScript.SpawnCraft`、`PartScript.Activate/Deactivate`、`ConfigData.*`。
-- **Harmony patch 目标全部安全**:`JetEngineScript`(未变)、`NavPanelController`(未变)、`FlightProgramScript`(变了但 `FlightUpdate`/`BroadcastMessage` 签名未变);`EngineVisualSync` 反射字段(`JetEngineScript._rocketExhaustSystem` / `_afterburnerSmokeColor` / `RocketEngineScript._params`)均未变。
+- **Harmony patch 目标全部安全**:`JetEngineScript`(未变)、`NavPanelController`(未变)、`FlightProgramScript`(变了但 `FlightUpdate`/`BroadcastMessage` **方法体 IL 逐条未变**,已用 Cecil 对安装目录 DLL 复核,见「〇之五」);`EngineVisualSync` 反射字段(`JetEngineScript._rocketExhaustSystem` / `_afterburnerSmokeColor` / `RocketEngineScript._params`)均未变。
 
 ### 2.2 行为层面(需适配/实测)
 
@@ -279,7 +509,7 @@ Update 与 LateUpdate 各写一次、各冻一次基准,进一步放大为帧内
 | P0-1 | **刷新程序集并重编译** | `Assets/ModTools/Assemblies/EditorAssemblies/SimpleRockets2.dll`(+ `ModApi.dll`)→ 换成 1.4.2 实验版安装目录的同名 DLL | 否则 `RecenterTransformOnCoM` 抛 MissingMethodException。注意:1.4.2 是实验分支,ModTools 的「同步程序集」流程可能未适配,需手动拷贝;**保留 1.4.102 的编译产物用于回退** | ✅ 2026-09-13 用户完成 |
 | P0-2 | **EnforceRemoteCraftVisuals 迁移** | `MpNetworkManager.cs` :1354(及 :1260 / :1758 的 renderer 统计) | `GetComponentsInChildren<Renderer>` → `GetComponentsInCraft<Renderer>`(或逐 body 遍历) | ✅ 2026-09-13 完成 |
 | P0-3 | **CraftUtils 粒子遍历迁移** | `CraftUtils.cs` :86 | `GetComponentsInChildren<ParticleSystem>` → 逐 body 遍历(或 `GetComponentsInCraft`) | ✅ 2026-09-13 完成 |
-| P0-4 | 双端回归 | 各活跃 plan 的既有验证 | 确认 body 位姿/部件开关/延迟平滑/Vizzy 隔离在 1.4.2 上不回归 | ⏳ 待双端实测 |
+| P0-4 | 双端回归 | 各活跃 plan 的既有验证 | **Vizzy 隔离:代码侧已在 1.4.2 核证通过(见「〇之五」:IL 逐条比对 + 缺口加固 G1/G2);部件开关同步:2026-09-16 双端实测通过,失败条件 = 任一方暂停(已知限制,可接受,见「〇之七」);body 位姿/延迟平滑仍待双端实测** | ⏳ 双端实测待跑(Vizzy 隔离已核证;**部件开关已实测:正常运行 OK / 暂停不跟随为已知限制**) |
 
 ### 3.2 待实测后拍板 —— P1 行为适配(实验版未定)
 
@@ -314,7 +544,7 @@ Update 与 LateUpdate 各写一次、各冻一次基准,进一步放大为帧内
 | V2 | 重编译后远程船生成/隐形回归 | 远程船全程可见;`EnforceRemoteCraftVisuals` 迁移后渲染器能被遍历到(spawnDiag/visualDiag 计数正常) |
 | V3 | 远距离触发参考系重居中 | 本地船/远程船位置、朝向一致,无抖、无漂移、无双重重置 |
 | V4 | 地面幽灵船(接地 hack) | `GroundedSurface*` 在 `SetPose` 放置下正常,不贴地/不重复移动 |
-| V5 | 既有功能回归 | body 位姿 / 部件开关 / 引擎尾焰 / 延迟平滑 / Vizzy 隔离(复用各 plan 既有验证) |
+| V5 | 既有功能回归 | body 位姿 / 部件开关 / 引擎尾焰 / 延迟平滑 / Vizzy 隔离(复用各 plan 既有验证;Vizzy 隔离的 1.4.2 判据见「〇之五」待实测清单)。**部件开关:2026-09-16 双端实测 —— 正常运行同步正常;任一方暂停时不跟随,已判定为可接受缺陷(见「〇之七」)** |
 
 ---
 
@@ -329,6 +559,14 @@ Update 与 LateUpdate 各写一次、各冻一次基准,进一步放大为帧内
 | GroundedSurface × `SetPose` 接地适配 | **待实测后定** | 2026-09-03 | ❓ 待定;反编译证据:`GroundedSurface*` 属性仍存在,反射写不失效;`SetPose` 不覆盖接地分支 |
 | 游戏版本检查 / 实验版开关 | **待定**(看 1.4.2 转正策略) | 2026-09-03 | ❓ 待定 |
 | 调试设施接入(GameLoopTypeProfiler 等) | **观察,暂不接** | 2026-09-03 | ❓ 待定 |
+| Vizzy 隔离在 1.4.2 上是否失效 | **未失效**(patch 目标方法体 IL 逐条未变、枚举未变、`Process.Update` 唯一入口未变) | 2026-09 | ✅ 核证通过(见「〇之五」;双端实测待跑) |
+| Vizzy 隔离缺口 G1/G2(生成窗口 / 广播静默丢弃) | **确定要封**(只加固、不改机制) | 2026-09 | ✅ 已落地(`VizzyIsolationPatch.IsGhostCraft` 判定 + 丢弃告警;`dotnet build` 0 错误) |
+| Vizzy 隔离缺口 **G3**(断线/移除窗口:节点已销毁但下一帧才移除) | **确定要封**(双端实测确认) | 2026-09-16 | ✅ 已落地(判定升三层:登记表 → NodeId 记忆 → 命名兜底;记忆随飞行场景重置);**2026-09-16 第二轮实测确认生效**(宿主 2 次 / 客户端 1 次命中日志) |
+| 「对方按输入框、我这里也弹框」是否为隔离漏 | **否 —— 出现过的框都来自本机自己 Vizzy**(诊断 `isGhost=False ⇒ local craft`) | 2026-09-16 | ⚠️ **部分定论**:隔离无责已确认;但症状**间歇性**(第三轮指令执行了、框没弹),**未闭环**(见「第三轮实测」小节) |
+| `MultiPlayerUI` 面板生命周期(场景销毁后假 null) | **确定要修**(面板静默失效 + 中断事件链) | 2026-09-16 | ✅ 已落地且第三轮实测确认(`failed` 日志归零) |
+| `MultiPlayerUI.OnSceneLoaded` NRE(面板随场景销毁后假 null) | **确定要修**(中断 `SceneLoaded` 事件链,影响其它 mod) | 2026-09-16 | ✅ 已落地(Unity 显式销毁判定 + try/catch) |
+| ModTools 程序集与安装目录 DLL 是否同一二进制 | **否**(MVID/大小/SHA256 不同,但方法表与 patch 目标 IL 逐条相同 ⇒ 语义一致) | 2026-09 | ✅ 已核证(修正「〇之二」P0-1 表述) |
+| **部件开关同步在 1.4.2 是否回归** | **否 —— 链路完好;失败条件 = 任一方暂停(用户判定:可接受缺陷,不修)** | 2026-09-16 | ✅ 已定论(见「〇之七」:mod 收发全链 + 游戏侧激活/动画机制逐条核对均未变;诊断代码已移除) |
 
 > 说明:以上「待定」项均因 1.4.2 为实验版、行为可能再变而未拍板;转正或实测出现明确结论后,更新本表并同步 `README.md` 决策速查。
 
@@ -338,9 +576,9 @@ Update 与 LateUpdate 各写一次、各冻一次基准,进一步放大为帧内
 
 | 文档 | 关系 |
 |---|---|
-| [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md) / [`latency-smoothing-2026-08-22.md`](archive/latency-smoothing-2026-08-22.md) / [`part-switch-sync-2026-08-18.md`](archive/part-switch-sync-2026-08-18.md) / [`vizzy-isolation-2026-08-22.md`](archive/vizzy-isolation-2026-08-22.md) | 既有机制的**版本回归**对象(P0-4);本方案不改动其方案 |
-| [`multi-craft-sync-2026-08-16.md`](multi-craft-sync-2026-08-16.md) | 其研究基于 1.4.102 反编译(`<JNO_CODE>`);1.4.2 后新结论需在本方案下复核(如 body 脱离层级对多 craft 同步的影响) |
-| [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md) | §4「游戏内部 API 依赖反编译源码导航,游戏更新可能破坏,需固定版本」——本文档即该风险的专项记录 |
+| [`body-sync-2026-08-18.md`](../archive/body-sync-2026-08-18.md) / [`latency-smoothing-2026-08-22.md`](../archive/latency-smoothing-2026-08-22.md) / [`part-switch-sync-2026-08-18.md`](../archive/part-switch-sync-2026-08-18.md) / [`vizzy-isolation-2026-08-22.md`](../archive/vizzy-isolation-2026-08-22.md) | 既有机制的**版本回归**对象(P0-4);本方案不改动其方案 |
+| [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md) | 其研究基于 1.4.102 反编译(`<JNO_CODE>`);1.4.2 后新结论需在本方案下复核(如 body 脱离层级对多 craft 同步的影响) |
+| [`README.md`](../README.md) | §一 要点 + §四「游戏内部 API 依赖反编译源码导航,游戏更新可能破坏,需固定版本」——本文档即该风险的专项记录 |
 
 ---
 

@@ -3,7 +3,7 @@
 > 项目:JNOMultiPlayer(MultiPlayer)
 > 反编译参考:`<JNO_CODE>`
 > 状态:**✅ 已归档**。尾焰(液体+航发两段加力)、烟雾(速度注入)、过膨胀(膨胀比)同步均已实现并实测通过(2026-08)。本文档为开发经验存档,细节以代码内注释为准。
-> 定位:~~[`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) 的补充分析~~ → 已由「尾焰/烟雾/过膨胀同步」实测闭环,移入 `plans/archive/`。回答"幽灵船的引擎尾焰/烟雾/热畸变能否同步、怎么同步、代价多大"
+> 定位:~~[`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md) 的补充分析~~ → 已由「尾焰/烟雾/过膨胀同步」实测闭环,移入 `plans/archive/`。回答"幽灵船的引擎尾焰/烟雾/热畸变能否同步、怎么同步、代价多大"
 > 结论先行:**火焰(尾焰)可同步且成本几乎为零;烟雾/热畸变/RCS 只能做"输入同步 + 本地仿真"(形态一致、非逐粒子一致);粒子级精确同步不可行;幽灵重开物理不可取。**
 
 ---
@@ -31,7 +31,7 @@
 
 ## 0. 现状(plan 已认定的限制)
 
-- [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) 8.2-5 决策:**燃料/资源/部件状态 MVP 不同步**,并记为"幽灵物理关 → 引擎视觉本来不跑"。
+- [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md) 8.2-5 决策:**燃料/资源/部件状态 MVP 不同步**,并记为"幽灵物理关 → 引擎视觉本来不跑"。
 - 幽灵船 = `AllowPlayerControl=false` + `SetPhysicsEnabled(false, Warp)` + 全 body kinematic + `DisableCraftPhysicCalculation`(清全部碰撞体)。
 
 > 本文不推翻 8.2-5:同步的是"视觉驱动值"(throttle),不是燃料数值;顺带能在视觉上反映"油尽熄火"(throttle→0)。
@@ -78,10 +78,10 @@
 | 注册 | `MonoBehaviourBase.OnEnable → Game.Loop.Register`(MonoBehaviourBase.cs:22);引擎 modifier 继承链 `PartModifierScript → MonoBehaviourBase` | 注册只看 MonoBehaviour 是否 enabled,**无物理过滤** |
 | 分组 | `FlightUpdateGroupCollection.Register`(FlightUpdateGroupCollection.cs:160)按接口(`IFlightUpdate`/`IFlightFixedUpdate`)入组 | **无 `IsPhysicsEnabled` 检查** |
 | 关物理 | `SetPhysicsEnabled(false) → CraftScript.EnablePhysics(false)`(CraftScript.cs:1635)只置 flag + body kinematic + 调 `OnBeforePhysicsChanged/OnPhysicsChanged` 虚钩子 | **不**禁用 MonoBehaviour、**不**隐藏 GameObject → 不触发 `OnDisable` 反注册 |
-| 幽灵处理 | `CraftUtils.DisableCraftPhysicCalculation`([CraftUtils.cs:97](../Assets/Scripts/CraftUtils.cs:97))只清碰撞体/置标记 | 不影响注册 |
+| 幽灵处理 | `CraftUtils.DisableCraftPhysicCalculation`([CraftUtils.cs:97](../../Assets/Scripts/CraftUtils.cs:97))只清碰撞体/置标记 | 不影响注册 |
 | 派发 | `FlightGameLoop.FixedUpdate/Update`(FlightGameLoop.cs:153)对全部已注册项调用 | 非暂停/非 warp(本 mod 常态)下正常派发 |
 
-**结论:幽灵的引擎 modifier 每帧收 `IFlightUpdate.FlightUpdate`、每 FixedUpdate 收 `IFlightFixedUpdate.FlightFixedUpdate`。** 现有注释([MpNetworkManager.cs:1477](../Assets/Scripts/Net/MpNetworkManager.cs:1477))"幽灵飞船不参与 IFlightUpdate"与代码不符(FlightData 陈旧更可能是执行序:游戏 FlightUpdate 读 `CenterOfMass` 先于 mod 写入,至多一帧滞后)。
+**结论:幽灵的引擎 modifier 每帧收 `IFlightUpdate.FlightUpdate`、每 FixedUpdate 收 `IFlightFixedUpdate.FlightFixedUpdate`。** 现有注释([MpNetworkManager.cs:1477](../../Assets/Scripts/Net/MpNetworkManager.cs:1477))"幽灵飞船不参与 IFlightUpdate"与代码不符(FlightData 陈旧更可能是执行序:游戏 FlightUpdate 读 `CenterOfMass` 先于 mod 写入,至多一帧滞后)。
 
 > ⚠️ 这个定论对液体是**好消息**(Route A 可行),对 jet 加力却是**必须处理的坑**(见 §3.6)。
 
@@ -132,10 +132,10 @@
 1. **初始化钩子**(挂在 `InitializeRemoteCraft` / `UpdateRemoteCrafts` 懒初始化里):
    - 枚举幽灵上 `IReactionEngine`(`EngineScript`/`RocketEngineScript`/`JetEngineScript`),反射取私有 `_engineCommon`,设 `ExhaustThrottleOverride = () => syncThrottle[i]`;可选 `DistortionIntensity = () => throttle`。
 2. **副作用净化**(重要):
-   - 幽灵碰撞体已被 [`CraftUtils.DisableCraftPhysicCalculation`](../Assets/Scripts/CraftUtils.cs:97) 全部 `enabled=false` → 尾焰 trigger collider 不会触发碰撞/加热;
+   - 幽灵碰撞体已被 [`CraftUtils.DisableCraftPhysicCalculation`](../../Assets/Scripts/CraftUtils.cs:97) 全部 `enabled=false` → 尾焰 trigger collider 不会触发碰撞/加热;
    - 但 `ExhaustDamageScript` 仍会每 FixedUpdate 跑(发地形尘 `_dust`) → 建议把其 MonoBehaviour `enabled=false`。
 3. **烟雾速度**(关键细节):
-   - 幽灵 body 全 kinematic,而 `RecalculateFrameState` 只对非 kinematic 刚体累加速度([CraftUtils.cs:63](../Assets/Scripts/CraftUtils.cs:63)) → 幽灵 `rigidbody.velocity≈0` → 烟迹不拖尾;
+   - 幽灵 body 全 kinematic,而 `RecalculateFrameState` 只对非 kinematic 刚体累加速度([CraftUtils.cs:63](../../Assets/Scripts/CraftUtils.cs:63)) → 幽灵 `rigidbody.velocity≈0` → 烟迹不拖尾;
    - 解决:每帧把同步 `recdata.Velocity`(转帧空间)写入幽灵 kinematic rigidbody 的 `velocity`,`SmokeTrailScript.LateUpdate` 即会发出正确拖尾。
      ⚠️ 写入方式有讲究:Unity 对 kinematic 刚体写 velocity 每次打告警,曾刷爆 Player.log —— 2026-08 已修(值不变跳过 + 临时切非 kinematic),详见 §10.3.1。
 4. **尾焰朝向**:无 gimbal 时火焰沿机轴;需要时**只复制 `UpdateNozzle` 的旋转计算(转视觉 nozzle,绝不施加力)**,用同步 `Pitch/Yaw/Roll`。
@@ -186,11 +186,11 @@
 
 | 文件 | 改动 |
 |---|---|
-| [`Mod.cs`](../Assets/Scripts/Mod.cs) | `recdata` 增加 `List<float> EngineThrottles`(每引擎视觉 throttle)+ 构造初始化 |
-| [`MpMessage.cs`](../Assets/Scripts/Net/MpMessage.cs) | `WriteRecdata`/`ReadRecdata` 追加 count+N 个 float |
-| [`EngineVisualSync.cs`](../Assets/Scripts/Net/EngineVisualSync.cs) | 新增:发送端采样、幽灵驱动表、反射访问器 |
-| [`MpNetworkManager.cs`](../Assets/Scripts/Net/MpNetworkManager.cs) | `RemoteCraft` 改 internal + `SyncedThrottles`/`EngineDrivers`;采样/设置/每帧驱动接入;`IsRemoteCraftNode` |
-| [`JetEngineGhostPatch.cs`](../Assets/Scripts/HarmonyPatches/JetEngineGhostPatch.cs) | 新增:幽灵航发跳过 `IFlightFixedUpdate`/`IFlightUpdate`(手动 `Apply` 打补丁,无日志) |
+| [`Mod.cs`](../../Assets/Scripts/Mod.cs) | `recdata` 增加 `List<float> EngineThrottles`(每引擎视觉 throttle)+ 构造初始化 |
+| [`MpMessage.cs`](../../Assets/Scripts/Net/MpMessage.cs) | `WriteRecdata`/`ReadRecdata` 追加 count+N 个 float |
+| [`EngineVisualSync.cs`](../../Assets/Scripts/Net/EngineVisualSync.cs) | 新增:发送端采样、幽灵驱动表、反射访问器 |
+| [`MpNetworkManager.cs`](../../Assets/Scripts/Net/MpNetworkManager.cs) | `RemoteCraft` 改 internal + `SyncedThrottles`/`EngineDrivers`;采样/设置/每帧驱动接入;`IsRemoteCraftNode` |
+| [`JetEngineGhostPatch.cs`](../../Assets/Scripts/HarmonyPatches/JetEngineGhostPatch.cs) | 新增:幽灵航发跳过 `IFlightFixedUpdate`/`IFlightUpdate`(手动 `Apply` 打补丁,无日志) |
 
 ### 9.2 实现要点(含与 §3.6 的修正)
 

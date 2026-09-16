@@ -44,3 +44,4 @@ Assets/ModTools/*
 
 # ---- 本机隐私信息:真实路径映射(仅本地,严禁上传) ----
 plans/LOCAL_PATHS.md
+/Assets/NekoScriptGraph

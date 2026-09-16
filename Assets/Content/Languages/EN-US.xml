@@ -22,7 +22,7 @@
     <s id="MultiPlayer.MultiPlayerUI.LobbyUnavailable">Steam not initialized</s>
     <s id="MultiPlayer.MultiPlayerUI.EnterRoomName">Enter room name</s>
     <s id="MultiPlayer.MultiPlayerUI.LobbyDefaultRoomName">'s Room</s>
-    <s id="MultiPlayer.MultiPlayerUI.LobbyHosted">Lobby created!\n{0} ({1}/{2})\nYour SteamId: {3}\n\n(The room now appears in the room list)</s>
+    <s id="MultiPlayer.MultiPlayerUI.LobbyHosted">Lobby created!\n{0} ({1}/{2})\nYour SteamId: {3}\n\n</s>
     <s id="MultiPlayer.MultiPlayerUI.LobbyCreateFailed">Failed to create Steam lobby: {0}</s>
     <s id="MultiPlayer.MultiPlayerUI.LobbyJoinFailedFull">Join failed: room is full</s>
     <s id="MultiPlayer.MultiPlayerUI.LobbyJoinFailedMissing">Join failed: room does not exist</s>
@@ -47,7 +47,7 @@
     <s id="MultiPlayer.MultiPlayerUI.TcpHostStarted">TCP lobby started on port {0}</s>
     <s id="MultiPlayer.MultiPlayerUI.EnterTcpPort">Enter TCP host port (default 25555)</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpPort">Invalid port: '{0}'</s>
-    <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">Enter host IP (e.g. 192.168.56.1:25555)</s>
+    <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">Enter host IP (e.g. 192.168.x.x:25555)</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpHost">Invalid host: '{0}'</s>
     <s id="MultiPlayer.MultiPlayerUI.RebuildPanelButton">Force Rebuild Panel</s>
     <s id="MultiPlayer.MultiPlayerUI.NetSimGroup">Network Latency Sim (NetSim)</s>
@@ -67,7 +67,7 @@
     <s id="MultiPlayer.MultiPlayerUI.Kicked">You have been kicked by the host</s>
     <s id="MultiPlayer.MultiPlayerUI.LoadingCraft">Loading craft</s>
     <!-- Update Reminder -->
-    <s id="MultiPlayer.MultiPlayerUI.UpdateAvailable">A new version of aMptest is available!</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateAvailable">A new version of MultiPlayer Mod is available!</s>
     <s id="MultiPlayer.MultiPlayerUI.UpdateNewVersion">New version: {0}</s>
     <s id="MultiPlayer.MultiPlayerUI.UpdateCurrentVersion">Your version: {0}</s>
     <s id="MultiPlayer.MultiPlayerUI.UpdateDownload">Download</s>

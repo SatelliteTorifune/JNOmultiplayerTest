@@ -124,7 +124,7 @@ namespace Assets.Scripts
 				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.LeaveLobby();
 			}));
 			// TCP debug（本地虚拟机联机调试）：先切到 TcpTransport 再开房 / 加入。
-			// 房主监听 IPAddress.Any:port；客户端按宿主局域网 IP:port 连接（如 192.168.56.1:25555）。
+			// 房主监听 IPAddress.Any:port；客户端按宿主局域网 IP:port 连接（如 192.168.x.x:25555）。
 			// 若已启用 NetSim 延迟模拟（NetSimDelay 等），自动包一层 LagSimTransport 模拟公网延迟。
 			DevConsoleApi.RegisterCommand<int>("TcpHostLobby", new Action<int>(port =>
 			{

@@ -317,6 +317,16 @@ namespace Assets.Scripts
         private void Update()
         {
             if (inspectorModel == null || inspectorPanel == null) return;
+            // 面板 GameObject 会随场景卸载被销毁(本对象是 DontDestroyOnLoad,面板不是)。
+            // 此时 `!= null` 仍是 Unity "假 null";必须显式判定,否则下面的 ReplaceGroup/
+            // RebuildModelElements 会抛 NRE(实测日志:`ForceRebuildPanel failed` / `ReplaceGroup players failed`)。
+            if (!IsPanelAlive())
+            {
+                Mod.LogLobby("MultiPlayerUI: inspector panel was destroyed by scene change, will rebuild on next open");
+                inspectorPanel = null;
+                inspectorModel = null;
+                return;
+            }
             EnsurePlayersSubscribed();
 
             // 待弹窗（事件可能来自 Steam 回调上下文，延后到主线程 Update 弹窗；与面板可见性无关）
@@ -386,6 +396,16 @@ namespace Assets.Scripts
             if (key == playersKey) return;
             playersKey = key;
 
+            if (!IsPanelAlive())
+            {
+                // 面板已随场景销毁：不触碰它，留给下次打开时重建（见 ForceRebuildPanel 同款处理）
+                inspectorPanel = null;
+                inspectorModel = null;
+                playersGroup = null;
+                playersWasVisible = false;
+                return;
+            }
+
             GroupModel newGroup = BuildPlayersGroup();
             try
             {
@@ -416,6 +436,17 @@ namespace Assets.Scripts
         /// </summary>
         private void ForceRebuildPanel()
         {
+            if (!IsPanelAlive())
+            {
+                // 面板已随场景销毁(切场景瞬间收到 玩家离开 事件)：清引用，下次打开面板时重建，
+                // 不再走 catch 记一条无意义的 failed 日志。
+                inspectorPanel = null;
+                inspectorModel = null;
+                playersGroup = null;
+                playersKey = "";
+                playersWasVisible = false;
+                return;
+            }
             try
             {
                 GroupModel newGroup = BuildPlayersGroup();
@@ -428,6 +459,15 @@ namespace Assets.Scripts
             {
                 Mod.LogLobby("MultiPlayerUI: ForceRebuildPanel failed: " + e.Message);
             }
+        }
+
+        /// <summary>
+        /// 面板是否仍然存活。Unity 的"假 null"(对象已被销毁但 C# 引用仍在)只有显式与 null 比较
+        /// 才能识别 —— `IsPanelAlive()` 为 false 时,对该面板做 Visible 读写/ReplaceGroup 都会抛 NRE。
+        /// </summary>
+        private bool IsPanelAlive()
+        {
+            return inspectorPanel is UnityEngine.Object uo && uo != null;
         }
 
         /// <summary>构建玩家列表分组：每玩家一行（名字 + 延迟），房主额外每行一个踢人按钮。</summary>
@@ -788,10 +828,32 @@ namespace Assets.Scripts
                 // 修复(Volken 冲突排查):inspectorPanel 在从未打开过联机面板时为 null,
                 // 直接解引用会抛 NRE;且该异常会中断 SceneLoaded 事件链,使链中其后
                 // 注册的其它 mod(如 Volken)的 OnSceneLoaded 不执行(看不到云等)。
-                if (inspectorPanel != null)
+                //
+                // 修复2(断线/切场景实测 NRE,2026-09-16 Player.log):
+                // 本对象 DontDestroyOnLoad,但面板 GameObject 会随场景卸载被销毁;
+                // 此时 `inspectorPanel != null` 仍为 true(Unity "假 null" 已销毁对象),
+                // 下一句 `inspectorPanel.Visible = false` 在 InspectorPanelScript.set_Visible
+                // 里访问 this.gameObject 抛 NRE —— 同样是中断事件链的老问题。
+                // 故用 Unity 的显式销毁判定 + try/catch 双保险,异常绝不允许冒泡出本回调。
+                if (inspectorPanel != null && !(inspectorPanel is UnityEngine.Object uo && uo == null))
                 {
-                    inspectorPanel.Visible = false;
-                    inspectorPanel.CloseButtonClicked += OnCloseButtonClicked;
+                    try
+                    {
+                        inspectorPanel.Visible = false;
+                        inspectorPanel.CloseButtonClicked += OnCloseButtonClicked;
+                    }
+                    catch (Exception ex)
+                    {
+                        Mod.LogError("MultiPlayerUI.OnSceneLoaded: inspectorPanel 已随场景销毁,跳过(下次打开面板会重建): " + ex.Message);
+                        inspectorPanel = null;
+                        inspectorModel = null;
+                    }
+                }
+                else if (inspectorPanel != null)
+                {
+                    // 面板已被上一个场景销毁:清掉假 null 引用,下次打开联机面板按需重建
+                    inspectorPanel = null;
+                    inspectorModel = null;
                 }
                 Game.Instance.FlightScene.FlightEnded += FlightSceneEnded;
             }

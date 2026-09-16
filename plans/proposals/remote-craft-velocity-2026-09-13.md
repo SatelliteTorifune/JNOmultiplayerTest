@@ -102,7 +102,7 @@ else if (this.InContactWithPlanet)
 
 ## 六、相关历史（不要重复调研）
 
-- **发送端**缺自转项问题（`PlanetVectorToSurfaceVector` 纯旋转不减自转 → 静止船上报 158.85 m/s → 接收端外推放大成瞬移）**已修复**：`TrySampleLocalCraft` 减 `CalculateSurfaceVelocity(pos)`。见 `archive/latency-smoothing-2026-08-22.md` §7（§529-534）与 `AGENT_CONTEXT.md:86`。
+- **发送端**缺自转项问题（`PlanetVectorToSurfaceVector` 纯旋转不减自转 → 静止船上报 158.85 m/s → 接收端外推放大成瞬移）**已修复**：`TrySampleLocalCraft` 减 `CalculateSurfaceVelocity(pos)`。见 `archive/latency-smoothing-2026-08-22.md` §7（§529-534）与 `README.md` §三「朝向 / 速度坐标系」。
 - 本次是**接收端**同一自转项的镜像问题（写回 `GroundedSurfaceVelocity` 时不加自转项），此前未记录。
 - 旁注："幽灵 `FrameVelocity` 可能陈旧" 已在 `archive/engine-fx-sync-2026-08-18.md:312` 提到，但未定位到根因。
 

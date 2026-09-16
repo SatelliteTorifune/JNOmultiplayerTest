@@ -47,7 +47,7 @@ var rotation = (Quaternion)lerpedBody.rotation * currentSurfaceRelRotation;  // 
 
 ## 5. 已实施代码
 
-- `recdata` 新增 `SrfRel`(Quaterniond);[`MpMessage.cs`](../Assets/Scripts/Net/MpMessage.cs) 序列化加 4×double;
+- `recdata` 新增 `SrfRel`(Quaterniond);[`MpMessage.cs`](../../Assets/Scripts/Net/MpMessage.cs) 序列化加 4×double;
 - 新增 `LateUpdate` 渲染前写回(防游戏覆盖)+ `[DefaultExecutionOrder(1000)]`;
 
 ### 5.1 坐标系关键事实(反编译确认)
@@ -69,8 +69,8 @@ var rotation = (Quaternion)lerpedBody.rotation * currentSurfaceRelRotation;  // 
 
 ### 5.3 修正后(真正 srfRel)
 
-- 发送端([`TrySampleLocalCraft`](../Assets/Scripts/Net/MpNetworkManager.cs)):`SrfRel = RotateY(θ_frame - θ_planet) * comRot`(相对地表朝向,与行星自转无关);
-- 接收端([`ApplyRemoteState`](../Assets/Scripts/Net/MpNetworkManager.cs) + [`ForceRemoteHeading`](../Assets/Scripts/Net/MpNetworkManager.cs)):`headingFrame = frame.PlanetToFrameRotation(planet.Rotation * SrfRel) = RotateY(θ_planet - θ_frame) * SrfRel`;
+- 发送端([`TrySampleLocalCraft`](../../Assets/Scripts/Net/MpNetworkManager.cs)):`SrfRel = RotateY(θ_frame - θ_planet) * comRot`(相对地表朝向,与行星自转无关);
+- 接收端([`ApplyRemoteState`](../../Assets/Scripts/Net/MpNetworkManager.cs) + [`ForceRemoteHeading`](../../Assets/Scripts/Net/MpNetworkManager.cs)):`headingFrame = frame.PlanetToFrameRotation(planet.Rotation * SrfRel) = RotateY(θ_planet - θ_frame) * SrfRel`;
 - 数学验证:接收端帧空间 = `RotateY(θ_planet_recv - θ_frame_recv) * RotateY(θ_frame_send - θ_planet_send) * comRot`。因双端同行星表面锁定帧 `θ_frame - θ_planet` 为同一常量 → 结果 = `comRot`(发送端帧空间朝向)。两端帧空间朝向一致,随各自行星自转保持相对地表不变,无 warp 漂移、无时间同步依赖。
 
 ## 6. 实测结果与下一步
@@ -84,6 +84,6 @@ var rotation = (Quaternion)lerpedBody.rotation * currentSurfaceRelRotation;  // 
 
 > 本节为撰写当时的"下一步"，现状如下（均已实现或转移，勿再当作待办）：
 
-1. **Body 同步**：当前仅同步 `BodyRotations`(每 body 相对根的欧拉角)。下一步做更完整的 body 级同步(位置/速度/角速度、分离/对接/残骸事件),彻底消除"分裂/散架";——【✅ 已转移】转入 [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) MC2。
-2. **平滑插帧**：当前是"前后两包线性/Slerp 插值"([`UpdateRemoteCrafts`](../Assets/Scripts/Net/MpNetworkManager.cs) 内联插值)。下一步改为带时间戳的环形缓冲 + 100~150ms 延迟补偿,容忍抖动与乱序;——【✅ 已实现】环形缓冲 + `RenderDelayMs`。
-3. **多 craft 支持**：当前只同步 `FlightSceneScript.Instance.CraftNode`(本机唯一玩家飞船)。下一步支持每玩家多艘飞船(NodeId → CraftNode 映射)、残骸/对接后的多节点同步。——【✅ 已转移】整体转入 [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md)(方案研究阶段)。
+1. **Body 同步**：当前仅同步 `BodyRotations`(每 body 相对根的欧拉角)。下一步做更完整的 body 级同步(位置/速度/角速度、分离/对接/残骸事件),彻底消除"分裂/散架";——【✅ 已转移】转入 [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md) MC2。
+2. **平滑插帧**：当前是"前后两包线性/Slerp 插值"([`UpdateRemoteCrafts`](../../Assets/Scripts/Net/MpNetworkManager.cs) 内联插值)。下一步改为带时间戳的环形缓冲 + 100~150ms 延迟补偿,容忍抖动与乱序;——【✅ 已实现】环形缓冲 + `RenderDelayMs`。
+3. **多 craft 支持**：当前只同步 `FlightSceneScript.Instance.CraftNode`(本机唯一玩家飞船)。下一步支持每玩家多艘飞船(NodeId → CraftNode 映射)、残骸/对接后的多节点同步。——【✅ 已转移】整体转入 [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md)(方案研究阶段)。

@@ -93,6 +93,11 @@ namespace Assets.Scripts.Net
 		private readonly Dictionary<int, float> _spawnAttemptTime = new Dictionary<int, float>(); // 生成尝试节流
 		private float _sendTimer;
 		private float _keepAliveTimer;
+		// --- 发送节奏诊断(2026-09-14,顿挫定位):实际发包间隔 EMA(sendGap,ms)。 ---
+		// 与接收端 MP gap(到达间隔)对账:sendGap 稳定≈50ms 而接收端 gap 大 → 网络突发(relay);
+		// sendGap 本身大幅摆动 → 发送端自身突发(帧率不足/掉帧),先修发送端。
+		private float _lastSendTime = -1f;
+		private float _sendGapEmaMs = 0f;
 		// --- 抽搐诊断(发送端):每包 body[0] 相对 comRot 采样位置抖动(静止时>0.01m → 发送端数据本身在抖) ---
 		private Vector3? _diagBody0Rel;
 		private float rcDiagBody0RelDelta;
@@ -409,6 +414,9 @@ namespace Assets.Scripts.Net
 			_spawnAttemptTime.Clear();
 			// 场景切换：上一场景的进度框已随场景卸载销毁，清空登记与挂起状态（新场景可正常重新生成）
 			CancelPendingSpawns();
+			// Vizzy 隔离的幽灵 NodeId 记忆同样按飞行场景生命周期重置：NodeId 只在本次飞行内唯一，
+			// 跨场景复用会把新场景里的本地船误判为幽灵（Vizzy 被误杀）。见 VizzyIsolationPatch。
+			VizzyIsolationPatch.ClearGhostNodeCache();
 			Mod.LogLobby("MP.OnFlightSceneLoaded: cleared stale remote crafts (count=" + _remoteCrafts.Count + ")");
 		}
 
@@ -639,6 +647,10 @@ namespace Assets.Scripts.Net
 			// 携带余量而非清零:清零会把发送率钳制在渲染帧率(30fps 时只有 15Hz → 对端 gapEMA≈70ms,
 			// 高速机动时每包位置跳变更大、外推更易失准 → 顿挫)。减余量后任意 ≥20fps 都稳定发满 20Hz。
 			_sendTimer -= sendIntervalMs;
+			// F4(2026-09-14,smoothing-comparison §五 / README §三):帧卡顿后 timer 余量大 → 恢复后每帧泄洪一包
+			// (发送端自身突发,接收端见成簇包,实测 sendGap 15~30ms 双峰)。钳制余量上限,
+			// 卡顿恢复后按正常节奏补发,不一次性灌给网络。
+			if (_sendTimer > sendIntervalMs * 2f) _sendTimer = sendIntervalMs * 2f;
 
 			Mod.RemoteDataPack data;
 			if (!TrySampleLocalCraft(out data)) return;
@@ -700,8 +712,17 @@ namespace Assets.Scripts.Net
 					" body0RelΔ=" + rcDiagBody0RelDelta.ToString("F4") + "m" +
 					" body0Rel=" + body0Rel.ToString("F4") + "m" +
 					" bodyCnt=" + (data.BodyPositions != null ? data.BodyPositions.Count : 0) +
+					" sendGap=" + (_lastSendTime >= 0f ? _sendGapEmaMs.ToString("F0") : "?") + "ms" +
 					" " + wSignDiag);
 			}
+			// 发送节奏诊断(2026-09-14):实际发包间隔 EMA。记录在真正发包处,过滤采样失败未发帧;
+			// 与接收端 MP gap(到达间隔)对账定位突发来源(发送端自身 vs 网络 relay)。
+			if (_lastSendTime >= 0f)
+			{
+				float gap = (Time.unscaledTime - _lastSendTime) * 1000f;
+				_sendGapEmaMs = _sendGapEmaMs <= 0f ? gap : _sendGapEmaMs * 0.9f + gap * 0.1f;
+			}
+			_lastSendTime = Time.unscaledTime;
 			if (IsServer)
 			{
 				Transport.Broadcast(packet);
@@ -1347,6 +1368,36 @@ namespace Assets.Scripts.Net
 			public float LastAccelTermM;           // 2 阶外推:本帧加速度项位移(½|a|·ext²,m)
 			public float LastAngExtRad;            // 2 阶外推:本帧朝向外推角(|ω|·ext,rad)
 
+			// --- 突发/顿挫诊断(2026-09-14,smoothing-comparison §四:200ms+ 真实联机"一卡一卡"定位) ---
+			// 两个候选机制:①mRate 被到达间隔(突发 0/几百 ms)污染 → ext 摆动 → 速度脉冲;
+			// ②长静默冻结分支(age>max(3·gapEMA,0.25s),MpNetworkManager.cs:2056)误触发 → 停→冲。
+			// 以下窗口量(3s 随 MP smoothing 行输出)+ 事件日志(MP gap / MP gapfreeze)用于区分主导机制。
+			public float LastExtSec;                // 本帧外推量 ext(诊断,s)
+			public bool GapFreezeActive;            // 本帧长静默冻结分支是否激活(机制 ②)
+			public float WinGapFreezeHits;          // 3s 窗口:进入长静默冻结的次数(机制 ② 命中率)
+			public float WinMRateMin = 1f;          // 3s 窗口:mRate 最小值(机制 ①:mRate 下摆)
+			public float WinMRateMax = 1f;          // 3s 窗口:mRate 最大值(机制 ①:mRate 上摆)
+			public float WinExtMax;                 // 3s 窗口:ext 最大值(s)
+			public float WinMaxGapMs;               // 3s 窗口:最大到达间隔(ms,突发程度)
+			public int WinLongGapCount;             // 3s 窗口:到达间隔 >250ms 的次数(突发静默次数)
+			public float WinMoveMaxM;               // 3s 窗口:单帧渲染位移最大值(m,停→冲的"冲"幅度)
+			public float LastGapLogTime;            // MP gap 事件日志节流(unscaledTime)
+
+			// --- F1(2026-09-14,smoothing-comparison §五 / README §三):虚拟 age —— 目标推进时钟 ---
+			// 突发到达(背靠背 0ms / 静默几百 ms)下,"距最新包到达的真实时间 age"会随包到达归零,
+			// 而包位置按发送端间隔前移 → 目标每包锯齿(±V×Δt)→ 渲染层"一卡一卡"。
+			// 改为自走时钟:每帧 +unscaledDeltaTime、每包到达 −SendIntervalEst(发送端发包间隔估计)。
+			// 连续性证明:包到达瞬间目标跳变 = V×Δt_send − V×(age增长−age扣除) = V×Δt_send−V×(interval−Δt_send) − ... = 0
+			// (匀速时目标连续;残留仅剩加速度误差 ½·a·Δt²)。慢放/暂停仍由 mRate/ramp 处理。
+			public float VirtualAge;                // 自走外推时钟(替代"距最新包到达时间")
+			public float SendIntervalEst;           // 发送端发包间隔估计(包时间差 EMA,钳[0.02,0.1]s)
+			// F2'(2026-09-14):mRate 分母抗突发 —— 到达间隔慢 EMA(时间常数≈1s)。
+			// 瞬时到达间隔在突发下 0/几百 ms 交替 → mRate 打到 0.03~1.14(实测) → ext 摆动;
+			// 慢 EMA 收敛到"平均到达间隔"(=平均发包间隔)→ 稳态 mRate≈1,慢放检测依然有效。
+			public float MArrivalEma;
+			// F3(2026-09-14):单向延迟 EMA(ext 用;LatencyMs=RTT/2 裸值抖动会直接进 ext → 目标晃)。
+			public float LatencyEmaMs = -1f;
+
 			// --- 发送端时间倍率(2026-09:慢放时外推按真实时间推进而包位置按发送端缩放时间走 → 每包向后锯齿) ---
 			// 相邻两包 FlightState.Time(发送端游戏时间)增量 / 真实到达时间增量;正常=1,慢放<1,暂停→0。
 			// UpdateRemoteCrafts 把外推量 ext 乘以此倍率换算到发送端时间基 → 慢放时外推与发送端实际运动同步。
@@ -1413,6 +1464,23 @@ namespace Assets.Scripts.Net
 					GapEmaMs = GapEmaMs <= 0f ? gapMs : GapEmaMs * 0.9f + gapMs * 0.1f;
 					float dev = Mathf.Abs(gapMs - GapEmaMs);
 					JitterEmaMs = JitterEmaMs <= 0f ? dev : JitterEmaMs * 0.9f + dev * 0.1f;
+					// 突发窗口统计 + 事件日志(2026-09-14,smoothing-comparison §四):>250ms 到达间隔
+					// = 突发静默(真实 Steam relay 特征,NetSim 均匀延迟下不会出现)。
+					// 用于区分"网络突发"(接收端 gap 大)与"发送端突发"(对端 sendGap 大)。
+					if (gapMs > WinMaxGapMs) WinMaxGapMs = gapMs;
+					if (gapMs > 250f)
+					{
+						WinLongGapCount++;
+						if (arrivalTime - LastGapLogTime > 1f)
+						{
+							LastGapLogTime = arrivalTime;
+							Mod.LogLobby("MP gap P" + PlayerId + ": gap=" + gapMs.ToString("F0") + "ms" +
+								" gapEMA=" + GapEmaMs.ToString("F0") + "ms" +
+								" jitterEMA=" + JitterEmaMs.ToString("F0") + "ms" +
+								" mRate=" + SenderMotionRate.ToString("F3") +
+								" stall=" + PktStallCount);
+						}
+					}
 				}
 				// 保存上一包到达时间(倍率测量用),再覆盖 _lastPushTime。
 				// ⚠️ 2026-09-13 五轮:此前 `_lastPushTime = arrivalTime` 在前、倍率块在后,
@@ -1427,9 +1495,12 @@ namespace Assets.Scripts.Net
 				// 否则慢放时外推按真实时间推进、包位置却按发送端缩放时间走 → 每包向后锯齿(实测慢放最严重)。
 				// ⚠️ 2026-09-13 四轮实测:用户的慢放是 Unity Time.timeScale<1,但游戏 FlightState.Time 不缩放
 				// (对端 rate 恒 1.000)→ 包时间测不出慢放!真正可靠的测量是"包位置运动倍率"(见下)。
+				// F1 修正(2026-09-14):给 VirtualAge 用的「包内容间隔」(见下方扣除处注释)。
+				float contentGapSec = -1f;
 				if (_lastPktTime >= 0 && prevArrival >= 0)
 				{
 					double dtPkt = packetTime - _lastPktTime;
+					if (dtPkt > 0.0 && dtPkt < 600.0) contentGapSec = (float)dtPkt; // 坏包/时间回绕 → 不采用
 					float dtReal = arrivalTime - prevArrival;
 					if (dtReal > 0.001f)
 					{
@@ -1438,9 +1509,31 @@ namespace Assets.Scripts.Net
 						{
 							SenderTimeRate = SenderTimeRate <= 0f ? rate : SenderTimeRate * 0.9f + rate * 0.1f;
 						}
+						// F1(2026-09-14):发送端发包间隔估计(包时间差 EMA,钳 [0.02,0.1]s)。
+						// FlightState.Time 慢放不缩放 → 该值≈名义发包间隔(50ms),慢放由 mRate 管,不受影响;
+						// 发送端卡顿(间隔变大)时被钳制到 0.1s,不无限膨胀。
+						if (dtPkt > 0.0)
+						{
+							float est = (float)Math.Min(Math.Max(dtPkt, 0.02), 0.1);
+							SendIntervalEst = SendIntervalEst <= 0f ? est : SendIntervalEst * 0.9f + est * 0.1f;
+						}
 					}
 				}
 				_lastPktTime = packetTime;
+
+				// F1(2026-09-14):虚拟 age 时钟。每包到达扣除发送端发包间隔估计 SendIntervalEst
+				// (在上一块 dtPkt 处 EMA 更新)—— 突发背靠背时扣 0.05 而非归零 → 目标连续(见字段注释)。
+				VirtualAge -= SendIntervalEst > 0f ? SendIntervalEst : 0.05f;
+				// F1(2026-09-14):虚拟 age 时钟(每帧 +dt,见 UpdateRemoteCrafts)。每包到达扣除
+				// **该包与上一包的「内容时间增量」contentGapSec**(= 发送端 FlightState.Time 之差):
+				// 突发背靠背时扣≈0.05 而非归零 → 目标连续(见字段注释的连续性证明)。
+				// ⚠️ 2026-09-14 修:原先固定扣 SendIntervalEst(EMA,钳 [0.02,0.1])——**丢一个包时实际内容增量
+				// 是 2×间隔,却只扣 1×**,每丢一包就永久多出约一个间隔(只在下界钳 0、正向无界)→ age 单调累积,
+				// 越过 gapFreeze 阈值后长期卡在"冻结"分支(ext 丢掉 age 项)且包恢复后也回不来 → "停→冲"顿挫
+				// (MP gapfreeze 日志的来源之一)。改用真实内容增量后:每帧累加与每包扣减自动配平(丢包 / 长静默
+				// 后下一包一次扣完),age 恒定不再漂移;长静默仍正常触发冻结,恢复后自动解冻。
+				VirtualAge -= contentGapSec > 0f ? contentGapSec : (SendIntervalEst > 0f ? SendIntervalEst : 0.05f);
+				if (VirtualAge < 0f) VirtualAge = 0f;
 
 				// 发送端运动倍率(2026-09 四轮,位置基):相邻两包位置位移 ÷ (速度 × 真实到达间隔)。
 				// 正常飞行:位移 = v×dtReal → 倍率≈1;发送端慢放(Unity timeScale<1):位移 = v×dtReal×ts → 倍率=ts;
@@ -1449,13 +1542,20 @@ namespace Assets.Scripts.Net
 				if (HasLastPktPos && prevArrival >= 0)
 				{
 					float mDtReal = arrivalTime - prevArrival;
+					// F2'(2026-09-14):到达间隔慢 EMA 作 mRate 分母,抗突发(瞬时间隔 0/几百 ms 交替会把
+					// mRate 打到 0.03~1.14,实测)。慢 EMA 收敛到平均间隔 → 稳态 mRate≈1。
 					if (mDtReal > 0.001f)
+					{
+						MArrivalEma = MArrivalEma <= 0f ? mDtReal : MArrivalEma * 0.99f + mDtReal * 0.01f;
+					}
+					float mDtUse = MArrivalEma > 0f ? MArrivalEma : mDtReal;
+					if (mDtUse > 0.001f)
 					{
 						double dPos = Vector3d.Distance(data.Position, LastPktPos);
 						float v = (float)data.Velocity.magnitude;
 						if (v > 1f && dPos > 0.001)
 						{
-							float mRate = (float)(dPos / (v * mDtReal));
+							float mRate = (float)(dPos / (v * mDtUse));
 							if (mRate > 0.0f && mRate < 10f) // 过滤坏包(加速段 v 突变会瞬时失真,EMA 摊平)
 							{
 								float newMotionRate = SenderMotionRate * 0.9f + mRate * 0.1f;
@@ -2021,8 +2121,19 @@ namespace Assets.Scripts.Net
 						// 目标随时间持续以最新速度前进 → 包到达/丢失/突发都不再让目标跳变 → 消除"一卡一卡"。
 						// 旧逻辑外推量固定为 gapEMA(仅≈发包间隔,500ms+ 真实网络延迟下严重低估→幽灵恒滞后→大跳)。
 						// SP2 用 physicsTime-senderTime 测单向延迟;我们没有时钟同步,用 RTT/2 近似(OnPong 更新)。
-						float latencySec = (rc.LatencyMs > 0f ? rc.LatencyMs : rc.GapEmaMs) / 1000f;
-						float age = Time.unscaledTime - rc.NewestArrivalTime;
+						// F3(2026-09-14,smoothing-comparison §五 / README §三):单向延迟 EMA —— RTT/2 裸值随 ping 抖动,
+						// 直接进 ext 会晃目标(0.95/0.05 → 时间常数≈1s;首测直取)。
+						float latencySec;
+						if (rc.LatencyMs > 0f)
+						{
+							rc.LatencyEmaMs = rc.LatencyEmaMs <= 0f ? rc.LatencyMs : rc.LatencyEmaMs * 0.95f + rc.LatencyMs * 0.05f;
+							latencySec = rc.LatencyEmaMs / 1000f;
+						}
+						else latencySec = rc.GapEmaMs / 1000f;
+						// F1(2026-09-14):虚拟 age 时钟替代"距最新包到达的真实时间"。每帧 +dt,
+						// 每包到达 −SendIntervalEst(PushSample 内)→ 突发到达时目标连续(锯齿消除,见字段注释)。
+						rc.VirtualAge += Time.unscaledDeltaTime;
+						float age = rc.VirtualAge;
 						// ★ 暂停/冻结保护(2026-09,修"飞船有速度时暂停→观察方位置抽搐"):
 						// 发送端暂停后 Position 冻结、Velocity 仍是非零旧值(暂停前最后一刻的速度)。
 						// 此时若继续 Position + Velocity×age:每包到达把目标拉回近处、包间又按速度推进
@@ -2053,14 +2164,39 @@ namespace Assets.Scripts.Net
 						}
 						rc.LastAgeNowSec = ageNow;
 						float ext;
-						if (age > Mathf.Max(rc.GapEmaMs * 3f / 1000f, 0.25f))
+						float gapFreezeThr = Mathf.Max(rc.GapEmaMs * 3f / 1000f, 0.25f);
+						bool gapFreezeNow = age > gapFreezeThr;
+						if (gapFreezeNow)
 						{
 							// 发送端长时间无包(断连/暂停):冻结在最新已知位置+固定外推,不再随 age 前进(防幽灵飞走)
+							// ⚠️ 2026-09-14 顿挫诊断:真实 Steam relay 突发下普通静默(>250ms)也会命中此分支
+							// → 目标停止 → 包到达后追赶 → "停→冲"(smoothing-comparison §四 机制 B)。
+							// MP gapfreeze 事件日志(配合 MP gap)用于确认是否被突发误触发。
 							ext = latencySec;
 						}
 						else
 						{
 							ext = latencySec + ageNow; // 正常:持续外推;冻结期:ageNow→0 → ext→latencySec
+						}
+						if (gapFreezeNow != rc.GapFreezeActive)
+						{
+							rc.GapFreezeActive = gapFreezeNow;
+							if (gapFreezeNow)
+							{
+								rc.WinGapFreezeHits++;
+								Mod.LogLobby("MP gapfreeze P" + rc.PlayerId +
+									": ENTER age=" + age.ToString("F3") + "s thr=" + gapFreezeThr.ToString("F3") + "s" +
+									" gapEMA=" + rc.GapEmaMs.ToString("F0") + "ms" +
+									" mRate=" + rc.SenderMotionRate.ToString("F3") +
+									" vel=" + latest.Velocity.magnitude.ToString("F1") + "m/s" +
+									" ext→" + ext.ToString("F3") + "s");
+							}
+							else
+							{
+								Mod.LogLobby("MP gapfreeze P" + rc.PlayerId +
+									": EXIT age=" + age.ToString("F3") + "s thr=" + gapFreezeThr.ToString("F3") + "s" +
+									" mRate=" + rc.SenderMotionRate.ToString("F3"));
+							}
 						}
 						// 换算到发送端时间基:慢放(发送端 timeScale<1)时发送端包位置只按缩放时间推进,
 						// 若外推仍按真实时间跑 → 目标每包"超前→拉回"锯齿(幅度 v×发包间隔×(1−倍率),慢放最严重)。
@@ -2069,6 +2205,11 @@ namespace Assets.Scripts.Net
 						// (包时间倍率恒 1.000),只有包位置位移如实反映慢放(2026-09-13 四轮)。
 						ext *= rc.SenderMotionRate;
 						if (ext > 1.0f) ext = 1.0f; // 安全上限 1s
+						// 顿挫诊断窗口量(2026-09-14):ext / mRate 的 3s 摆动幅度 + 单帧渲染位移峰值。
+						rc.LastExtSec = ext;
+						if (ext > rc.WinExtMax) rc.WinExtMax = ext;
+						if (rc.SenderMotionRate < rc.WinMRateMin) rc.WinMRateMin = rc.SenderMotionRate;
+						if (rc.SenderMotionRate > rc.WinMRateMax) rc.WinMRateMax = rc.SenderMotionRate;
 						latest.Position = latest.Position + latest.Velocity * ext;
 						// 2 阶外推(2026-09-14,acceleration-smoothing):加速度项 ½·a·ext²。
 						// ext 已 ×SenderMotionRate 换算到发送端时间基 → 加速度项 = ½·a·(ext·mRate)²,
@@ -2114,6 +2255,7 @@ namespace Assets.Scripts.Net
 						rc.LastMoveDeltaM = rc.HasApplied ? Vector3d.Distance(latest.Position, rc.LastRenderedPos) : 0.0;
 						rc.LastRenderedPos = latest.Position;
 						rc.MoveSumM += rc.LastMoveDeltaM;
+						if (rc.LastMoveDeltaM > rc.WinMoveMaxM) rc.WinMoveMaxM = (float)rc.LastMoveDeltaM;
 						// 朝向累计变化:慢旋转同样会被感知为"滑动"(尤其 body 相对质心有偏移时)
 						if (rc.HasApplied)
 						{
@@ -2136,7 +2278,13 @@ namespace Assets.Scripts.Net
 						// 3s 窗口累计量:F2/F1 精度下 0.1m/s 级慢漂移显示为 0.00,必须用累计量+高精度捕捉。
 						double move3s = rc.MoveSumM, pktJump = rc.PktJumpM;
 						double headDeg = rc.HeadDeg3s;
+						// 顿挫诊断窗口量(2026-09-14):⚠️ 先取局部、再清零、后打印(此前清零在前 → 恒打印 0)。
+						float wMRateMin = rc.WinMRateMin, wMRateMax = rc.WinMRateMax, wExtMax = rc.WinExtMax;
+						float wMaxGap = rc.WinMaxGapMs, wGapFreeze = rc.WinGapFreezeHits, wMoveMax = rc.WinMoveMaxM;
+						int wLongGap = rc.WinLongGapCount;
 						rc.MoveSumM = 0; rc.PktJumpM = 0; rc.HeadDeg3s = 0;
+						rc.WinGapFreezeHits = 0; rc.WinMRateMin = 1f; rc.WinMRateMax = 1f; rc.WinExtMax = 0f;
+						rc.WinMaxGapMs = 0f; rc.WinLongGapCount = 0; rc.WinMoveMaxM = 0f;
 						string newestPos = "?", vel = "?", accStr = "?", wStr = "?";
 						try
 						{
@@ -2154,11 +2302,16 @@ namespace Assets.Scripts.Net
 						try { headYaw = rc.SmoothedSrfRel.ToQuaternion().eulerAngles.y.ToString("F1"); } catch { }
 						Mod.LogLobby("MP smoothing P" + rc.PlayerId +
 							": buf=" + rc.BufferCount + "/" + RemoteCraft.BufferCapacity +
-							" rtt/2=" + (rc.LatencyMs > 0f ? rc.LatencyMs.ToString("F0") : "?") + "ms" +
+							" rtt/2=" + (rc.LatencyMs > 0f ? (rc.LatencyEmaMs > 0f ? rc.LatencyEmaMs : rc.LatencyMs).ToString("F0") : "?") + "ms" +
 							" gapEMA=" + rc.GapEmaMs.ToString("F0") + "ms jitterEMA=" + rc.JitterEmaMs.ToString("F0") + "ms" +
 							" frames=" + rc.TotalFrames + " snap=" + rc.SnapFrames + " extrap=" + rc.ExtrapolatedFrames +
 							" frozen=" + rc.FrozenFrames + " paused=" + (rc.RemotePaused ? 1 : 0) +
 							" rate=" + rc.SenderTimeRate.ToString("F3") + " mRate=" + rc.SenderMotionRate.ToString("F3") +
+							" mRateWin=(" + wMRateMin.ToString("F2") + "," + wMRateMax.ToString("F2") + ")" +
+							" extWin=(max=" + wExtMax.ToString("F3") + "s)" +
+							" gapWin=(max=" + wMaxGap.ToString("F0") + "ms,>250ms=" + wLongGap + ")" +
+							" gapFreeze=" + wGapFreeze.ToString("F0") +
+							" moveMax=" + wMoveMax.ToString("F2") + "m" +
 							" ageNow=" + rc.LastAgeNowSec.ToString("F3") + "s stall=" + rc.PktStallCount +
 							" pkΔ=" + rc.PktFreezeDeltaM.ToString("F4") + "m" +
 							" interpPct=" + rc.InterpPct.ToString("F2") +

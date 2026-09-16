@@ -91,7 +91,7 @@
 
 - [`latency-smoothing-2026-08-22.md`](archive/latency-smoothing-2026-08-22.md) §9(现行接收端管线;§9.18 有本方案交叉引用)
 - [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md)(body 级位姿;body 级角速度外推列为后续,不在本方案 P0/P1)
-- [`remote-craft-velocity-2026-09-13.md`](remote-craft-velocity-2026-09-13.md)(速度域的另一处 1 阶缺口,与本方案独立)
+- [`proposals/remote-craft-velocity-2026-09-13.md`](proposals/remote-craft-velocity-2026-09-13.md)(速度域的另一处 1 阶缺口,与本方案独立)
 
 ---
 
