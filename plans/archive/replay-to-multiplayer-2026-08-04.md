@@ -3,19 +3,20 @@
 > 项目：JNOMultiPlayer（SR2 模组 MultiPlayer）
 > 参照源码：`<JNO_CODE>`（SimpleRockets2 反编译 + ModApi）
 > 日期：2026-08-04
+> 状态：📋 **历史分析（已归档，保留作选型/架构论证存档）**；大部分结论已落地（传输层 / 平滑 / 多 craft 均已转为独立 plan），残余"下一步重心"见索引页。
 
 ## 〇、归档修订 · 经验教训（2026-08 追记）
 
 > 本文是联机改造的**早期可行性论证**（历史文档，大部分结论已落地）。以下为最终结果与经验教训。
 
-**最终结果**：M1~M3 全部落地（含**平滑插帧**——带时间戳环形缓冲 + `RenderDelayMs` 延迟补偿）；传输层演进 **UDP → 自建 TCP → Steam P2P**（当前默认 Steam，TCP 保留做 VM debug）；"**多 craft / body 同步 / 对接 / 残骸**"整体转入 [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md)（方案研究阶段）；**FishNet 最终否决**（见 [`steam-integration-2026-08-13.md`](steam-integration-2026-08-13.md) 决策记录）；"同一行星系统"确认为硬约束决策（见 multi-craft-sync §8.1-1，暂不做跨行星）。
+**最终结果**：M1~M3 全部落地（含**平滑插帧**——带时间戳环形缓冲 + `RenderDelayMs` 延迟补偿）；传输层演进 **UDP → 自建 TCP → Steam P2P**（当前默认 Steam，TCP 保留做 VM debug）；"**多 craft / body 同步 / 对接 / 残骸**"整体转入 [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md)（方案研究阶段）；**FishNet 最终否决**（见 [`steam-integration-2026-08-13.md`](steam-integration-2026-08-13.md) 决策记录）；"同一行星系统"确认为硬约束决策（见 multi-craft-sync §8.1-1，暂不做跨行星）。
 
 **经验教训**：
 
 1. **本报告的核心结论被验证**：`SpawnCraft` / `AddCraft` / `LoadCraftImmediate` + `CraftNodeAdded/Removed` 公开 API + 游戏原生多飞船场景，确实构成了联机所需 ~90% 的基础——值得先做源码可行性论证再动手。
 2. **传输层演进验证了"薄接口"价值**：UDP → TCP → Steam 每次只换 `Transport` 字段，上层房间/状态/XML 零改动（最终沉淀为 `IMpTransport`，见 [`tcp-transport-2026-08-15.md`](tcp-transport-2026-08-15.md)）。
 3. **框架级多人方案在"运行时加载 mod"场景不可行**：FishNet 高层 API 依赖 codegen，mod DLL 运行时加载无序列化器 → 只能自建传输层 + 自持同步逻辑。
-4. **幻影模式解决物理一致性**：`AllowPlayerControl=false` + 关物理（[`CraftUtils.DisableCraftPhysicCalculation`](../Assets/Scripts/CraftUtils.cs) + `SetPhysicsEnabled(false, Warp)`）避免两端物理抖动；代价是碰撞/对接需事件化处理（已转入 multi-craft 边界排查 §8）。
+4. **幻影模式解决物理一致性**：`AllowPlayerControl=false` + 关物理（[`CraftUtils.DisableCraftPhysicCalculation`](../../Assets/Scripts/CraftUtils.cs) + `SetPhysicsEnabled(false, Warp)`）避免两端物理抖动；代价是碰撞/对接需事件化处理（已转入 multi-craft 边界排查 §8）。
 5. **稳定性修复经验（都值得记）**：管理器 `DontDestroyOnLoad` 跨场景存活；TCP `SendTimeout` 防主线程写阻塞卡死；远程飞船协程延迟生成防白屏；玩家离开用 `DestroyCraft()` 真销毁防残留幽灵。
 6. **朝向同步是最难的一块**（游戏每帧用 pod 座椅朝向覆盖根朝向 + 跨机行星自转角差）——最终用 Luna 的 **srfRel（相对地表朝向）** 解决，见 [`heading-sync-2026-08-17.md`](heading-sync-2026-08-17.md)。
 
@@ -42,22 +43,22 @@
 - **不存在**任何 Socket/TCP/UDP 多人框架、房间、同步逻辑。网络层需完全自建。
 
 ### 2.2 飞行场景原生支持多艘飞船 ✅（最关键基础）
-- [`FlightState.CraftNodes`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/State/FlightState.cs:120) 是 `List<CraftNode>`，公开只读，游戏本身就管理多艘飞船（残骸、对接、多节点）。
-- 有 `CraftNodeAdded` / `CraftNodeRemoved` 事件（[`FlightState.cs`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/State/FlightState.cs:111)），可监听玩家加入/离开。
-- **运行时动态添加飞船节点**：公开方法 [`FlightState.AddCraft(CraftNode, CraftNode originalNode)`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/State/FlightState.cs:320)，自动分配 `NodeId`、注册到 MapView、触发 `CraftNodeAdded`。
+- `FlightState.CraftNodes` 是 `List<CraftNode>`，公开只读，游戏本身就管理多艘飞船（残骸、对接、多节点）。
+- 有 `CraftNodeAdded` / `CraftNodeRemoved` 事件（`FlightState.cs`），可监听玩家加入/离开。
+- **运行时动态添加飞船节点**：公开方法 `FlightState.AddCraft(CraftNode, CraftNode originalNode)`，自动分配 `NodeId`、注册到 MapView、触发 `CraftNodeAdded`。
 
 ### 2.3 可在飞行场景中生成"别的玩家"的飞船 ✅
-- 公开方法 [`FlightSceneScript.SpawnCraft(string name, CraftData craftData, LaunchLocation location, XElement pendingXml)`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/Flight/FlightSceneScript.cs:735)：输入飞船设计数据 + 发射位置，在飞行场景实例化一艘新飞船并加入 FlightState。
-- 公开接口 [`ICraftLoader.LoadCraftImmediate(XElement craftXml)`](<MOD_API>/Craft/ICraftLoader.cs:13)：从 **craft XML 字符串**直接加载 `CraftData`。
+- 公开方法 `FlightSceneScript.SpawnCraft(string name, CraftData craftData, LaunchLocation location, XElement pendingXml)`：输入飞船设计数据 + 发射位置，在飞行场景实例化一艘新飞船并加入 FlightState。
+- 公开接口 `ICraftLoader.LoadCraftImmediate(XElement craftXml)`：从 **craft XML 字符串**直接加载 `CraftData`。
 - 组合使用：**收到其他玩家的 craft XML → LoadCraftImmediate → SpawnCraft**，即可在他机器上复现对方飞船。
-- 参考运行时创建 CraftNode 的完整范例：[`CraftSplitter.SplitCraftNode`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/Flight/Sim/CraftSplitter.cs:105)（残骸分裂）展示如何创建 CraftNode、挂接物理 CraftScript、加入 FlightState。
+- 参考运行时创建 CraftNode 的完整范例：`CraftSplitter.SplitCraftNode`（残骸分裂）展示如何创建 CraftNode、挂接物理 CraftScript、加入 FlightState。
 
 ### 2.4 玩家控制权可精细控制 ✅
-- `CraftNode.AllowPlayerControl`：模组在 [`Record()`](Assets/Scripts/Mod.cs:403) 中已使用（`node.AllowPlayerControl = false`）。
+- `CraftNode.AllowPlayerControl`：模组在 `Record()` 中已使用（`node.AllowPlayerControl = false`）。
 - 联机策略：**本机玩家飞船 `AllowPlayerControl = true`；远程飞船 `false`**，避免本地玩家误操控他人飞船。
 
 ### 2.5 时间系统统一驱动所有节点 ✅（需同步）
-- [`TimeManager`](<JNO_CODE>/SimpleRockets2/Assets/Scripts/Flight/TimeManager.cs:21) 多档时间：暂停(0) / 慢动作 / 实时(1x) / 快进 / 时间加速(warp)。
+- `TimeManager` 多档时间：暂停(0) / 慢动作 / 实时(1x) / 快进 / 时间加速(warp)。
 - 所有 `CraftNode.UpdateCraft(elapsedTime, currentTime)` 由统一时间驱动，`FlightState.Time` 是全局飞行时间（`IGameTime`）。
 - 联机策略：**限制 1x 实时（NormalSpeedMode），暂停需主机广播**；warp 会让同步复杂度剧增，MVP 阶段禁用。
 
@@ -69,12 +70,12 @@
 
 | Replay 组件 | 职责 | 联机复用方式 |
 |---|---|---|
-| [`recdata`](Assets/Scripts/Mod.cs:239) | 位置/速度/朝向/控制输入/激活组/分级 | **直接作为网络包载荷**，仅需加时间戳与 NodeId |
-| [`RecordSystem.Record()`](Assets/Scripts/Mod.cs:388) | 采样飞船状态 | 改为"本机飞船状态 → 发送到网络" |
-| [`ReplaySystem.Replay()`](Assets/Scripts/Mod.cs:541) | 插值应用远端状态 | 改为"收到网络数据 → 插值应用"，**几乎不变** |
-| [`CraftUtils.InterpolatedTransform`](Assets/Scripts/CraftUtils.cs:246) | 位置/速度/朝向插值 | **直接复用**（联机状态平滑的核心） |
-| [`CraftUtils.RecalculateFrameState`](Assets/Scripts/CraftUtils.cs:31) | 参考系换算/刚体刷新 | **直接复用** |
-| [`CraftUpdatePatch`](Assets/Scripts/Mod.cs:651) | Harmony Postfix 驱动 Record/Replay | 扩展为驱动"本地发送 + 远程接收应用" |
+| [`recdata`](../../Assets/Scripts/Mod.cs:239) | 位置/速度/朝向/控制输入/激活组/分级 | **直接作为网络包载荷**，仅需加时间戳与 NodeId |
+| `RecordSystem.Record()` | 采样飞船状态 | 改为"本机飞船状态 → 发送到网络" |
+| `ReplaySystem.Replay()` | 插值应用远端状态 | 改为"收到网络数据 → 插值应用"，**几乎不变** |
+| `CraftUtils.InterpolatedTransform` | 位置/速度/朝向插值 | **直接复用**（联机状态平滑的核心） |
+| [`CraftUtils.RecalculateFrameState`](../../Assets/Scripts/CraftUtils.cs:31) | 参考系换算/刚体刷新 | **直接复用** |
+| `CraftUpdatePatch` | Harmony Postfix 驱动 Record/Replay | 扩展为驱动"本地发送 + 远程接收应用" |
 
 **关键洞察**：Replay 的 `frame` 索引 → 联机改为网络包的时间戳缓冲队列；`RecordData[frame]` → 网络接收的环形缓冲。插值（lerp）逻辑、`SetCraftTransform`、`RecalculateFrameState` 全部原样复用。
 
@@ -141,7 +142,7 @@ MPStatePacket
 |---|---|---|---|
 | **FishNet**（默认 LiteNetLib transport） | 开源 MIT、维护活跃；开箱即用的连接管理/RPC/对象生成/序列化/时间同步与 NetworkTransform，底层即 LiteNetLib | 框架较完整，需注意**不接管 SR2 场景**、避免直接挂载游戏飞船对象 | **首选**：省去大量脚手架，同时保留对同步逻辑的完全控制 |
 | **LiteNetLib**（UDP） | 轻量、Unity 友好、自带可靠通道/连接/序列化、延迟补偿工具 | 需自行实现 RPC/对象生成/时间同步等上层逻辑 | 次选：若仅需最小依赖 |
-| 原始 UDP `System.Net.Sockets` | 零依赖（[`DataProcess.cs`](Assets/Scripts/DataProcess.cs) 已预留 using） | 需手写可靠传输/连接/序列化，工作量最大 | 若完全不想引外部依赖则选此 |
+| 原始 UDP `System.Net.Sockets` | 零依赖（当时的 `DataProcess.cs` 已预留 using；该文件已于 2026-08-06 移除） | 需手写可靠传输/连接/序列化，工作量最大 | 若完全不想引外部依赖则选此 |
 | Mirror / UNET / Photon | 功能全 | 面向"游戏引擎级"多人，体积大、与单机 SR2 场景模型冲突 | 不推荐（与游戏自身的单机场景/存档机制难以集成） |
 
 > **【已过时 · 最终决策 2026-08-13】** 上表"首选 FishNet"未成真——**FishNet 高层 API 被 codegen 否决**（mod DLL 运行时加载无序列化器）。实际采用**自建传输层**：UDP 弃用 → 自建 TCP → **Steam P2P（默认）**，LiteNetLib 备用。详见 [`steam-integration-2026-08-13.md`](steam-integration-2026-08-13.md) / [`tcp-transport-2026-08-15.md`](tcp-transport-2026-08-15.md)。"FishNet 集成要点"（下文 1~5）仅作框架选型教训存档，未实施。
@@ -174,7 +175,7 @@ MPStatePacket
 
 ### 6.4 低 · 飞船设计/存档一致性
 - 联机各方必须**同一行星系统**（`FlightStateData.PlanetarySystem`）才能 `SpawnCraft`。MVP 要求房主指定同一行星系统，或广播行星系统文件。
-- 【已决策 2026-08】确认为硬约束：**所有玩家同一行星系统（房主指定），暂不做跨行星**；"广播行星系统文件"未实施（见 [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) §8.1-1）。
+- 【已决策 2026-08】确认为硬约束：**所有玩家同一行星系统（房主指定），暂不做跨行星**；"广播行星系统文件"未实施（见 [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md) §8.1-1）。
 
 ### 6.5 低 · 模组对反编译内部代码的依赖
 - 模组依赖 `Assets.Scripts.Flight / Craft / State` 内部命名空间（通过 `<JNO_CODE>` 源码引用编译），**游戏更新可能破坏 API**。需固定游戏版本。
@@ -184,34 +185,34 @@ MPStatePacket
 ## 七、实施里程碑（建议拆分）
 
 ### M1 · 网络原型（最小闭环） ✅
-- [x] 网络传输（自建 TCP [`TcpTransport`](Assets/Scripts/Net/TcpTransport.cs)，早期 UDP 已弃用；含发送超时防挂死）
+- [x] 网络传输（自建 TCP [`TcpTransport`](../../Assets/Scripts/Net/TcpTransport.cs)，早期 UDP 已弃用；含发送超时防挂死）
 - [x] 局域网/公网 IP 直连 + 房间（房主/加入者）基础流程（HostLobby/JoinLobby/StopLobby）
-- [x] 状态包序列化（基于 recdata + NodeId + 时间戳）（[`MpMessages.EncodeState`](Assets/Scripts/Net/MpMessage.cs)）
-- [x] 本机飞船状态定时发送（20Hz，[`ProcessOutgoing`](Assets/Scripts/Net/MpNetworkManager.cs)）
-- [x] 保活/心跳（[`SendKeepAlive`](Assets/Scripts/Net/MpNetworkManager.cs)，1s 心跳）
+- [x] 状态包序列化（基于 recdata + NodeId + 时间戳）（[`MpMessages.EncodeState`](../../Assets/Scripts/Net/MpMessage.cs)）
+- [x] 本机飞船状态定时发送（20Hz，[`ProcessOutgoing`](../../Assets/Scripts/Net/MpNetworkManager.cs)）
+- [x] 保活/心跳（[`SendKeepAlive`](../../Assets/Scripts/Net/MpNetworkManager.cs)，1s 心跳）
 
 ### M2 · 飞船加载与显示 ✅
-- [x] 玩家加入时交换完整 craft XML（[`RefreshLocalCraft`](Assets/Scripts/Net/MpNetworkManager.cs) 上报本机飞船 XML）
+- [x] 玩家加入时交换完整 craft XML（[`RefreshLocalCraft`](../../Assets/Scripts/Net/MpNetworkManager.cs) 上报本机飞船 XML）
 - [x] 连接保活 + 超时放宽（`TimeoutMs=60s`，避免加入/场景重载被踢）
-- [x] `LoadCraftImmediate` + `SpawnCraft` 生成远程飞船（[`SpawnRemoteCraftAtPosition`](Assets/Scripts/Net/MpNetworkManager.cs)，协程延迟生成防白屏）
+- [x] `LoadCraftImmediate` + `SpawnCraft` 生成远程飞船（[`SpawnRemoteCraftAtPosition`](../../Assets/Scripts/Net/MpNetworkManager.cs)，协程延迟生成防白屏）
 - [x] `NodeId → CraftNode` 映射管理（`_remoteCrafts`）
-- [x] 远程飞船 `AllowPlayerControl = false` + 禁用物理（[`CraftUtils.DisableCraftPhysicCalculation`](Assets/Scripts/CraftUtils.cs) + `SetPhysicsEnabled(false, Warp)`）
+- [x] 远程飞船 `AllowPlayerControl = false` + 禁用物理（[`CraftUtils.DisableCraftPhysicCalculation`](../../Assets/Scripts/CraftUtils.cs) + `SetPhysicsEnabled(false, Warp)`）
 
 ### M3 · 状态同步与插值（进行中）
 - [x] 复用 `CraftUtils.RecalculateFrameState` 应用远程状态
 - [x] 朝向同步（srfRel 相对地表朝向，双端实测通过，详见 `heading-sync-2026-08-17.md`）
 - [x] 掉线/超时处理（`TimeoutMs=60s`，超时移除飞船）
-- [x] 玩家离开时移除远程飞船（[`RemoveRemoteCraft`](Assets/Scripts/Net/MpNetworkManager.cs)，用 `DestroyCraft()` 真正销毁，不再 `SetActive(false)` 隐藏）
+- [x] 玩家离开时移除远程飞船（[`RemoveRemoteCraft`](../../Assets/Scripts/Net/MpNetworkManager.cs)，用 `DestroyCraft()` 真正销毁，不再 `SetActive(false)` 隐藏）
 - [x] 平滑插帧：带时间戳环形缓冲 + 延迟补偿（100~150ms）——**✅ 已实现**（`UpdateRemoteCrafts` 环形缓冲 + `RenderDelayMs`）
-- [~] Body 同步：位置/速度/角速度 + 分离/对接/残骸事件——**部分完成（仅 BodyRotations 旋转），整体已转移至 [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) MC2**
+- [~] Body 同步：位置/速度/角速度 + 分离/对接/残骸事件——**部分完成（仅 BodyRotations 旋转），整体已转移至 [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md) MC2**
 
 ### M4 · 时间与事件同步（未做）【归档修订 2026-08】
-- [~] 强制 1x 实时 + 暂停广播（`OnPause` 已实现但暂禁用）——**MVP 锁定 1x 实时为设计约束**（不做 warp 同步，见 [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) §六约束）；
+- [~] 强制 1x 实时 + 暂停广播（`OnPause` 已实现但暂禁用）——**MVP 锁定 1x 实时为设计约束**（不做 warp 同步，见 [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md) §六约束）；
 - [ ] 时钟偏移校准（基于包时间戳 RTT）——未实现（MVP 插值以到达时间 + `RenderDelayMs` 为准）；
 - [~] 基础事件消息（对接/分离/爆炸）广播——【已转移】对接/分离由 `CraftNodeAdded/Removed` 生命周期钩子覆盖（multi-craft-sync MC1）；爆炸/残骸见 §八边界排查。
 
 ### M5 · 联机 UI 与打磨（部分）
-- [x] 联机按钮/房间（[`MultiPlayerUI.cs`](Assets/Scripts/MultiPlayerUI.cs) 中 HostLobby/JoinLobby 按钮 + IP/Port 输入对话框）
+- [x] 联机按钮/房间（[`MultiPlayerUI.cs`](../../Assets/Scripts/MultiPlayerUI.cs) 中 HostLobby/JoinLobby 按钮 + IP/Port 输入对话框）
 - [ ] 延迟/丢包显示
 - [x] 稳定性：管理器 `DontDestroyOnLoad` 跨场景存活、TCP 发送超时防挂死、远程飞船协程生成防白屏
 
@@ -229,25 +230,25 @@ MPStatePacket
 
 ### 9.1 已完成（M1 ~ M3 大部分 ✅）
 
-- **M1 ✅**：自建 TCP 传输（[`TcpTransport`](Assets/Scripts/Net/TcpTransport.cs)，早期 UDP 已弃用）+ 房间流程 + 状态包 + 1s 心跳保活。
+- **M1 ✅**：自建 TCP 传输（[`TcpTransport`](../../Assets/Scripts/Net/TcpTransport.cs)，早期 UDP 已弃用）+ 房间流程 + 状态包 + 1s 心跳保活。
 - **M2 ✅**：完整 craft XML 交换、`LoadCraftImmediate` + `SpawnCraft` 生成远程飞船、NodeId→CraftNode 映射、幻影模式（`AllowPlayerControl=false` + 禁用物理）。
 - **M3 部分 ✅**：朝向同步（srfRel 相对地表朝向）双端实测通过；掉线/超时处理；玩家离开用 `DestroyCraft()` 真正销毁远程飞船。
 
 ### 9.2 近期稳定性修复（2026-08-12）
 
-1. **管理器跨场景存活**：[`EnsureMpManager`](Assets/Scripts/Mod.cs) 给 `MPGameObject` 加 `DontDestroyOnLoad`——修复"切全屏/场景重载导致断线、craft 消失"；
+1. **管理器跨场景存活**：[`EnsureMpManager`](../../Assets/Scripts/Mod.cs) 给 `MPGameObject` 加 `DontDestroyOnLoad`——修复"切全屏/场景重载导致断线、craft 消失"；
 2. **TCP 发送超时**（`SendTimeout=5s`）：修复"别人加入时卡到无响应"（对端同步生成大飞船不读 socket 时，主线程写阻塞被永久卡住）；
-3. **远程飞船协程生成**（[`SpawnRemoteCraftCoroutine`](Assets/Scripts/Net/MpNetworkManager.cs)）：延迟几帧再 `SpawnCraft`，先让网络/回 Ack 流动，降低加入白屏；
-4. **玩家离开/停止联机**用 [`RemoveRemoteCraft`](Assets/Scripts/Net/MpNetworkManager.cs) + `DestroyCraft()` 真正销毁（不再 `SetActive(false)` 隐藏，避免残留幽灵飞船）。
+3. **远程飞船协程生成**（[`SpawnRemoteCraftCoroutine`](../../Assets/Scripts/Net/MpNetworkManager.cs)）：延迟几帧再 `SpawnCraft`，先让网络/回 Ack 流动，降低加入白屏；
+4. **玩家离开/停止联机**用 [`RemoveRemoteCraft`](../../Assets/Scripts/Net/MpNetworkManager.cs) + `DestroyCraft()` 真正销毁（不再 `SetActive(false)` 隐藏，避免残留幽灵飞船）。
 
 ### 9.3 下一步重心（2026-08-12 起）【已归档修订】
 
 > **【归档修订 2026-08】本小节为撰写当时的"下一步"，现状如下（均已落地或转移）：**
 
-1. **Body 同步**：当前仅同步 `BodyRotations`（每 body 相对根的欧拉角）；下一步补 body 位置/速度/角速度，以及分离/对接/残骸事件，彻底消除"分裂/散架"。——【✅ 已转移】转入 [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md)（MC2：body 位置；MC1：分离/对接/残骸事件）。
-2. **平滑插帧**：当前是前后两包线性/Slerp 插值（[`UpdateRemoteCrafts`](Assets/Scripts/Net/MpNetworkManager.cs)）；下一步改为**带时间戳的环形缓冲 + 100~150ms 延迟补偿**，容忍抖动与乱序。——【✅ 已实现】环形缓冲 + `RenderDelayMs` 延迟补偿。
-3. **多 craft 支持**：当前只同步 `FlightSceneScript.Instance.CraftNode`（本机唯一玩家飞船）；下一步支持**每玩家多艘飞船**（NodeId→CraftNode 映射）、残骸/对接后的多节点同步。——【✅ 已转移】整体转入 [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md)（方案研究阶段，含身份/生命周期/无 pod 残骸/边界排查）。
+1. **Body 同步**：当前仅同步 `BodyRotations`（每 body 相对根的欧拉角）；下一步补 body 位置/速度/角速度，以及分离/对接/残骸事件，彻底消除"分裂/散架"。——【✅ 已转移】转入 [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md)（MC2：body 位置；MC1：分离/对接/残骸事件）。
+2. **平滑插帧**：当前是前后两包线性/Slerp 插值（[`UpdateRemoteCrafts`](../../Assets/Scripts/Net/MpNetworkManager.cs)）；下一步改为**带时间戳的环形缓冲 + 100~150ms 延迟补偿**，容忍抖动与乱序。——【✅ 已实现】环形缓冲 + `RenderDelayMs` 延迟补偿。
+3. **多 craft 支持**：当前只同步 `FlightSceneScript.Instance.CraftNode`（本机唯一玩家飞船）；下一步支持**每玩家多艘飞船**（NodeId→CraftNode 映射）、残骸/对接后的多节点同步。——【✅ 已转移】整体转入 [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md)（方案研究阶段，含身份/生命周期/无 pod 残骸/边界排查）。
 
 **开放问题（需确认）**：
-- 网络层已从早期 UDP 切换为自建 TCP（[`TcpTransport`](Assets/Scripts/Net/TcpTransport.cs)），后续是否仍需引入 FishNet？——【✅ 已解决 2026-08-13】**否决 FishNet**（codegen），最终自建 + **Steam P2P 默认**（见 [`steam-integration-2026-08-13.md`](steam-integration-2026-08-13.md)）。
-- 双方测试需处于同一行星系统（M2 生成飞船的前提），如何约定（房主指定行星系统）？——【✅ 已决策】默认同一行星系统（房主指定），暂不做跨行星（见 [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) §8.1-1）。
+- 网络层已从早期 UDP 切换为自建 TCP（[`TcpTransport`](../../Assets/Scripts/Net/TcpTransport.cs)），后续是否仍需引入 FishNet？——【✅ 已解决 2026-08-13】**否决 FishNet**（codegen），最终自建 + **Steam P2P 默认**（见 [`steam-integration-2026-08-13.md`](steam-integration-2026-08-13.md)）。
+- 双方测试需处于同一行星系统（M2 生成飞船的前提），如何约定（房主指定行星系统）？——【✅ 已决策】默认同一行星系统（房主指定），暂不做跨行星（见 [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md) §8.1-1）。

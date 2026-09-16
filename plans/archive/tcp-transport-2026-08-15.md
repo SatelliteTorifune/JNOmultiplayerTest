@@ -10,7 +10,7 @@
 
 > 本文是"最小改动版"方案，已按 3.1~3.4 原样落地，代码与文档一致。归档为开发经验记录。
 
-**结论**：`IMpTransport` 接口 + `TcpTransport`/`SteamTransport` 实现接口 + `SetTransport()` 切换 + 两条控制台命令均已实现（[`IMpTransport.cs`](../Assets/Scripts/Net/IMpTransport.cs)、[`TcpTransport.cs:18`](../Assets/Scripts/Net/TcpTransport.cs:18)、[`SteamTransport.cs:21`](../Assets/Scripts/Net/SteamTransport.cs:21)、[`MpNetworkManager.cs:249`](../Assets/Scripts/Net/MpNetworkManager.cs:249)）。默认仍是 Steam，不敲 `Tcp*` 命令不影响；VM debug 时 `TcpHostLobby <port>` / `TcpJoinLobby <hostIP> <port>` 切换。
+**结论**：`IMpTransport` 接口 + `TcpTransport`/`SteamTransport` 实现接口 + `SetTransport()` 切换 + 两条控制台命令均已实现（[`IMpTransport.cs`](../../Assets/Scripts/Net/IMpTransport.cs)、[`TcpTransport.cs:18`](../../Assets/Scripts/Net/TcpTransport.cs:18)、[`SteamTransport.cs:21`](../../Assets/Scripts/Net/SteamTransport.cs:21)、[`MpNetworkManager.cs:249`](../../Assets/Scripts/Net/MpNetworkManager.cs:249)）。默认仍是 Steam，不敲 `Tcp*` 命令不影响；VM debug 时 `TcpHostLobby <port>` / `TcpJoinLobby <hostIP> <port>` 切换。
 
 **经验教训**：
 
@@ -24,11 +24,11 @@
 
 ## 一、目标
 
-当前 [`MpNetworkManager.cs:34`](../Assets/Scripts/Net/MpNetworkManager.cs:34) 把 `Transport` 硬编码为 `SteamTransport`。
+当前 [`MpNetworkManager.cs:34`](../../Assets/Scripts/Net/MpNetworkManager.cs:34) 把 `Transport` 硬编码为 `SteamTransport`。
 需求：**把 TCP 加回来作为独立连接方式，仅用于本机 + 虚拟机 debug**，不做多余抽象、不加 UI/设置项，改动越小越好。
 
 - 默认仍是 Steam（不动现有行为）；
-- debug 时用 `TcpHostLobby` / `TcpJoinLobby` 命令切到 `TcpTransport`（[`TcpTransport.cs`](../Assets/Scripts/Net/TcpTransport.cs) 已完整可用）；
+- debug 时用 `TcpHostLobby` / `TcpJoinLobby` 命令切到 `TcpTransport`（[`TcpTransport.cs`](../../Assets/Scripts/Net/TcpTransport.cs) 已完整可用）；
 - 房主监听 `IPAddress.Any:端口`，虚拟机按宿主 IP:端口 连接。
 
 ---
@@ -50,7 +50,7 @@
 
 ### 3.1 新增 `Assets/Scripts/Net/IMpTransport.cs`
 
-只含接口，内容即 [`SteamTransport.cs`](../Assets/Scripts/Net/SteamTransport.cs) / [`TcpTransport.cs`](../Assets/Scripts/Net/TcpTransport.cs) 现有公共成员的声明：
+只含接口，内容即 [`SteamTransport.cs`](../../Assets/Scripts/Net/SteamTransport.cs) / [`TcpTransport.cs`](../../Assets/Scripts/Net/TcpTransport.cs) 现有公共成员的声明：
 
 ```csharp
 using System;
@@ -80,11 +80,11 @@ namespace Assets.Scripts.Net
 
 ### 3.2 两个传输类实现接口（各 1 行）
 
-- [`TcpTransport.cs:18`](../Assets/Scripts/Net/TcpTransport.cs:18)：`public class TcpTransport : IMpTransport`
-- [`SteamTransport.cs:21`](../Assets/Scripts/Net/SteamTransport.cs:21)：`public class SteamTransport : IMpTransport`（`LocalSteamId` 是额外成员，保留，不进接口）
-- [`LiteNetLibTransport.cs`](../Assets/Scripts/Net/LiteNetLibTransport.cs) **不动**
+- [`TcpTransport.cs:18`](../../Assets/Scripts/Net/TcpTransport.cs:18)：`public class TcpTransport : IMpTransport`
+- [`SteamTransport.cs:21`](../../Assets/Scripts/Net/SteamTransport.cs:21)：`public class SteamTransport : IMpTransport`（`LocalSteamId` 是额外成员，保留，不进接口）
+- [`LiteNetLibTransport.cs`](../../Assets/Scripts/Net/LiteNetLibTransport.cs) **不动**
 
-### 3.3 `MpNetworkManager`（[`MpNetworkManager.cs:34`](../Assets/Scripts/Net/MpNetworkManager.cs:34)）
+### 3.3 `MpNetworkManager`（[`MpNetworkManager.cs:34`](../../Assets/Scripts/Net/MpNetworkManager.cs:34)）
 
 ```csharp
 // 原：public SteamTransport Transport = new SteamTransport();
@@ -117,7 +117,7 @@ public void SetTransport(IMpTransport newTransport)
 
 `Awake()` / `OnDestroy()` 里的事件订阅/退订代码保持原样（对接口成员操作）。其余 `Host` / `Join` / `Update` 等调用点**零改动**。
 
-### 3.4 控制台命令（[`Mod.cs:76`](../Assets/Scripts/Mod.cs:76) `RegisterMpCommands`）
+### 3.4 控制台命令（[`Mod.cs:76`](../../Assets/Scripts/Mod.cs:76) `RegisterMpCommands`）
 
 新增两条命令，其余（`HostLobbyPort` / `JoinLobbyPort` / `SteamHostLobby` / `SteamJoinLobby` / `StopLobby`）不动：
 
@@ -146,9 +146,9 @@ DevConsoleApi.RegisterCommand<string, int>("TcpJoinLobby", new Action<string, in
 ## 四、实施步骤（✅ 已全部落地）
 
 1. - [x] 新增 `Assets/Scripts/Net/IMpTransport.cs`（接口）。
-2. - [x] [`TcpTransport.cs`](../Assets/Scripts/Net/TcpTransport.cs) / [`SteamTransport.cs`](../Assets/Scripts/Net/SteamTransport.cs) 各加 `: IMpTransport`（编译期校验签名齐全）。
-3. - [x] [`MpNetworkManager.cs:34`](../Assets/Scripts/Net/MpNetworkManager.cs:34) 字段改 `IMpTransport` + 加 `SetTransport()` 方法。
-4. - [x] [`Mod.cs`](../Assets/Scripts/Mod.cs:76) 注册 `TcpHostLobby` / `TcpJoinLobby`。
+2. - [x] [`TcpTransport.cs`](../../Assets/Scripts/Net/TcpTransport.cs) / [`SteamTransport.cs`](../../Assets/Scripts/Net/SteamTransport.cs) 各加 `: IMpTransport`（编译期校验签名齐全）。
+3. - [x] [`MpNetworkManager.cs:34`](../../Assets/Scripts/Net/MpNetworkManager.cs:34) 字段改 `IMpTransport` + 加 `SetTransport()` 方法。
+4. - [x] [`Mod.cs`](../../Assets/Scripts/Mod.cs:76) 注册 `TcpHostLobby` / `TcpJoinLobby`。
 5. - [x] 回 Unity 编译无报错；**✅ VM 实测可行（2026-08 用户确认）**：本机 `TcpHostLobby 25555` + 虚拟机 `TcpJoinLobby <宿主IP> 25555`，日志链与飞船互见均通过。
 
 ---

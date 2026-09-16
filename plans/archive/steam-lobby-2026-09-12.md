@@ -3,7 +3,7 @@
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod MultiPlayer)
 > 创建日期:2026-09-12
 > 状态:✅ **已归档**(原状态:已落地,2026-09-12 拍板执行;旧决策「Lobby 邀请:不做」翻案,实现见 §4)
-> 动机:当前加入房间必须手动输入房主 SteamId(见 [`MultiPlayerUI.cs:522`](../Assets/Scripts/MultiPlayerUI.cs:522) `OnSteamJoinLobbyClick`),目标是把 SP2 的"房间列表菜单"移植过来,实现"开房可见、点列表加入"。
+> 动机:当前加入房间必须手动输入房主 SteamId(见 [`MultiPlayerUI.cs:522`](../../Assets/Scripts/MultiPlayerUI.cs:522) `OnSteamJoinLobbyClick`),目标是把 SP2 的"房间列表菜单"移植过来,实现"开房可见、点列表加入"。
 
 ---
 

@@ -13,7 +13,7 @@ namespace Assets.Scripts.Net
 	/// - 消息走可靠通道（大 XML / 握手均可靠）；如需状态包不可靠可加 flag 区分（见 SendFlags）。
 	///
 	/// 寻址：Steam 下没有 IP:port，使用 SteamId（64 位）寻址。
-	/// StartClient 的 host 参数传房主 SteamId 字符串（如 "76561199127915239"），port 忽略（占位）。
+	/// StartClient 的 host 参数传房主 SteamId 字符串（如 "7656119xxxxxxxxxx"），port 忽略（占位）。
 	///
 	/// 依赖：com.rlabrecque.steamworks.net.dll（游戏 Managed 自带，已复制到 ModTools/Assemblies）。
 	/// 注意：游戏启动时已 SteamAPI.Init()，本类不重复初始化，直接用 SteamNetworkingSockets。

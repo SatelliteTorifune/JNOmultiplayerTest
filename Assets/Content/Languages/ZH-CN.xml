@@ -22,7 +22,7 @@
     <s id="MultiPlayer.MultiPlayerUI.LobbyUnavailable">Steam 未初始化</s>
     <s id="MultiPlayer.MultiPlayerUI.EnterRoomName">输入房间名称</s>
     <s id="MultiPlayer.MultiPlayerUI.LobbyDefaultRoomName">的房间</s>
-    <s id="MultiPlayer.MultiPlayerUI.LobbyHosted">房间已创建!\n{0} ({1}/{2})\n你的 SteamId: {3}\n\n(房间已出现在房间列表中)</s>
+    <s id="MultiPlayer.MultiPlayerUI.LobbyHosted">房间已创建!\n{0} ({1}/{2})\n你的 SteamId: {3}\n\n</s>
     <s id="MultiPlayer.MultiPlayerUI.LobbyCreateFailed">创建 Steam 房间失败：{0}</s>
     <s id="MultiPlayer.MultiPlayerUI.LobbyJoinFailedFull">加入失败：房间已满</s>
     <s id="MultiPlayer.MultiPlayerUI.LobbyJoinFailedMissing">加入失败：房间不存在</s>
@@ -47,7 +47,7 @@
     <s id="MultiPlayer.MultiPlayerUI.TcpHostStarted">TCP 房间已开启，端口 {0}</s>
     <s id="MultiPlayer.MultiPlayerUI.EnterTcpPort">输入 TCP 房主端口（默认 25555）</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpPort">无效端口：'{0}'</s>
-    <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">输入房主 IP（如 192.168.56.1:25555）</s>
+    <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">输入房主 IP（如 192.168.x.x:25555）</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpHost">无效地址：'{0}'</s>
     <s id="MultiPlayer.MultiPlayerUI.RebuildPanelButton">强制重建面板</s>
     <s id="MultiPlayer.MultiPlayerUI.NetSimGroup">网络延迟模拟（NetSim）</s>
@@ -67,7 +67,7 @@
     <s id="MultiPlayer.MultiPlayerUI.Kicked">你已被房主踢出</s>
     <s id="MultiPlayer.MultiPlayerUI.LoadingCraft">正在加载飞船</s>
     <!-- Update Reminder -->
-    <s id="MultiPlayer.MultiPlayerUI.UpdateAvailable">aMptest 有新版本可用！</s>
+    <s id="MultiPlayer.MultiPlayerUI.UpdateAvailable">联机mod 有新版本可用！</s>
     <s id="MultiPlayer.MultiPlayerUI.UpdateNewVersion">新版本：{0}</s>
     <s id="MultiPlayer.MultiPlayerUI.UpdateCurrentVersion">当前版本：{0}</s>
     <s id="MultiPlayer.MultiPlayerUI.UpdateDownload">下载更新</s>

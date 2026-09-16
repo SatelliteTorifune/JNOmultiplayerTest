@@ -1,7 +1,7 @@
 # SP2 式"异步 prefab 预加载 + 真实百分比加载框"——消除加入时的白屏卡顿
 
 状态:✅ 已归档(代码已实现,MSBuild 编译 exit 0;游戏内联机实测见"验证 3/4",按需复跑)。
-日期:2025 (session checkpoint 后)
+日期:2026-08-18(实现日期;取自 `MpCraftPreloader.cs` 入库提交 `836aed2`,与 body-sync / part-switch / engine-fx 同一批次)
 
 ## 〇、经验教训(归档修订)
 

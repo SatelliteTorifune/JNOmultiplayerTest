@@ -2,7 +2,7 @@
 
 > 状态:✅ **已归档(2026-09-13 收工,用户确认)**——**现行实现 = SP2 式连续外推(dead-reckoning)+ 每帧指数平滑**(见 §9);本文 §0~§7 记载的**插值缓冲 + 自适应 lookback** 方案为**已被取代的上一代实现**,保留作决策记录。
 > 目标:延迟 >100ms(RTT)时,对面 craft 同步位置**平滑**(不"一卡一卡"),包括整船平移、朝向、每 body 相对位姿(转轴/关节连接的子装配摆动)。
-> 关联:[`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)(BodyPoses 数据源,本方案在**接收端平滑层**上做文章);[`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md)(body 数量变化归生命周期对账);[`part-switch-sync-2026-08-18.md`](part-switch-sync-2026-08-18.md) §11.5(同一轮排查中发现并修复的激活组 off-by-one)。
+> 关联:[`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)(BodyPoses 数据源,本方案在**接收端平滑层**上做文章);[`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md)(body 数量变化归生命周期对账);[`part-switch-sync-2026-08-18.md`](part-switch-sync-2026-08-18.md) §11.5(同一轮排查中发现并修复的激活组 off-by-one)。
 >
 > ⚠️ **阅读提示(2026-09 校订)**:本文档前几节的"渲染回看 / 插值缓冲 / underrun%"等描述**已不代表当前代码**。当前接收端**不再用插值缓冲渲染**,而是"始终取最新包 + 按 `RTT/2 + 包龄` 连续外推 + 平滑收敛"。以 **§9 为现行事实**,§0~§7 为历史演进。相关残留物(`TryGetInterpolatedState`、`RenderDelayMs`、`UnderrunFrames`)仍在代码里但**已不被使用**。
 
@@ -201,7 +201,7 @@ newest=(<F4>,<F4>,<F4>)  posErr=<F2>m
 
 ### 9.11 【2026-09-13 三轮】根 body 与游戏 comRot 锚定的 G 对抗(8~13cm 恒定抖动,全阶段)
 
-> 详见 [update-1.4.2 §〇之四](../update-1.4.2-experimental-2026-09-03.md) 三轮。要点:
+> 详见 [update-1.4.2 §〇之四](update-1.4.2-experimental-2026-09-03.md) 三轮。要点:
 > 游戏 `CraftScript.FramePosition` getter = `CenterOfMass.position` → `RecalculateFrameState` 每帧把
 > **comRot 锚到 craft.Position**;body[0] 是 comRot 父级 → 被游戏放到 `comPos − G`(G = 接收端自身几何偏移,每船不同)。
 > 根 body 按 `comPos − G`(G 写前实时读取)写出 → 与游戏锚定一致 → `b0dLate→0`,全阶段 8~13cm 恒定抖动消除。
@@ -345,21 +345,21 @@ SP2 反编译给出了完整药方:**用"测得延迟×速度外推"补足延迟
 
 ## 1. 现状与根因(代码核实)
 
-接收端逐帧管线([`MpNetworkManager.cs`](../Assets/Scripts/Net/MpNetworkManager.cs)):
+接收端逐帧管线([`MpNetworkManager.cs`](../../Assets/Scripts/Net/MpNetworkManager.cs)):
 
-1. 收到状态包 → `PushSample` 入 32 槽环形缓冲(按**到达端 unscaledTime** 排序,[:1079-1091](../Assets/Scripts/Net/MpNetworkManager.cs:1079));
-2. 每帧 `UpdateRemoteCrafts`:`renderTime = now - RenderDelayMs/1000`([:1593](../Assets/Scripts/Net/MpNetworkManager.cs:1593)),`TryGetInterpolatedState` 找 renderTime 前后两包插值([:1637-1680](../Assets/Scripts/Net/MpNetworkManager.cs:1637));
-3. `ApplyRemoteState(rc, interp)` 写 GroundedSurface*/SetStateVectors/朝向/每 body 位姿/尾焰/部件/控制([:1690-1798](../Assets/Scripts/Net/MpNetworkManager.cs:1690));
-4. `LateUpdate` 用 `rc.LastApplied`(插值后状态)重写朝向抗游戏覆盖([:422-436](../Assets/Scripts/Net/MpNetworkManager.cs:422))。
+1. 收到状态包 → `PushSample` 入 32 槽环形缓冲(按**到达端 unscaledTime** 排序,[:1079-1091](../../Assets/Scripts/Net/MpNetworkManager.cs:1079));
+2. 每帧 `UpdateRemoteCrafts`:`renderTime = now - RenderDelayMs/1000`([:1593](../../Assets/Scripts/Net/MpNetworkManager.cs:1593)),`TryGetInterpolatedState` 找 renderTime 前后两包插值([:1637-1680](../../Assets/Scripts/Net/MpNetworkManager.cs:1637));
+3. `ApplyRemoteState(rc, interp)` 写 GroundedSurface*/SetStateVectors/朝向/每 body 位姿/尾焰/部件/控制([:1690-1798](../../Assets/Scripts/Net/MpNetworkManager.cs:1690));
+4. `LateUpdate` 用 `rc.LastApplied`(插值后状态)重写朝向抗游戏覆盖([:422-436](../../Assets/Scripts/Net/MpNetworkManager.cs:422))。
 
 **R1(主因):body 姿态不参与插值,每包整体跳。**
-`TryGetInterpolatedState` 里 `Mod.RemoteDataPack interp = b;` 只覆盖 `Position/Velocity/Heading/SrfRel`([:1673-1678](../Assets/Scripts/Net/MpNetworkManager.cs:1673)),`BodyRotations/BodyPositions/EngineThrottles/PartActivated/控制` 全部沿用**较新包 b 整体拷贝**;`ApplyRemoteBodyPoses` 再把每 body 的绝对位置/localRotation 直接写死([:474-491](../Assets/Scripts/Net/MpNetworkManager.cs:474))。→ 每个新包到达(≈50ms 一次)所有 body **瞬间跳到新相对位姿**;整船根是插值平滑的、body 却是跳的 → 机身"每 50ms 抖一下",转轴/关节子装配像橡皮筋。
+`TryGetInterpolatedState` 里 `Mod.RemoteDataPack interp = b;` 只覆盖 `Position/Velocity/Heading/SrfRel`([:1673-1678](../../Assets/Scripts/Net/MpNetworkManager.cs:1673)),`BodyRotations/BodyPositions/EngineThrottles/PartActivated/控制` 全部沿用**较新包 b 整体拷贝**;`ApplyRemoteBodyPoses` 再把每 body 的绝对位置/localRotation 直接写死([:474-491](../../Assets/Scripts/Net/MpNetworkManager.cs:474))。→ 每个新包到达(≈50ms 一次)所有 body **瞬间跳到新相对位姿**;整船根是插值平滑的、body 却是跳的 → 机身"每 50ms 抖一下",转轴/关节子装配像橡皮筋。
 
 **R2:缓冲欠载 → 冻结-跳变。**
-`renderTime ≥ 最新样本到达时间` 时(抖动尖峰、丢包、renderDelay 偏小),`TryGetInterpolatedState` 直接返回最新原始包([:1657-1662](../Assets/Scripts/Net/MpNetworkManager.cs:1657))→ 飞船**原地冻结**,下一包到达才继续动 → "卡一下、跳一下"。高延迟场景抖动/丢包更多,该分支触发更频繁。
+`renderTime ≥ 最新样本到达时间` 时(抖动尖峰、丢包、renderDelay 偏小),`TryGetInterpolatedState` 直接返回最新原始包([:1657-1662](../../Assets/Scripts/Net/MpNetworkManager.cs:1657))→ 飞船**原地冻结**,下一包到达才继续动 → "卡一下、跳一下"。高延迟场景抖动/丢包更多,该分支触发更频繁。
 
 **R3:renderDelay 固定不自适应。**
-`RenderDelayMs` 默认 100ms(`SetTickRate` 按 `Clamp(2000/hz,40,400)` 设,[:45-47/552-563](../Assets/Scripts/Net/MpNetworkManager.cs:552))。不随实测抖动/延迟调整:过小→R2 欠载;过大→滞后更明显。
+`RenderDelayMs` 默认 100ms(`SetTickRate` 按 `Clamp(2000/hz,40,400)` 设,[:45-47/552-563](../../Assets/Scripts/Net/MpNetworkManager.cs:552))。不随实测抖动/延迟调整:过小→R2 欠载;过大→滞后更明显。
 
 **R4:无外推 → 高延迟滞后/橡皮筋。**
 渲染位置 = 最新包 + `RenderDelayMs` 的插值延迟,**不把"网络延迟期间飞船应继续前进"补回来**。RTT>100ms(单向>50ms)时对面实际已飞出很远,渲染还在 150ms+ 之前的位置;对面转向/刹车/加速后误差瞬间放大→被拉回→橡皮筋。
@@ -400,7 +400,7 @@ SP2 反编译给出了完整药方:**用"测得延迟×速度外推"补足延迟
 ### T5. 远程船物理开 + 每物理步写速度(SP2 独有,SR2 不抄物理,但可抄"每帧写速度"思路)
 
 - `NetworkAircraftScript.FixedUpdate` 远程船每物理步 `RigidBody.velocity/angularVelocity = SyncData` → 刚体积分提供包间连续运动,T2 的 lerp 只是小修正。
-- SR2 幽灵全 kinematic 不启用物理积分,但 `EngineVisualSync.InjectGhostMotion` 已在每帧给 kinematic 刚体写速度/角速度(烟雾用,[:499](../Assets/Scripts/Net/EngineVisualSync.cs:499));外推/速度注入思路可直接复用。
+- SR2 幽灵全 kinematic 不启用物理积分,但 `EngineVisualSync.InjectGhostMotion` 已在每帧给 kinematic 刚体写速度/角速度(烟雾用,[:499](../../Assets/Scripts/Net/EngineVisualSync.cs:499));外推/速度注入思路可直接复用。
 
 ### T6. 角色混合插值+外推(另一个通用范式,供选型)
 
@@ -441,7 +441,7 @@ SP2 反编译给出了完整药方:**用"测得延迟×速度外推"补足延迟
 
 ### P2 —— 自适应 + 带宽(高延迟体验收敛)
 
-- **自适应 renderDelay / 外推量**:RTT 已有现成测量(`ClientPingMs`/`peer.PingMs`,ping/pong,[:923-940](../Assets/Scripts/Net/MpNetworkManager.cs:923))。`oneWay ≈ RTT/2`;renderDelay 取 `max(保底≈1.5×发包间隔, ~2×EMA(包间隔抖动))`;稳态外推量 `≈ oneWay − renderDelay`(SP2 直接用包时间戳差,我们无时钟同步,用 RTT/2 近似)。
+- **自适应 renderDelay / 外推量**:RTT 已有现成测量(`ClientPingMs`/`peer.PingMs`,ping/pong,[:923-940](../../Assets/Scripts/Net/MpNetworkManager.cs:923))。`oneWay ≈ RTT/2`;renderDelay 取 `max(保底≈1.5×发包间隔, ~2×EMA(包间隔抖动))`;稳态外推量 `≈ oneWay − renderDelay`(SP2 直接用包时间戳差,我们无时钟同步,用 RTT/2 近似)。
 - **per-body velocity/angularVelocity(对齐 SP2 T1/T5 的保真度)**:发送端每个 body 附加 `RigidBody.velocity/angularVelocity`(或相邻包差分估测)→ 接收端对**每 body 相对位姿做延迟外推**(转轴摆动/轮子转速/残骸翻滚在丢包间隙也连续)。带宽 +~24B/body,10 body ≈ +240B/包。
 - **Quaternion32 压缩**(SP2 Writer/Reader,~4B/四元数):`BodyRotations` 12B→~4-5B,为 per-body velocity 腾带宽,净增可忽略。
 

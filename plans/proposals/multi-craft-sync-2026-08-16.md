@@ -3,8 +3,8 @@
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod MultiPlayer)
 > 反编译参考:`<JNO_CODE>`
 > KSP 参考:`<LUNA_MP>`
-> 状态:📋 方案研究阶段(**代码侧零实现**,下述方案均未落地;2026-08-18 **body 级姿态同步已拆分为独立 plan [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md)**,本文件只专注多 craft)
-> 定位:**多 craft 方案研究 plan**(当前未实现,见索引 [`README.md`](README.md)「当前活跃」);已完成/历史文档见 `archive/`
+> 状态:📋 方案研究阶段(**代码侧零实现**,下述方案均未落地;2026-08-18 **body 级姿态同步已拆分为独立 plan [`body-sync-2026-08-18.md`](../archive/body-sync-2026-08-18.md)**,本文件只专注多 craft)
+> 定位:**多 craft 方案研究 plan**(当前未实现,见索引 [`README.md`](../README.md)「当前活跃」);已完成/历史文档见 `archive/`
 
 ---
 
@@ -25,7 +25,7 @@
 **当前实际的船模型(作为多 craft 的起点)**:
 - 本机侧:`RefreshLocalCraft()` 只上报**一艘**(`GetLocalCraftNodeId()` = `FlightSceneScript.Instance.CraftNode.NodeId`,`MpNetworkManager.cs:2153`)。
 - 远端侧:每玩家一个 `RemoteCraft`,`SpawnRemoteCraftCoroutine` 生成一艘幽灵,后续该玩家的所有状态都打到这一艘上。
-- 分离出的子装配**不会**变成独立幽灵——它们只作为"同一艘幽灵内部的 body 位姿变化"体现(见 [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md))。
+- 分离出的子装配**不会**变成独立幽灵——它们只作为"同一艘幽灵内部的 body 位姿变化"体现(见 [`body-sync-2026-08-18.md`](../archive/body-sync-2026-08-18.md))。
 
 **结论**:多 craft 是**从零开始的功能**,不是"给现有结构加字段"。第一步应该就是 §三 方案 B 的注册表 + §3 的 `Guid` 身份,二者必须同时做(没有身份就无法建注册表)。
 
@@ -33,12 +33,12 @@
 
 ## 一、当前项目现状摘要(多 craft 相关)
 
-核心同步链路集中在 [`MpNetworkManager.cs`](../Assets/Scripts/Net/MpNetworkManager.cs) + [`MpMessage.cs`](../Assets/Scripts/Net/MpMessage.cs)。
+核心同步链路集中在 [`MpNetworkManager.cs`](../../Assets/Scripts/Net/MpNetworkManager.cs) + [`MpMessage.cs`](../../Assets/Scripts/Net/MpMessage.cs)。
 
 已落地且扎实的部分:
 - 飞船交换:SP2 风格 hash 按需下载 XML(gzip + MD5 缓存去重,`CraftXmlRequest/Response`);
 - 状态同步:`recdata`(位置/速度/Heading/SrfRel 朝向 + 控制 + BodyRotations),20~30Hz,带时间戳环形缓冲 + 100~150ms 渲染延迟插值;
-- 朝向同步:已按 LunaMultiplayer `srfRelRotation` 思路落地(相对地表朝向,见 [`archive/heading-sync-2026-08-17.md`](archive/heading-sync-2026-08-17.md)),并解决游戏覆盖朝向问题(LateUpdate 写回、物理禁用走 `Warp` 原因避免 MapView NRE);
+- 朝向同步:已按 LunaMultiplayer `srfRelRotation` 思路落地(相对地表朝向,见 [`archive/heading-sync-2026-08-17.md`](../archive/heading-sync-2026-08-17.md)),并解决游戏覆盖朝向问题(LateUpdate 写回、物理禁用走 `Warp` 原因避免 MapView NRE);
 - 远程飞船为"幻影模式":`AllowPlayerControl=false` + 物理禁用 + kinematic + 反射写 `GroundedSurface*` / FlightData。
 
 **多 craft 的关键缺口(都指向同一个根因)**:
@@ -82,7 +82,7 @@
   - 给每个本地节点分配一个 **mod 自造的全局 `Guid`**(Luna 的 VesselId 同款),本地维护 `Dictionary<int, Guid>` nodeId→Guid,发现即分配;
   - 上报 `Guid + xmlHash`;房主广播 `CraftInfo`;
 - 状态包由 `(playerId, nodeId)` 改为 `(ownerId, craftGuid, ...)`,`_remoteCrafts` 改为 `Dictionary<Guid, RemoteCraft>`;
-- `CraftNodeRemoved` / `DestroyCraft` → 广播 `CraftRemove(Guid)`,接收端 `DestroyCraft()`(现有 [`RemoveRemoteCraft`](../Assets/Scripts/Net/MpNetworkManager.cs:1080) 逻辑直接复用)。
+- `CraftNodeRemoved` / `DestroyCraft` → 广播 `CraftRemove(Guid)`,接收端 `DestroyCraft()`(现有 [`RemoveRemoteCraft`](../../Assets/Scripts/Net/MpNetworkManager.cs:1080) 逻辑直接复用)。
 
 | 优点 | 缺点 |
 |---|---|
@@ -126,11 +126,11 @@
 | **频率分级(LOD)** | 活动船 20~30Hz;**次要/残骸降到 1~5Hz**;且当"附近有其他玩家船"(`PlayerVesselsNearby`)才快发,否则慢发——防残骸一多带宽爆炸 | `SendVesselPositionUpdates` vs `SendSecondaryVesselPositionUpdates` + `TimeToSendVesselUpdate` |
 
 **可直接复用、只换键的现有资产**:
-- 幽灵船初始化 [`InitializeRemoteCraft`](../Assets/Scripts/Net/MpNetworkManager.cs:1233)(物理禁用走 Warp 原因);
-- 插值缓冲 [`UpdateRemoteCrafts`](../Assets/Scripts/Net/MpNetworkManager.cs:1290) / `TryGetInterpolatedState`;
+- 幽灵船初始化 [`InitializeRemoteCraft`](../../Assets/Scripts/Net/MpNetworkManager.cs:1233)(物理禁用走 Warp 原因);
+- 插值缓冲 [`UpdateRemoteCrafts`](../../Assets/Scripts/Net/MpNetworkManager.cs:1290) / `TryGetInterpolatedState`;
 - 朝向 srfRel 链路(发送端 `TrySampleLocalCraft` / 接收端 `ApplyRemoteState` + `LateUpdate` 写回);
-- 移除清理 [`RemoveRemoteCraft`](../Assets/Scripts/Net/MpNetworkManager.cs:1080)(`DestroyCraft()`);
-- 按需下载 + hash 去重([`MpMessage.cs`](../Assets/Scripts/Net/MpMessage.cs) `CraftXmlRequest/Response` + `_xmlCache`)。
+- 移除清理 [`RemoveRemoteCraft`](../../Assets/Scripts/Net/MpNetworkManager.cs:1080)(`DestroyCraft()`);
+- 按需下载 + hash 去重([`MpMessage.cs`](../../Assets/Scripts/Net/MpMessage.cs) `CraftXmlRequest/Response` + `_xmlCache`)。
 
 **需要新增/改造**:
 - 消息类型:`CraftInfo(guid, ownerId, xmlHash)`、`CraftRemove(guid)`、`CraftMerge(keepGuid, removeGuid)`、`CraftRegistrySync`(对账用);
@@ -279,7 +279,7 @@ Luna 不自己实现切换动作,而是挂钩 KSP `onVesselChange`(玩家按 `[`
 2. **轨道残骸**:需 `Situation`(地面/轨道)字段,接收端用 `LaunchLocationType.Orbital` 或直接 `SetStateVectors`,不能固定 `SurfaceLockedGround`(对应 MC2)。
 3. **过滤策略(可选,MC4)**:残骸只在"距任一玩家较近 / 部件数>阈值"时生成完整幽灵船;超远/极小跳过。
 4. **超时清理**:低频下 5~10s 无状态包(>3 周期)→ 远端删幽灵船,兜住"owner 侧已毁但 CraftRemove 丢 / owner 掉线"。
-5. **已知缺口(已转出)**:同 craft 内 `IsDebris` 小碎片只同步旋转不同步位置(`BodyRotations` 限制)→ **已由独立 plan [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md) 的 BodyPoses 覆盖**(位置+旋转相对 comRot)。
+5. **已知缺口(已转出)**:同 craft 内 `IsDebris` 小碎片只同步旋转不同步位置(`BodyRotations` 限制)→ **已由独立 plan [`body-sync-2026-08-18.md`](../archive/body-sync-2026-08-18.md) 的 BodyPoses 覆盖**(位置+旋转相对 comRot)。
 6. **最高优先级场景 C**:"玩家分离掉唯一 pod" → `SplitCraftNode` 自动 `ChangePlayersActiveCommandPodImmediate` 切走控制权(`CraftSplitter.cs:133`),原 craft 变无 pod 残骸、`FlightSceneScript.Instance.CraftNode` 自动换节点 → mod 必须 **`RefreshLocalCraft()`** 且把原 craft 从"活动船"降级为"残骸(低频)"继续上报。
 
 ---
@@ -296,7 +296,7 @@ Luna 不自己实现切换动作,而是挂钩 KSP `onVesselChange`(玩家按 `[`
    - 备注:将来要做跨行星时,再补 `ParentPlanetName` 检测不符 → `TransitionToNewSoi`(或重建)+ `PlayerChangedSoi` 广播。
 
 2. **未加载节点的采样缺口**:
-   - 事实:[`TrySampleLocalCraft`](../Assets/Scripts/Net/MpNetworkManager.cs:1606) 依赖 `craft.CraftScript != null`(line 1614)并读 `CraftScript.CenterOfMass / Assembly.Bodies / ActiveCommandPod`。**owner 的非活动节点(残骸、对接的第二艘、远距离船)可能未加载 → 采样直接失败**。
+   - 事实:[`TrySampleLocalCraft`](../../Assets/Scripts/Net/MpNetworkManager.cs:1606) 依赖 `craft.CraftScript != null`(line 1614)并读 `CraftScript.CenterOfMass / Assembly.Bodies / ActiveCommandPod`。**owner 的非活动节点(残骸、对接的第二艘、远距离船)可能未加载 → 采样直接失败**。
    - 方案:每节点采样加"node 级回退"——`CraftScript==null` 时用 `CraftNode.Position/Velocity/Heading`(数据层,轨道模拟仍更新)+ `Data.ActiveCommandPodId` 恢复 pod;`BodyRotations` 缺失则回退 XML 设计态。
 
 3. **远端幽灵船被 [ ] 接管风险(会炸的坑) —【决策:用 Harmony 拦截,且拦在总入口】**:
@@ -326,6 +326,6 @@ Luna 不自己实现切换动作,而是挂钩 KSP `onVesselChange`(玩家按 `[`
 
 ### 8.4 body 级姿态同步 —— 已拆分为独立 plan
 
-> **2026-08-18**:body 级姿态同步(转轴/关节连接部件的"整体移动",BodyRotations→BodyPoses 方案 + SP2 参考可抄性结论)与 multi-craft 是两个独立目标,**已移至 [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md)**。本文件只保留多 craft(身份/生命周期/对接/残骸/切换)内容。
+> **2026-08-18**:body 级姿态同步(转轴/关节连接部件的"整体移动",BodyRotations→BodyPoses 方案 + SP2 参考可抄性结论)与 multi-craft 是两个独立目标,**已移至 [`body-sync-2026-08-18.md`](../archive/body-sync-2026-08-18.md)**。本文件只保留多 craft(身份/生命周期/对接/残骸/切换)内容。
 >
-> 与本文件相关的接口:原 §7.7.5 "IsDebris 小碎片只同步旋转不同步位置"缺口 → 由 [`body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md) 的 BodyPoses 覆盖;分离/对接后 body 数量与顺序变化 → 由本文件 MC1/MC3 生命周期对账解决(body-sync 的索引契约依赖它)。
+> 与本文件相关的接口:原 §7.7.5 "IsDebris 小碎片只同步旋转不同步位置"缺口 → 由 [`body-sync-2026-08-18.md`](../archive/body-sync-2026-08-18.md) 的 BodyPoses 覆盖;分离/对接后 body 数量与顺序变化 → 由本文件 MC1/MC3 生命周期对账解决(body-sync 的索引契约依赖它)。

@@ -2,8 +2,8 @@
 
 > 项目:JNOMultiPlayer(MultiPlayer)
 > 反编译参考:`<JNO_CODE>`
-> 定位:[`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) 的补充分析——回答"幽灵船的起落架收放/货舱门/太阳能板/灯等**开关与展开状态**能否同步、怎么同步、代价多大"
-> 状态:✅ **已归档**(核心功能已实现:P0 方案 B + P3 控制输入;剩余 P1 相位对齐 / P2 降落伞专用驱动**未排期**,见 README「当前待定」)。**① 方案 B(P0)已实现并实测通过(起落架/货舱同步 OK,2026-08-18)**;**② P3 控制输入应用已实现**(§11,2026-08-18,编译通过待实测;**激活组 off-by-one 已于 2026-08-22 修复**,见 §11.5)。① 方案 B(per-part `Activated` 位);② 分离器/级间、整流罩、对接等**涉及 body 改动的部件只记录、不处理**(归后续 body 同步);③ 降落伞等特殊部件**先反编译确定原理**(见 §9),走专用视觉驱动(P2,**尚未实现**);④ 输入驱动部件(rotator/舵面等)**靠"开关+输入"双驱动**,由 P3 控制输入应用解决(§11,用户 2026-08-18 指出)。实现记录见 §10/§11.5;P1(相位对齐)/P2(伞专用驱动)**未排期**。
+> 定位:[`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md) 的补充分析——回答"幽灵船的起落架收放/货舱门/太阳能板/灯等**开关与展开状态**能否同步、怎么同步、代价多大"
+> 状态:✅ **已归档**(核心功能已实现:P0 方案 B + P3 控制输入;剩余 P1 相位对齐 / P2 降落伞专用驱动**未排期**,见 README「当前待定」)。**① 方案 B(P0)已实现并实测通过(起落架/货舱同步 OK,2026-08-18)**;**② P3 控制输入应用已实现**(§11,2026-08-18,编译通过待实测;**激活组 off-by-one 已于 2026-08-22 修复**,见 §11.5)。**③ 1.4.2 回归已结案(2026-09-16,见 §12):非 1.4.2 代码回归;实测失败条件 = 任一方暂停,用户判定可接受、不修。** ① 方案 B(per-part `Activated` 位);② 分离器/级间、整流罩、对接等**涉及 body 改动的部件只记录、不处理**(归后续 body 同步);③ 降落伞等特殊部件**先反编译确定原理**(见 §9),走专用视觉驱动(P2,**尚未实现**);④ 输入驱动部件(rotator/舵面等)**靠"开关+输入"双驱动**,由 P3 控制输入应用解决(§11,用户 2026-08-18 指出)。实现记录见 §10/§11.5;P1(相位对齐)/P2(伞专用驱动)**未排期**。
 
 > **实现复核(2026-09)**:`PartActivated`(每部件 `Activated` 位,按 `Data.Assembly.Parts` 确定顺序)在收发两端已接通;接收端白名单 `PartVisualSync._applyModifierTypes` 现包含**输入驱动部件**(`ControlSurfaceScript`/`JointRotatorScript`/`PistonScript`/`PropellerAssemblyScript`/`ResizableWheelScript`/`ReactionControlNozzleScript`/`ElectricMotorScript`/`ElectricMotorOldScript`/`LightPartScript`),由 `ControlVisualSync.ApplyRemoteControls` 写幽灵 `CraftControls`(12 控制标量 + 10 激活组)。**仍未做**:降落伞专用视觉驱动(P2)、`ExtensionPercent` 相位对齐(P1)。**注意 `Stage` 字段目前只采样/传输、未应用**——所以"整流罩投弃/分级"在幽灵上不会发生(与 §4 的"只记录不处理"一致)。
 > 结论先行:**同步"开关状态"可行且成本近零**——机制是同步每个部件的 `Part.Activated`(开关位),幽灵端**复用游戏自己的 FlightUpdate/动画器做本地仿真**(与 engine-fx 尾焰的 L1"输入/状态同步 + 本地仿真"完全同套路)。不推翻 8.2-5"燃料/资源不同步",只把"部件展开状态"从 8.2-5 的限制里摘出来。
@@ -12,9 +12,9 @@
 
 ## 0. 现状(plan 已认定的限制)
 
-- [`multi-craft-sync-2026-08-16.md`](../multi-craft-sync-2026-08-16.md) 8.2-5 决策:**燃料/资源/部件状态 MVP 不同步**,其中"part 损伤/展开/引擎/Vizzy 状态"都记为已知限制。
+- [`proposals/multi-craft-sync-2026-08-16.md`](../proposals/multi-craft-sync-2026-08-16.md) 8.2-5 决策:**燃料/资源/部件状态 MVP 不同步**,其中"part 损伤/展开/引擎/Vizzy 状态"都记为已知限制。
 - engine-fx 尾焰已用"同步**视觉驱动值**(throttle)"打破了"引擎视觉不同步"的边界(不涉及燃料数值)。**起落架等开关是同一类**:同步"开关状态(Part.Activated)",不同步任何燃料/资源数值。
-- 现状代码:recdata **已含** `ActivationGroupStates`(10 bool)+ `Stage`(见 [`Mod.cs`](../Assets/Scripts/Mod.cs:132)),且已序列化传输([`MpMessage.cs`](../Assets/Scripts/Net/MpMessage.cs:488)),但 **接收端从未应用**(`MpNetworkManager.ApplyRemoteState` 只采样不应用)——是现成的半成品通道。
+- 现状代码:recdata **已含** `ActivationGroupStates`(10 bool)+ `Stage`(见 [`Mod.cs`](../../Assets/Scripts/Mod.cs:132)),且已序列化传输([`MpMessage.cs`](../../Assets/Scripts/Net/MpMessage.cs:488)),但 **接收端从未应用**(`MpNetworkManager.ApplyRemoteState` 只采样不应用)——是现成的半成品通道。
 - 同理:`Pitch/Yaw/Roll/Throttle/Brake/Sliders` 也是"只采样、不应用"的死字段(`MpNetworkManager.cs:1951-1962`)。
 
 ---
@@ -157,10 +157,10 @@
 ## 10. 实现记录(2026-08-18,P0 方案 B 已落地,编译通过待实测)
 
 **改动文件**(均在本工程):
-1. [`Mod.cs`](../Assets/Scripts/Mod.cs):`RemoteDataPack` 新增 `List<bool> PartActivated` 字段 + 构造初始化;
-2. [`MpMessage.cs`](../Assets/Scripts/Net/MpMessage.cs):`WriteRecdata/ReadRecdata` 序列化 `PartActivated`(count + N bool,与 EngineThrottles 同风格);
-3. [`PartVisualSync.cs`](../Assets/Scripts/Net/PartVisualSync.cs)(**新增**):`SamplePartActivated`(发送端采样)+ `ApplyRemotePartActivated`(接收端变沿 + 白名单应用);
-4. [`MpNetworkManager.cs`](../Assets/Scripts/Net/MpNetworkManager.cs):`TrySampleLocalCraft` 接入采样;`ApplyRemoteState` 末尾接入应用。
+1. [`Mod.cs`](../../Assets/Scripts/Mod.cs):`RemoteDataPack` 新增 `List<bool> PartActivated` 字段 + 构造初始化;
+2. [`MpMessage.cs`](../../Assets/Scripts/Net/MpMessage.cs):`WriteRecdata/ReadRecdata` 序列化 `PartActivated`(count + N bool,与 EngineThrottles 同风格);
+3. [`PartVisualSync.cs`](../../Assets/Scripts/Net/PartVisualSync.cs)(**新增**):`SamplePartActivated`(发送端采样)+ `ApplyRemotePartActivated`(接收端变沿 + 白名单应用);
+4. [`MpNetworkManager.cs`](../../Assets/Scripts/Net/MpNetworkManager.cs):`TrySampleLocalCraft` 接入采样;`ApplyRemoteState` 末尾接入应用。
 
 **实现要点**:
 - **顺序契约**:发送/接收同按 `Data.Assembly.Parts` 顺序,index 一一对应;接收端 `Mathf.Min` 越界兜底;
@@ -206,14 +206,48 @@
 
 **11.5 实现记录(2026-08-18,P3 已落地,编译通过待实测)**
 - 改动文件:
-  1. [`ControlVisualSync.cs`](../Assets/Scripts/Net/ControlVisualSync.cs)(**新增**):`ApplyRemoteControls(rc, data)` —— 写幽灵 `ActiveCommandPod.Controls` 的 12 个控制标量 + 10 个激活组(`SetActivationGroup`,幂等变沿),异常兜底;
-  2. [`PartVisualSync.cs`](../Assets/Scripts/Net/PartVisualSync.cs):`_applyModifierTypes` 新增输入驱动部件 —— `ControlSurfaceScript`/`JointRotatorScript`(Rotator)/`PistonScript`/`PropellerAssemblyScript`/`ResizableWheelScript`/`ReactionControlNozzleScript`/`ElectricMotorScript`/`ElectricMotorOldScript`/`LightPartScript`;
-  3. [`MpNetworkManager.cs`](../Assets/Scripts/Net/MpNetworkManager.cs):`ApplyRemoteState` 在 PartVisualSync 之后接入 `ControlVisualSync.ApplyRemoteControls`(与 PartActivated 同帧);
-  4. [`MultiPlayer.csproj`](../MultiPlayer.csproj):Unity 自动加入新文件。
+  1. [`ControlVisualSync.cs`](../../Assets/Scripts/Net/ControlVisualSync.cs)(**新增**):`ApplyRemoteControls(rc, data)` —— 写幽灵 `ActiveCommandPod.Controls` 的 12 个控制标量 + 10 个激活组(`SetActivationGroup`,幂等变沿),异常兜底;
+  2. [`PartVisualSync.cs`](../../Assets/Scripts/Net/PartVisualSync.cs):`_applyModifierTypes` 新增输入驱动部件 —— `ControlSurfaceScript`/`JointRotatorScript`(Rotator)/`PistonScript`/`PropellerAssemblyScript`/`ResizableWheelScript`/`ReactionControlNozzleScript`/`ElectricMotorScript`/`ElectricMotorOldScript`/`LightPartScript`;
+  3. [`MpNetworkManager.cs`](../../Assets/Scripts/Net/MpNetworkManager.cs):`ApplyRemoteState` 在 PartVisualSync 之后接入 `ControlVisualSync.ApplyRemoteControls`(与 PartActivated 同帧);
+  4. [`MultiPlayer.csproj`](../../MultiPlayer.csproj):Unity 自动加入新文件。
 - **安全排除(仍只记录不处理)**:引擎(EngineVisualSync 冲突)、分离器/整流罩/对接/伞(body 改动/专用驱动)、**InputBasedActivator**(会 `ActivateStage`/`ExplodePart`,绝不在本机触发)、舱/Cockpit/Vizzy(FlightProgram)/TestPilot;
 - 构建:`dotnet build MultiPlayer.csproj -c Debug` → **0 错误**(FishNet 第三方 3 个既有 warning 与本改动无关);
 - **2026-08-22 修复 `ApplyRemoteControls` 每帧异常(IndexOutOfRange,`Player.log` 418 次刷屏)**:
   - **根因**:激活组在游戏里是 **1-indexed(1..10)**,`CommandPodScript.SetActivationGroupState` 内部走 `ActivationGroupStates[group-1]`,**只查上界不查下界**;接收端旧循环 `i=0..9` 调 `c.SetActivationGroup(0)` → `ActivationGroupStates[-1]` → `IndexOutOfRange`。异常被 `ApplyRemoteControls` 外层 try/catch 吞掉,控制标量(已先写)不受影响,但**激活组同步实际从未生效**,且每帧抛异常+写日志拖慢接收端;
-  - **修复**([`ControlVisualSync.cs`](../Assets/Scripts/Net/ControlVisualSync.cs)):循环改为 `for i=1..n`,取列表 `data.ActivationGroupStates[i-1]`(与发送端 `i=1..10` 采样一一对应);`GetActivationGroup(0)` 本就安全,`SetActivationGroup(1..10)` 永不越下界 ⇒ 异常消失、激活组门控真正生效;
+  - **修复**([`ControlVisualSync.cs`](../../Assets/Scripts/Net/ControlVisualSync.cs)):循环改为 `for i=1..n`,取列表 `data.ActivationGroupStates[i-1]`(与发送端 `i=1..10` 采样一一对应);`GetActivationGroup(0)` 本就安全,`SetActivationGroup(1..10)` 永不越下界 ⇒ 异常消失、激活组门控真正生效;
   - 验证:`dotnet build MultiPlayer.csproj -c Debug` → 0 错误 0 警告;
 - 实测待办:双端验证 Rotator/舵面/RCS/车轮随远程输入显示;激活组门控部件(激活组绑定的输入部件)状态同步;确认幽灵 Controls 不被任何路径覆盖(理论已证,实测复核)。
+
+## 12. 1.4.2 回归实测与已知限制(2026-09-16)
+
+> 触发:用户报「游戏更新到 1.4.2 后这个功能似乎损坏了」。
+> 结论:**不是 1.4.2 引入的代码回归**;实测失败条件 = **host 与 client 任一方处于暂停状态**;用户判定**可接受,不修**。
+
+### 12.1 静态复核(全部完好,逐条证据)
+
+| 环节 | 核对对象 | 结果 |
+|---|---|---|
+| 发送采样 | `TrySampleLocalCraft` → `SamplePartActivated`(按 `Data.Assembly.Parts` 确定顺序) | ✅ 未改动 |
+| 协议 | `MpMessage.WriteRecdata/ReadRecdata` 的 `PartActivated`(count + N bool) | ✅ 读写对称;`ReadRecdata` 用三参构造器、列表已初始化 |
+| 接收应用 | `ApplyRemoteState` 末尾无条件调用 `ApplyRemotePartActivated` + `ControlVisualSync.ApplyRemoteControls` | ✅ 无早退路径;`MP smoothing` 周期日志证明该路径每帧在跑 |
+| 白名单 | `_applyModifierTypes` 17 个类型 | ✅ 全部存在于 1.4.2(含 CargoBay/LandingGear/Solar/SubPartRotator/InputController 等) |
+| 游戏激活语义 | `PartScript.Activate/Deactivate`、`PartData.Activated` | ✅ 与 1.4.102 一致 |
+| 动画驱动 | `LandingGearScript.FlightUpdate`(:155 每帧 `SetExtended(Part.Activated)`)、`LandingGearAnimator`(原生 `Update`) | ✅ 未变 |
+| 循环分发 | `UpdateGroup`/`FlightGameLoop`(不按物理门控过滤)、`MonoBehaviourBase` 注册(只看 enabled) | ✅ 未变;`UpdateGroup` 的 try/catch 1.4.102 就已存在 |
+| 1.4.2 相关文件改动 | CargoBay/LandingGear/LandingLeg/Solar/SubPartRotator/InputController/JointRotator/Piston/Wing/CommandPod 等 | ✅ 逐条读过:均为**性能/重构/碰撞层/API 签名**变更,未触及激活与动画机制 |
+| 运行日志 | `Player.log`(2026-09-15 三端会话,mod 1.51) | ✅ 0 条 `PartVisualSync`/`ControlVisualSync` 异常、0 条 modifier NRE;幽灵船均正常生成初始化 |
+
+### 12.2 实测失败条件(用户双端确认)
+
+| 场景 | 同步 |
+|---|---|
+| 双端均正常运行 | ✅ 正常 |
+| 任一方暂停(host 或 client) | ❌ 幽灵端开关部件不跟随 |
+
+机制详见 [`update-1.4.2-experimental-2026-09-03.md`](update-1.4.2-experimental-2026-09-03.md)「〇之七」:观察侧暂停时游戏循环只分发 `*Paused` 系接口 ⇒ 幽灵 `IFlightUpdate`(如 `LandingGearScript.FlightUpdate`)不被调用 ⇒ `SetExtended` 不执行,动画无从推进(该循环事实已在同文档「〇之五」以 IL 核证)。
+
+### 12.3 处置
+
+- **接受该缺陷**:影响面仅"暂停观赛/暂停调试"窗口的开关视觉,不影响飞行中的正常联机(core 场景);用户 2026-09-16 判定可接受;
+- 定位用的一次性诊断代码(**发送端采样统计 + 接收端应用计数/探针状态**)已全部移除,`PartVisualSync.cs` / `MpNetworkManager.cs` 回到加诊断之前的状态;
+- 本文档 P1(相位对齐)/P2(降落伞专用驱动)仍**未排期**(见 README「当前待定」)。
