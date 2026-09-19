@@ -531,6 +531,12 @@ namespace Assets.Scripts.Net
 			// 新端读旧包读到 EOF → 零值(见 ReadRecdata 的 try/catch,退化 1 阶外推)。
 			w.Write(d.Acceleration.x); w.Write(d.Acceleration.y); w.Write(d.Acceleration.z);
 			w.Write(d.AngularVelocity.x); w.Write(d.AngularVelocity.y); w.Write(d.AngularVelocity.z);
+
+			// body 稳定标识(2026-09-19,body-sync 索引错位修复):BodyData.Id,与 BodyPositions 平行同索引。
+			// 仍**最后**追加:旧端读新包忽略尾部;新端读旧包 EOF → BodyIds=null → 回退索引直用(兼容)。
+			int bidCount = d.BodyIds == null ? 0 : d.BodyIds.Count;
+			w.Write(bidCount);
+			for (int i = 0; i < bidCount; i++) w.Write(d.BodyIds[i]);
 		}
 
 		public static Mod.RemoteDataPack ReadRecdata(BinaryReader r)
@@ -595,6 +601,14 @@ namespace Assets.Scripts.Net
 				d.AngularVelocity = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
 			}
 			catch { d.Acceleration = Vector3.zero; d.AngularVelocity = Vector3.zero; }
+
+			// body 稳定标识(2026-09-19):仍尾部最后;旧对端包无 → EOF → BodyIds=null(接收端回退索引直用)。
+			try
+			{
+				int bidCount = r.ReadInt32();
+				for (int i = 0; i < bidCount; i++) d.BodyIds.Add(r.ReadInt32());
+			}
+			catch { d.BodyIds = null; }
 
 			return d;
 		}

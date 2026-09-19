@@ -79,12 +79,12 @@ namespace Assets.Scripts.Net
 		/// <summary>接收端平移 2 阶外推(½·a·ext²)总开关。加速度域无符号约定问题,可安全开启。</summary>
 		private const bool EnableSecondOrderExtrap = true;
 		/// <summary>
-		/// 接收端朝向外推(ω·ext 右乘)总开关。ω 的 SR2 符号翻转约定待实测
-		/// (发送端 sendDiag 自校验 errF+/errF-/errR+ 取最小者,见 plans/acceleration-smoothing-2026-09-14.md §六-1),
-		/// 确认前默认关闭,避免朝向外推方向错误反而劣化现有平滑。
+		/// 接收端朝向外推(ω·ext 右乘)总开关。ω 的 SR2 符号翻转约定已实测确认
+		/// (2026-09-19 Steam sendDiag 自校验:errF+=5.08~7.75 < errF-=10.23~18.87 ≈ errR+,6 条一致,
+		/// F+ = 翻转(-x,y,-z)正号 = 当前代码路径)→ 开启,消快速转向时的旋转步进。
 		/// </summary>
-		private const bool EnableRotationExtrap = false;
-		/// <summary>朝向外推符号(实测确认后 ±1)。</summary>
+		private const bool EnableRotationExtrap = true;
+		/// <summary>朝向外推符号(+1 = 翻转(-x,y,-z),2026-09-19 实测确认)。</summary>
 		private const float RotationExtrapSign = 1f;
 
 		private readonly Dictionary<int, MpPeer> _playersByPlayerId = new Dictionary<int, MpPeer>();
@@ -98,10 +98,18 @@ namespace Assets.Scripts.Net
 		// sendGap 本身大幅摆动 → 发送端自身突发(帧率不足/掉帧),先修发送端。
 		private float _lastSendTime = -1f;
 		private float _sendGapEmaMs = 0f;
+		private float _fpsEma = 0f;                 // 发送端渲染帧率 EMA(与对端 fps/gapEMA 对账:帧率-发包率耦合)
 		// --- 抽搐诊断(发送端):每包 body[0] 相对 comRot 采样位置抖动(静止时>0.01m → 发送端数据本身在抖) ---
 		private Vector3? _diagBody0Rel;
 		private float rcDiagBody0RelDelta;
 		private float _diagBody0RelLogTime;
+		private bool _diagBodyNamesLogged;       // 一次性 body id→部件名 dump 已输出(定位振荡部件)
+		private Vector3[] _diagPrevBodyRel;      // 上一 sendDiag 时刻的全部 body 相对 comRot 位姿(最大位移诊断)
+		// 2026-09-19 body 索引稳定性:body 采样瞬时空时沿用上一帧已知位姿(保 BodyPositions 与装配同序同长)。
+		private Vector3[] _lastBodyPos;
+		private Vector3[] _lastBodyRot;
+		private bool[] _hasLastBodyPose;
+		private float[] _diagBodyRbDeltas;       // 每 body |Transform.position − RigidBody.position|(帧空间,诊断振荡来源)
 		// --- 2 阶外推(发送端):加速度/角速度 EMA 状态 + 原始采样诊断 + ω 符号自校验状态 ---
 		private Vector3 _accelEma; private bool _hasAccelEma;
 		private Vector3 _angVelEma; private bool _hasAngVelEma;
@@ -153,6 +161,9 @@ namespace Assets.Scripts.Net
 			OnPlayerJoined += ShowPlayerJoinedNotice;
 			OnPlayerLeft += ShowPlayerLeftNotice;
 			OnRemoteState += ApplyRemoteState;
+			// 构建标记(2026-09-19):区分"新 DLL 未部署"与"部署了但逻辑未生效"。
+			// 每次改动协议/平滑逻辑后递增;对照本行即可确认对端跑的版本。
+			Mod.LogLobby("MP build r10 2026-09-19 (= r6 baseline: r4 id-remap + r5 stable-anchor + bodyNames/rbΔ diag; r7 orbit / r8 freeze / r9 SP2 dead-reckon all removed)");
 			Mod.LogLobby("MpNetworkManager created on GameObject '" + gameObject.name + "' (Awake)");
 		}
 
@@ -547,6 +558,90 @@ namespace Assets.Scripts.Net
 		}
 
 		/// <summary>
+		/// 2026-09-19 body 索引错位修复:按 BodyData.Id 把发送端 body 列表重排为接收端幽灵装配顺序。
+		/// 实测(2026-09-19):发送端 bodyMaxRelΔ 4~6m/1s、接收端 bodyTgt≈5m 恒定、bodyBig 每帧 7~8 个部件
+		/// —— 装配顺序/列表长度不一致(含发送端 BodyScript 瞬时空导致列表变短)把不同部件的位姿互写,
+		/// 接收端平滑层持续追赶 → 部件抖动(肉眼"略有卡顿")。根 body 恒一致(body0RelΔ=0),非根错位。
+		/// 仅当 data.BodyIds 与 BodyPositions 等长且能按 id 找到幽灵对应 body 时才重排;否则回退索引直用(旧对端)。
+		/// 发送端有而幽灵没有的 id → 跳过(无法放置);幽灵有而发送端没有的槽位 → 沿用上一平滑值(部件保持原位)。
+		/// 在 PushSample 入缓冲前调用一次,后续缓冲/平滑/应用全部按幽灵序索引对齐。
+		/// </summary>
+		private static void ReorderRemoteBodiesByGhost(RemoteCraft rc, Mod.RemoteDataPack data)
+		{
+			if (data.BodyPositions == null || data.BodyPositions.Count == 0) return;
+			if (data.BodyIds == null || data.BodyIds.Count != data.BodyPositions.Count) return;
+			if (data.BodyRotations == null || data.BodyRotations.Count != data.BodyPositions.Count) return;
+			if (rc.Node == null || rc.Node.CraftScript == null || rc.Node.CraftScript.Data == null) return;
+			IReadOnlyList<BodyData> ghostBodies = rc.Node.CraftScript.Data.Assembly.Bodies;
+			if (ghostBodies == null || ghostBodies.Count == 0) return;
+
+			if (rc.BodyIdMap == null || rc.BodyIdMapVersion != ghostBodies.Count ||
+				!ReferenceEquals(rc.BodyIdMapGhost, rc.Node.CraftScript.Data.Assembly))
+			{
+				// 2026-09-19:幽灵装配重建(结构刷新/重生成 XML)后 BodyData 实例替换但 count 不变,
+				// 旧缓存映射用旧 id → 重排几乎全 miss(实测 bRmap 掉到 2/7,大部分 body 冻结在错误位置)。
+				// 以 Assembly 对象引用为键,装配被替换即重建映射。
+				rc.BodyIdMap = new Dictionary<int, int>(ghostBodies.Count);
+				for (int g = 0; g < ghostBodies.Count; g++)
+				{
+					if (ghostBodies[g] != null) rc.BodyIdMap[ghostBodies[g].Id] = g;
+				}
+				rc.BodyIdMapVersion = ghostBodies.Count;
+				rc.BodyIdMapGhost = rc.Node.CraftScript.Data.Assembly;
+			}
+			int gn = ghostBodies.Count;
+			if (rc.ReuseReorderPos == null || rc.ReuseReorderPos.Length != gn)
+			{
+				rc.ReuseReorderPos = new Vector3[gn];
+				rc.ReuseReorderRot = new Vector3[gn];
+				rc.ReuseReorderFilled = new bool[gn];
+			}
+			for (int g = 0; g < gn; g++) rc.ReuseReorderFilled[g] = false;
+			int n = data.BodyPositions.Count;
+			int mapped = 0, miss = 0;
+			for (int i = 0; i < n; i++)
+			{
+				int g;
+				if (rc.BodyIdMap.TryGetValue(data.BodyIds[i], out g) && g >= 0 && g < gn)
+				{
+					rc.ReuseReorderPos[g] = data.BodyPositions[i];
+					rc.ReuseReorderRot[g] = data.BodyRotations[i];
+					rc.ReuseReorderFilled[g] = true;
+					mapped++;
+				}
+				else
+				{
+					miss++;
+				}
+			}
+			rc.BodyRemapCount = mapped;
+			// 一次性诊断:重排生效性(ids 是否上包、幽灵 id 是否匹配)。mapped=15 → 重排生效;
+			// mapped=0 → BodyIds 未上包(旧端)或幽灵 id 与发送端不一致(需另查)。
+			if (!rc.BodyMapDiagLogged)
+			{
+				rc.BodyMapDiagLogged = true;
+				Mod.LogLobby("MP bodyMap P" + rc.PlayerId + ": ids=" + n + " ghost=" + gn + " mapped=" + mapped + " miss=" + miss +
+					" (mapped=15 → 重排生效;mapped=0 → 旧对端/幽灵 id 不匹配)");
+			}
+			for (int g = 0; g < gn; g++)
+			{
+				if (!rc.ReuseReorderFilled[g])
+				{
+					rc.ReuseReorderPos[g] = (rc.SmoothedBodyPos != null && g < rc.SmoothedBodyPos.Length) ? rc.SmoothedBodyPos[g] : Vector3.zero;
+					rc.ReuseReorderRot[g] = (rc.SmoothedBodyRot != null && g < rc.SmoothedBodyRot.Length) ? rc.SmoothedBodyRot[g].eulerAngles : Vector3.zero;
+				}
+			}
+			data.BodyPositions.Clear();
+			data.BodyRotations.Clear();
+			for (int g = 0; g < gn; g++)
+			{
+				data.BodyPositions.Add(rc.ReuseReorderPos[g]);
+				data.BodyRotations.Add(rc.ReuseReorderRot[g]);
+			}
+			data.BodyIds = null; // 已重排为幽灵序,后续按索引直用
+		}
+
+		/// <summary>
 		/// 应用远程飞船的每 body 姿态:旋转(相对 comRot,既有 BodyRotations)+ 位置(相对 comRot,body-sync P0 BodyPositions)。
 		/// 位置用"绝对写" body.Transform.position = comRot.TransformPoint(relPos),解决转轴/关节连接的
 		/// 子装配"整体移动"(摆动主要是位置变化,枢轴不在 comRot,旋转同步覆盖不了)。
@@ -644,8 +739,16 @@ namespace Assets.Scripts.Net
 				FlightSceneScript.Instance.TimeManager.Paused;
 			float sendIntervalMs = localPaused ? Mathf.Max(SendIntervalMs, PausedSendIntervalMs) : SendIntervalMs;
 			if (_sendTimer < sendIntervalMs) return;
-			// 携带余量而非清零:清零会把发送率钳制在渲染帧率(30fps 时只有 15Hz → 对端 gapEMA≈70ms,
-			// 高速机动时每包位置跳变更大、外推更易失准 → 顿挫)。减余量后任意 ≥20fps 都稳定发满 20Hz。
+			// F5(2026-09-15):帧率解耦 —— 每帧最多补发 2 包,≥10fps 也发满 20Hz。
+			// (原实现每帧最多 1 包 → 10fps 的机器只发 10Hz → 对端 gapEMA≈95ms、每包位置跳变翻倍。
+			//  2026-09-15 Steam 实测对端发包率 ~10.6Hz:gapEMA 95ms 且 jitterEMA 小=均匀、Steam 可靠通道
+			//  不丢包、接收端 PollConnection 全排空无每帧限流 → 只可能是发送端帧率耦合。)
+			// do/while + 预算:首次必发(已过阈值);同帧余量仍够再补发 ≤1 次(共 ≤2 包/帧)。
+			// 携带余量而非清零:正常帧率(≥20fps)发满 20Hz;10fps 补发到 20Hz;卡顿恢复由 F4 兜底不泄洪。
+			int sendBudget = 2;
+			Vector3d? loopSentPos = null; // F6b(2026-09-19):同帧重复包抑制(见下方 TrySampleLocalCraft 处)
+			do
+			{
 			_sendTimer -= sendIntervalMs;
 			// F4(2026-09-14,smoothing-comparison §五 / README §三):帧卡顿后 timer 余量大 → 恢复后每帧泄洪一包
 			// (发送端自身突发,接收端见成簇包,实测 sendGap 15~30ms 双峰)。钳制余量上限,
@@ -653,10 +756,20 @@ namespace Assets.Scripts.Net
 			if (_sendTimer > sendIntervalMs * 2f) _sendTimer = sendIntervalMs * 2f;
 
 			Mod.RemoteDataPack data;
-			if (!TrySampleLocalCraft(out data)) return;
+			if (!TrySampleLocalCraft(out data)) break;
+			// F6b(2026-09-19):同帧重复包抑制 —— 一帧内位置只能采样一次,F5 补发的第二包与第一包
+			// 内容完全相同(dPos=0)→ 接收端 stall 误判"发送端冻结"(120Hz 实测 freeze 抖动 92 次,
+			// vel 恒定 6m/s 但 pkΔ=0.0000m 即此因)且 mRate 被 0/正常 交替污染。
+			// 首包必发;同帧再次采样位置完全相同则不再补发。跨帧相同位置(真暂停)仍发送 ——
+			// 接收端靠 stall 时间阈值(F6b)+ Paused 标记判定冻结,不依赖此处。
+			if (loopSentPos.HasValue &&
+				data.Position.x == loopSentPos.Value.x &&
+				data.Position.y == loopSentPos.Value.y &&
+				data.Position.z == loopSentPos.Value.z) break;
+			loopSentPos = data.Position;
 			// 客户端在收到 Welcome（拿到 PlayerId）前不发状态包：
 			// 否则会以 PlayerId=-1 发包，房主无法关联到已登记玩家（"state for player -1"）。
-			if (PlayerId < 0) return;
+			if (PlayerId < 0) break;
 
 			
 			// 周期性本机朝向/位置诊断日志已移除（原为 if(false) 禁用块；
@@ -668,12 +781,39 @@ namespace Assets.Scripts.Net
 			if (Time.unscaledTime - _diagBody0RelLogTime > 1f)
 			{
 				_diagBody0RelLogTime = Time.unscaledTime;
+				// 发送端渲染帧率 EMA + 实际发包率(1000/sendGapEmaMs):F5 前发送循环每帧最多一包,
+				// 10fps 机器只能发 10Hz(2026-09-15 Steam 实测对端 gapEMA≈95ms 即此因);
+				// 与对端 3s 行 fps/recvHz 对账,验证 F5 后发包率与帧率解耦。
+				float fpsNow = Time.unscaledDeltaTime > 0f ? 1f / Time.unscaledDeltaTime : 0f;
+				_fpsEma = _fpsEma <= 0f ? fpsNow : _fpsEma * 0.9f + fpsNow * 0.1f;
 				// body0Rel = 包内 body[0] 相对 comRot 的偏移绝对值(接收端根 body 写 comPos,不叠加它;
 				// 该值即"游戏放置 vs 我们的写入"的对抗幅度,双端同版本时可直接核对)
 				double body0Rel = 0.0;
 				if (data.BodyPositions != null && data.BodyPositions.Count > 0)
 				{
 					body0Rel = data.BodyPositions[0].magnitude;
+				}
+				// bodyMaxRelΔ(2026-09-19):全部 body 相对 comRot 位姿与 1s 前最大位移。
+				// body0RelΔ 只盯根 body,非根部件甩动/装配索引错位(计数不变)看不见 —— 实测接收端
+				// bodyDelta 间歇 2~4.7m(部件在跳)而 body0RelΔ=0,需全 body 口径定位数据源。
+				// bodyMaxΔi/bodyMaxId:最大位移的索引与 id —— 恒同索引 = 某部件真甩;索引漂移 = 装配顺序乱。
+				double bodyMaxRelDelta = 0.0;
+				int bodyMaxIdx = -1, bodyMaxId = -1;
+				if (data.BodyPositions != null && data.BodyPositions.Count > 0 && _diagPrevBodyRel != null)
+				{
+					int bn = Mathf.Min(data.BodyPositions.Count, _diagPrevBodyRel.Length);
+					for (int bi = 0; bi < bn; bi++)
+					{
+						double dd = (data.BodyPositions[bi] - _diagPrevBodyRel[bi]).magnitude;
+						if (dd > bodyMaxRelDelta) { bodyMaxRelDelta = dd; bodyMaxIdx = bi; }
+					}
+					if (bodyMaxIdx >= 0 && data.BodyIds != null && bodyMaxIdx < data.BodyIds.Count) bodyMaxId = data.BodyIds[bodyMaxIdx];
+				}
+				if (data.BodyPositions != null)
+				{
+					if (_diagPrevBodyRel == null || _diagPrevBodyRel.Length != data.BodyPositions.Count)
+						_diagPrevBodyRel = new Vector3[data.BodyPositions.Count];
+					for (int bi = 0; bi < data.BodyPositions.Count; bi++) _diagPrevBodyRel[bi] = data.BodyPositions[bi];
 				}
 				// ω 符号自校验(2026-09-14,acceleration-smoothing §六-1):用上一 sendDiag 时刻的 SrfRel 按
 				// 本段 ω(EMA 值,假设恒定)外推,与实际 SrfRel 对比。稳态转弯段误差最小者 = 正确符号约定:
@@ -710,9 +850,14 @@ namespace Assets.Scripts.Net
 					" wRaw=" + _angVelRawDiag.magnitude.ToString("F2") + "rad/s" +
 					" w=" + data.AngularVelocity.magnitude.ToString("F2") + "rad/s" +
 					" body0RelΔ=" + rcDiagBody0RelDelta.ToString("F4") + "m" +
+					" bodyMaxRelΔ=" + bodyMaxRelDelta.ToString("F4") + "m" +
+					" bodyMaxΔi=" + bodyMaxIdx + (bodyMaxId >= 0 ? "(id=" + bodyMaxId + ")" : "") +
+					" rbΔ=" + (_diagBodyRbDeltas != null && bodyMaxIdx >= 0 && bodyMaxIdx < _diagBodyRbDeltas.Length ? _diagBodyRbDeltas[bodyMaxIdx].ToString("F3") : "?") + "m" +
 					" body0Rel=" + body0Rel.ToString("F4") + "m" +
 					" bodyCnt=" + (data.BodyPositions != null ? data.BodyPositions.Count : 0) +
 					" sendGap=" + (_lastSendTime >= 0f ? _sendGapEmaMs.ToString("F0") : "?") + "ms" +
+					" sendHz=" + (_sendGapEmaMs > 0f ? (1000f / _sendGapEmaMs).ToString("F1") : "?") + "Hz" +
+					" fps=" + _fpsEma.ToString("F0") +
 					" " + wSignDiag);
 			}
 			// 发送节奏诊断(2026-09-14):实际发包间隔 EMA。记录在真正发包处,过滤采样失败未发帧;
@@ -735,6 +880,8 @@ namespace Assets.Scripts.Net
 					if (peer.IsServer) { Transport.SendTo(peer, packet); break; }
 				}
 			}
+			}
+			while (_sendTimer >= sendIntervalMs && --sendBudget > 0); // F5:同帧余量仍够则补发(共 ≤2 包/帧)
 		}
 
 		/// <summary>
@@ -1321,6 +1468,15 @@ namespace Assets.Scripts.Net
 			public Vector3d SmoothedPos;        // 平滑后位置（地面坐标，与 data.Position 同系）
 			public Quaterniond SmoothedSrfRel;  // 平滑后朝向（相对地表 SrfRel）
 			public Vector3[] SmoothedBodyPos;   // 每 body 平滑后相对位置（相对 comRot，与 BodyPositions 同索引）
+			// 2026-09-19 body 索引错位修复:BodyData.Id → 幽灵装配索引映射 + 重排缓冲(见 ReorderRemoteBodiesByGhost)。
+			public Dictionary<int, int> BodyIdMap;
+			public int BodyIdMapVersion = -1;      // 建映射时的幽灵 body 数(变化则重建)
+			public object BodyIdMapGhost;          // 建映射时的幽灵 Assembly 引用(被替换则重建,修 bRmap 掉到 2)
+			public Vector3[] ReuseReorderPos;      // 重排结果(幽灵序)
+			public Vector3[] ReuseReorderRot;
+			public bool[] ReuseReorderFilled;
+			public int BodyRemapCount;             // 本帧按 id 成功重排的 body 数(诊断:>0=重排生效)
+			public bool BodyMapDiagLogged;         // 首次 bodyMap 诊断行已输出
 			public Quaternion[] SmoothedBodyRot; // 每 body 平滑后相对旋转（相对 comRot）
 			public bool HasSmoothed;            // 平滑状态是否已初始化
 
@@ -1336,6 +1492,12 @@ namespace Assets.Scripts.Net
 			public Vector3d LastRenderedPos;      // 上一帧实际应用的位置（地面坐标）
 			public double LastMoveDeltaM;          // 本帧已应用位置相对上一帧的位移（米）
 			public float LastBodyPoseDeltaM;       // 本帧每 body 最大位姿位移（米）
+			// 2026-09-19 部件抖动诊断:平滑前"目标相对位姿 − 上一平滑值"的最大误差(米)+ 误差>1m 的 body 数。
+			// 若 bodyDelta 大而 bodyTgt 小 → 平滑层自身问题;若 bodyTgt 大 → 目标数据跳(发送端甩动/装配重排)。
+			public float LastBodyTgtErrM;
+			public int LastBodyBigErr;
+			public float WinBodyTgtMaxM;           // 3s 窗口:平滑前最大目标误差
+			public int WinBodyBigSum;              // 3s 窗口:误差>1m 的 body 帧次累计
 			// 变换漂移诊断:本帧写入 Transform 前,实际 Transform.position 相对上一帧写入值的位移(米)。
 			// 若 moveDelta=0 而 tfDelta 持续>0 → 游戏层在 Update 写入之后移动了 ghost(滑动来自游戏而非我们的写入)。
 			public Vector3 LastWrittenFramePos;    // 上一帧 ApplyRemoteState 后 Transform.position(帧空间)
@@ -1361,6 +1523,7 @@ namespace Assets.Scripts.Net
 			public long FrozenFrames;              // 完全冻结态(ramp=1)的帧数(诊断)
 			public float RemotePausedRamp;         // 0..1 平滑过渡量(0=正常外推,1=完全停止速度外推),避免冻结/解冻瞬间跳变
 			public int PktStallCount;              // 连续"位置零位移"包计数
+			public int PktStallLimit = 2;          // F6b(2026-09-19):停顿判定阈值(包数→时间),见 PushSample
 			public float PktFreezeDeltaM;          // 最近两包位置距离(诊断:是否真的零位移)
 			public bool HasPktFreezePos;
 			public Vector3d PktFreezePos;
@@ -1397,6 +1560,13 @@ namespace Assets.Scripts.Net
 			public float MArrivalEma;
 			// F3(2026-09-14):单向延迟 EMA(ext 用;LatencyMs=RTT/2 裸值抖动会直接进 ext → 目标晃)。
 			public float LatencyEmaMs = -1f;
+			// F1b(2026-09-15):外推时钟(VirtualAge,有界)与静默检测(RealAgeSec,自重置)分离。
+			// 2026-09-15 Steam 实测教训:VA 无界积分漂到 30s → gapfreeze 永久闩锁 → 目标退化为"每包一跳"
+			// (ageNow=30s、extWin≈rtt/2、moveMax 13~33m 为证)。VA 有界后不可能 windup;
+			// realAge 用于 gapfreeze/暂停判定,自重置(每包归零)不可能漂移。
+			public float RealAgeSec;                 // 距最新包到达的真实时间(自重置,静默检测用)
+			public long WinGapFreezeFrames;          // 3s 窗口:gapfreeze 激活帧数(持续态;旧 WinGapFreezeHits 只数跃迁,永久闩锁时误导为 0)
+			public long FramesAtLastLog;             // 上次 3s 日志的 TotalFrames(接收端 fps 计算用)
 
 			// --- 发送端时间倍率(2026-09:慢放时外推按真实时间推进而包位置按发送端缩放时间走 → 每包向后锯齿) ---
 			// 相邻两包 FlightState.Time(发送端游戏时间)增量 / 真实到达时间增量;正常=1,慢放<1,暂停→0。
@@ -1450,6 +1620,9 @@ namespace Assets.Scripts.Net
 			/// <summary>环形追加一条样本；按到达时间天然有序，满则覆盖最旧。</summary>
 			public void PushSample(float arrivalTime, double packetTime, Mod.RemoteDataPack data)
 			{
+				// 2026-09-19:按 BodyData.Id 把发送端 body 列表重排为幽灵装配顺序(索引错位修复)。
+				// 须在入缓冲前完成,让缓冲/平滑/应用全部按幽灵序索引对齐。
+				MpNetworkManager.ReorderRemoteBodiesByGhost(this, data);
 				int idx = (BufferHead + BufferCount) % BufferCapacity;
 				Buffer[idx] = new StateSample { ArrivalTime = arrivalTime, PacketTime = packetTime, Data = data };
 				if (BufferCount < BufferCapacity) BufferCount++;
@@ -1509,46 +1682,56 @@ namespace Assets.Scripts.Net
 						{
 							SenderTimeRate = SenderTimeRate <= 0f ? rate : SenderTimeRate * 0.9f + rate * 0.1f;
 						}
-						// F1(2026-09-14):发送端发包间隔估计(包时间差 EMA,钳 [0.02,0.1]s)。
-						// FlightState.Time 慢放不缩放 → 该值≈名义发包间隔(50ms),慢放由 mRate 管,不受影响;
+						// F1(2026-09-14):发送端发包间隔估计(包时间差 EMA,钳 [0.002,0.1]s)。
+						// FlightState.Time 慢放不缩放 → 该值≈名义发包间隔,慢放由 mRate 管,不受影响;
 						// 发送端卡顿(间隔变大)时被钳制到 0.1s,不无限膨胀。
+						// ⚠️ 2026-09-19:下限原为 0.02s(按 20Hz 校准),房主把发包频率设到 120Hz 后真实间隔
+						// 8.3ms 被钳到 20ms → SendIntervalEst 失真 → 停顿判定阈值缩放(F6a)跟着错。
+						// 放宽到 0.002s(支持到 500Hz);上限 0.1s 保留(防重连大间隔污染)。
 						if (dtPkt > 0.0)
 						{
-							float est = (float)Math.Min(Math.Max(dtPkt, 0.02), 0.1);
+							float est = (float)Math.Min(Math.Max(dtPkt, 0.002), 0.1);
 							SendIntervalEst = SendIntervalEst <= 0f ? est : SendIntervalEst * 0.9f + est * 0.1f;
 						}
 					}
 				}
 				_lastPktTime = packetTime;
 
-				// F1(2026-09-14):虚拟 age 时钟。每包到达扣除发送端发包间隔估计 SendIntervalEst
-				// (在上一块 dtPkt 处 EMA 更新)—— 突发背靠背时扣 0.05 而非归零 → 目标连续(见字段注释)。
-				VirtualAge -= SendIntervalEst > 0f ? SendIntervalEst : 0.05f;
 				// F1(2026-09-14):虚拟 age 时钟(每帧 +dt,见 UpdateRemoteCrafts)。每包到达扣除
 				// **该包与上一包的「内容时间增量」contentGapSec**(= 发送端 FlightState.Time 之差):
 				// 突发背靠背时扣≈0.05 而非归零 → 目标连续(见字段注释的连续性证明)。
-				// ⚠️ 2026-09-14 修:原先固定扣 SendIntervalEst(EMA,钳 [0.02,0.1])——**丢一个包时实际内容增量
-				// 是 2×间隔,却只扣 1×**,每丢一包就永久多出约一个间隔(只在下界钳 0、正向无界)→ age 单调累积,
-				// 越过 gapFreeze 阈值后长期卡在"冻结"分支(ext 丢掉 age 项)且包恢复后也回不来 → "停→冲"顿挫
-				// (MP gapfreeze 日志的来源之一)。改用真实内容增量后:每帧累加与每包扣减自动配平(丢包 / 长静默
-				// 后下一包一次扣完),age 恒定不再漂移;长静默仍正常触发冻结,恢复后自动解冻。
+				// ⚠️ 2026-09-14 修:固定扣 SendIntervalEst(EMA,钳 [0.02,0.1])在**丢包**时少扣(内容增量
+				// 是 2×间隔却只扣 1×)→ 每丢一包 age 永久多出约一个间隔 → 越过阈值后长期卡冻结。
+				// 2026-09-15 Steam 实测:VA 无界漂到 30s,gapfreeze 永久闩锁,目标退化为"每包一跳"。
+				// 改用真实内容增量后丢包自动配平;暂停期(发送端时间冻结,contentGapSec=0)回退 SendIntervalEst。
 				VirtualAge -= contentGapSec > 0f ? contentGapSec : (SendIntervalEst > 0f ? SendIntervalEst : 0.05f);
+				// F1b(2026-09-15):VirtualAge 有界 —— 开环积分器 + 小偏差(暂停期回退间隔、帧率抖动)必然
+				// 缓慢漂移,无界时几分钟就攒到几十秒。硬钳到 [0, 2×间隔](≈0.1~0.4s,SP2 式有界外推):
+				// 稳态包流下 VA 在 0~间隔 间小幅振荡(连续性保留);长静默时 VA 顶到上界 → 幽灵滑行至有界
+				// 距离后停住,不再"瞬间停 + 恢复后追赶"(旧 gapfreeze 机制 B 的停→冲)。
 				if (VirtualAge < 0f) VirtualAge = 0f;
+				float vaCap = SendIntervalEst > 0f ? SendIntervalEst * 2f : 0.1f;
+				if (VirtualAge > vaCap) VirtualAge = vaCap;
 
-				// 发送端运动倍率(2026-09 四轮,位置基):相邻两包位置位移 ÷ (速度 × 真实到达间隔)。
-				// 正常飞行:位移 = v×dtReal → 倍率≈1;发送端慢放(Unity timeScale<1):位移 = v×dtReal×ts → 倍率=ts;
-				// 静止/暂停:位移≈0 → 倍率→0(外推量归零,幽灵精确停包位)。比包时间倍率鲁棒:
-				// 用户慢放实测 FlightState.Time 不缩放(rate 恒 1.000),只有位置位移如实反映慢放。
+				// 发送端运动倍率(2026-09 四轮,位置基):相邻两包位置位移 ÷ (速度 × 每包时间)。
+				// 正常飞行:位移 = v×dt → 倍率≈1;发送端慢放(Unity timeScale<1):位移 = v×dt×ts → 倍率=ts;
+				// 静止/暂停:位移≈0 → 倍率→0(外推量归零,幽灵精确停包位)。
 				if (HasLastPktPos && prevArrival >= 0)
 				{
 					float mDtReal = arrivalTime - prevArrival;
-					// F2'(2026-09-14):到达间隔慢 EMA 作 mRate 分母,抗突发(瞬时间隔 0/几百 ms 交替会把
-					// mRate 打到 0.03~1.14,实测)。慢 EMA 收敛到平均间隔 → 稳态 mRate≈1。
+					// F2'(2026-09-14):到达间隔慢 EMA 作 mRate 分母的抗突发备选(瞬时间隔 0/几百 ms 交替
+					// 会把 mRate 打到 0.03~1.14,实测)。慢 EMA 收敛到平均到达间隔。
 					if (mDtReal > 0.001f)
 					{
 						MArrivalEma = MArrivalEma <= 0f ? mDtReal : MArrivalEma * 0.99f + mDtReal * 0.01f;
 					}
-					float mDtUse = MArrivalEma > 0f ? MArrivalEma : mDtReal;
+					// F2'-b(2026-09-19):分母优先用「发送端包内容时间增量」contentGapSec(= FlightState.Time
+					// 之差,与 dPos 同源,不受到达抖动/丢包/发包频率影响)—— dPos 是发送端相邻两包的真实
+					// 位移 = v×ts×contentGapSec(FlightState.Time 不缩放,实测 rate 恒 1.000)→ mRate=ts 恒准。
+					// 原用到达间隔(MArrivalEma)在 120Hz tick 下收敛到突发平均(20~30ms)而真实间隔 8.3ms
+					// → mRate 被低估到 0.2~0.35(2026-09-19 VM 实测)→ ext 缩水 → 幽灵滞后。
+					// 暂停(发送端时间冻结,contentGapSec=0)时回退 MArrivalEma;都无效则跳过。
+					float mDtUse = contentGapSec > 0.001f ? contentGapSec : MArrivalEma;
 					if (mDtUse > 0.001f)
 					{
 						double dPos = Vector3d.Distance(data.Position, LastPktPos);
@@ -1569,10 +1752,17 @@ namespace Assets.Scripts.Net
 						else
 						{
 							// 速度≈0 或位移≈0(静止/暂停):发送端没有实际运动 → 倍率收敛到 0,外推量归零。
-							float newMotionRate = SenderMotionRate * 0.9f + 0f * 0.1f;
-							newMotionRate = Mathf.Clamp(newMotionRate,
-								SenderMotionRate - MaxMotionRateStep, SenderMotionRate + MaxMotionRateStep);
-							SenderMotionRate = newMotionRate;
+							// ⚠️ F6b(2026-09-19):contentGapSec≈0 = 同帧重复包/发送端时间冻结(位置未变,
+							// 并非"停止运动")—— 无脑收敛会把 mRate 与正常包交替污染到 0.2~0.35(120Hz 实测)
+							// → ext 缩水 → 幽灵滞后。仅当发送端时间确实推进(contentGapSec>0)才收敛;
+							// 重复包保持上一倍率(真暂停由 stall 时间阈值 + Paused 标记 + ramp 处理)。
+							if (contentGapSec > 0.001f)
+							{
+								float newMotionRate = SenderMotionRate * 0.9f + 0f * 0.1f;
+								newMotionRate = Mathf.Clamp(newMotionRate,
+									SenderMotionRate - MaxMotionRateStep, SenderMotionRate + MaxMotionRateStep);
+								SenderMotionRate = newMotionRate;
+							}
 						}
 					}
 				}
@@ -1592,7 +1782,19 @@ namespace Assets.Scripts.Net
 				// 按速度外推(那时包内位置仍是暂停前的旧值,一旦外推就会跳一下)。
 				double freezeDelta = HasPktFreezePos ? Vector3d.Distance(data.Position, PktFreezePos) : double.MaxValue;
 				PktFreezeDeltaM = HasPktFreezePos ? (float)freezeDelta : 0f;
-				if (HasPktFreezePos && freezeDelta <= PositionStallM)
+				// F6a(2026-09-19):停顿判定阈值按发包间隔缩放 —— PositionStallM=0.02m 按 20Hz(50ms)校准,
+				// 等价"速度 <0.4m/s ≈ 静止"。房主可设任意发包频率(实测 120Hz,间隔 8.3ms):固定 0.02m
+				// 阈值在 120Hz 下每包位移 = v×8.3ms,2.4m/s 时恰好 0.02m → 慢速被反复误判静止 →
+				// freeze ENTER/EXIT 抖动(2026-09-19 VM 实测 209 次)→ 幽灵低速一卡一卡。
+				// 缩放:stallM = 0.02×(间隔/0.05),任意频率下等价于"速度 <0.4m/s 视为静止"。
+				double stallM = PositionStallM * (SendIntervalEst > 0f ? (double)(SendIntervalEst / 0.05f) : 1.0);
+				if (stallM < 0.001) stallM = 0.001;
+				// F6b(2026-09-19):停顿判定从"包数"改"时间" —— 原 2 包阈值按 20Hz 校准(=100ms)。
+				// 房主可设任意发包频率(实测 120Hz):2 包仅 17ms,任何"位置更新慢于发包"的正常情况
+				// (同帧重复包/低物理帧率)都够得着 → freeze 抖动(2026-09-19 VM 实测 92 次,vel 恒定 6m/s
+				// 但 pkΔ=0.0000m 即为同帧重复包)。limit = ceil(100ms/发包间隔):20Hz=2(不变)、120Hz=12。
+				PktStallLimit = Mathf.Clamp((int)Mathf.Ceil(0.1f / Mathf.Max(SendIntervalEst, 0.001f)), 2, 30);
+				if (HasPktFreezePos && freezeDelta <= stallM)
 				{
 					if (PktStallCount < 1000) PktStallCount++;
 				}
@@ -2130,10 +2332,24 @@ namespace Assets.Scripts.Net
 							latencySec = rc.LatencyEmaMs / 1000f;
 						}
 						else latencySec = rc.GapEmaMs / 1000f;
-						// F1(2026-09-14):虚拟 age 时钟替代"距最新包到达的真实时间"。每帧 +dt,
-						// 每包到达 −SendIntervalEst(PushSample 内)→ 突发到达时目标连续(锯齿消除,见字段注释)。
+						// F1b(2026-09-15):外推时钟与静默检测分离。
+						// VirtualAge(有界,见 PushSample 钳制):负责目标连续性 —— 每帧 +dt、每包 −内容增量,
+						// 突发到达时目标连续(锯齿消除)。**仅用于外推,不做任何判定**(有界积分器仍有残余偏差)。
+						// RealAgeSec(自重置):距最新包到达的真实时间,用于 gapfreeze/暂停等"静默判定"。
+						// ⚠️ 2026-09-15 Steam 实测教训:曾用 VirtualAge 做判定 → 无界漂到 30s → gapfreeze 永久
+						// 闩锁 → age 分量被砍 → 目标只在包到达时前进 → "一卡一卡"(extWin≈rtt/2、ageNow≈30s 为证)。
 						rc.VirtualAge += Time.unscaledDeltaTime;
-						float age = rc.VirtualAge;
+						// F1b-4(2026-09-19):VA 钳制必须在每帧执行 —— 原只在 PushSample(每包)钳制,
+						// 静默期无包 → 钳制不运行 → VA 无界增长(2026-09-19 Steam 实测 ageNow 涨到 11s、
+						// ext 顶到 1.0s 上限 → 幽灵滑出 V×1s、恢复期每包目标跳 V×contentGapSec)。
+						// 每帧钳制后:ageNow ≤ 2×间隔,ext ≤ latencySec+2×间隔 < 1.0 永不触顶;
+						// 连续性不破(钳制只缩短外推量,包到达时 VA−=contentGapSec 照常配平,
+						// contentGapSec≤cap 时包到达零跳变;>cap 的发送端卡顿残留 V×(gap−cap),由平滑层摊平)。
+						float vaCapFrame = rc.SendIntervalEst > 0f ? rc.SendIntervalEst * 2f : 0.1f;
+						if (rc.VirtualAge > vaCapFrame) rc.VirtualAge = vaCapFrame;
+						float age = Time.unscaledTime - rc.NewestArrivalTime; // realAge:静默检测(自重置)
+						rc.RealAgeSec = age;
+						float va = rc.VirtualAge;                            // 有界外推时钟(目标连续性)
 						// ★ 暂停/冻结保护(2026-09,修"飞船有速度时暂停→观察方位置抽搐"):
 						// 发送端暂停后 Position 冻结、Velocity 仍是非零旧值(暂停前最后一刻的速度)。
 						// 此时若继续 Position + Velocity×age:每包到达把目标拉回近处、包间又按速度推进
@@ -2141,7 +2357,7 @@ namespace Assets.Scripts.Net
 						// 修正:冻结期间把外推量按 RemotePausedRamp 收敛到固定单向延迟 latencySec(不带 age),
 						// 即"停在最新包位置 + 网络传输本身占用的那段位移",不再人工推进目标。
 						// 恢复运动(或对端解除暂停)时 ramp 在 0.15s 内回落到 0,重新把"包龄"加回外推量,避免瞬间跳变。
-						bool pausedNow = rc.PktStallCount >= RemoteCraft.PositionStallPackets || rc.LastPktPausedFlag;
+						bool pausedNow = rc.PktStallCount >= rc.PktStallLimit || rc.LastPktPausedFlag; // F6b:时间制阈值
 						if (pausedNow != rc.RemotePaused)
 						{
 							// 一次性状态跃迁日志(便于实测确认"暂停=冻结"是否按预期生效):
@@ -2157,27 +2373,20 @@ namespace Assets.Scripts.Net
 						// 目标不再随包龄前进,也就没有"每包拉回/包间推进"的锯齿摆动。
 						// ⚠️ 必须无条件收敛(不能加 ageNow>latencySec 守卫):暂停时发送端降频(8Hz),
 						// 包龄往往小于 latencySec,旧守卫会漏钳制 → 高速船(如 85m/s)依旧锯齿(2026-09 实测发现)。
-						float ageNow = age;
+						float ageNow = va; // 外推用的"包龄"= 有界 VirtualAge(判定用 realAge,见上)
 						if (rc.RemotePausedRamp > 0f)
 						{
 							ageNow = Mathf.Lerp(ageNow, 0f, rc.RemotePausedRamp);
 						}
 						rc.LastAgeNowSec = ageNow;
-						float ext;
 						float gapFreezeThr = Mathf.Max(rc.GapEmaMs * 3f / 1000f, 0.25f);
 						bool gapFreezeNow = age > gapFreezeThr;
-						if (gapFreezeNow)
-						{
-							// 发送端长时间无包(断连/暂停):冻结在最新已知位置+固定外推,不再随 age 前进(防幽灵飞走)
-							// ⚠️ 2026-09-14 顿挫诊断:真实 Steam relay 突发下普通静默(>250ms)也会命中此分支
-							// → 目标停止 → 包到达后追赶 → "停→冲"(smoothing-comparison §四 机制 B)。
-							// MP gapfreeze 事件日志(配合 MP gap)用于确认是否被突发误触发。
-							ext = latencySec;
-						}
-						else
-						{
-							ext = latencySec + ageNow; // 正常:持续外推;冻结期:ageNow→0 → ext→latencySec
-						}
+						// F1b(2026-09-15):长静默不再强制 ext=latencySec —— VA 已钳到 [0,2×间隔],
+						// 静默期间 ext = latencySec + 顶格 VA(恒定)→ 幽灵滑行至有界距离后停住(SP2 式有界外推)。
+						// 旧逻辑在 >250ms 突发间隙即触发"停→冲"(smoothing-comparison §四 机制 B;实测 gapfreeze
+						// 永久闩锁后目标每包一跳)。检测与日志保留,仅作诊断;持续激活帧数进 3s 窗口统计。
+						float ext = latencySec + ageNow; // 正常:持续外推;暂停期:ageNow→0 → ext→latencySec
+						if (gapFreezeNow) rc.WinGapFreezeFrames++;
 						if (gapFreezeNow != rc.GapFreezeActive)
 						{
 							rc.GapFreezeActive = gapFreezeNow;
@@ -2230,7 +2439,7 @@ namespace Assets.Scripts.Net
 							}
 						}
 						// 朝向外推(2 阶域:旋转速率)。ω 为 craft 局部系(ModApi 约定),右乘
-						// SrfRel *= Euler(ω_local·ext);符号约定待实测(EnableRotationExtrap 默认 false)。
+						// SrfRel *= Euler(ω_local·ext)。符号已实测确认(2026-09-19):F+ = (-x,y,-z) 正号。
 						if (EnableRotationExtrap && ext > 0f)
 						{
 							Vector3 w = latest.AngularVelocity;
@@ -2250,7 +2459,7 @@ namespace Assets.Scripts.Net
 						rc.InterpPct = 1f;       // 始终在最新包(无缓冲插值)
 
 						// P1:SP2 式平滑(指数收敛 + 近距快照 + 瞬移)
-						latest = ApplyRemoteSmoothing(rc, latest, Time.unscaledDeltaTime);
+						latest = ApplyRemoteSmoothing(rc, latest, Time.unscaledDeltaTime, ext);
 						// 跳动诊断:本帧实际应用位置相对上一帧的位移(0 延迟+静止时应≈0;>0.5m 即跳动)。
 						rc.LastMoveDeltaM = rc.HasApplied ? Vector3d.Distance(latest.Position, rc.LastRenderedPos) : 0.0;
 						rc.LastRenderedPos = latest.Position;
@@ -2274,17 +2483,25 @@ namespace Assets.Scripts.Net
 					// 配合 NetSim 延迟模拟：抖动 EMA 应≈NetSim 抖动量；欠载%>0 即说明发生了"冻结-跳变"。
 					if (Time.unscaledTime - rc.LastSmoothingLogTime > 3f)
 					{
+						// 接收端帧率(窗口内 TotalFrames 增量/窗口时长;F5 前发送循环每帧最多一包,帧率直接
+						// 决定发包率 → 与对端 sendDiag 的 fps/sendHz 对账才能发现帧率-发包率耦合)。
+						float winDt = Time.unscaledTime - rc.LastSmoothingLogTime;
+						float winFps = winDt > 0.1f ? (rc.TotalFrames - rc.FramesAtLastLog) / winDt : 0f;
+						rc.FramesAtLastLog = rc.TotalFrames;
 						rc.LastSmoothingLogTime = Time.unscaledTime;
 						// 3s 窗口累计量:F2/F1 精度下 0.1m/s 级慢漂移显示为 0.00,必须用累计量+高精度捕捉。
 						double move3s = rc.MoveSumM, pktJump = rc.PktJumpM;
 						double headDeg = rc.HeadDeg3s;
 						// 顿挫诊断窗口量(2026-09-14):⚠️ 先取局部、再清零、后打印(此前清零在前 → 恒打印 0)。
 						float wMRateMin = rc.WinMRateMin, wMRateMax = rc.WinMRateMax, wExtMax = rc.WinExtMax;
-						float wMaxGap = rc.WinMaxGapMs, wGapFreeze = rc.WinGapFreezeHits, wMoveMax = rc.WinMoveMaxM;
+						float wMaxGap = rc.WinMaxGapMs, wMoveMax = rc.WinMoveMaxM;
+						float wBodyTgtMax = rc.WinBodyTgtMaxM; int wBodyBig = rc.WinBodyBigSum; // 2026-09-19 部件抖动诊断
+						long wGapFreeze = rc.WinGapFreezeFrames; // 持续激活帧数(而非跃迁计数,永久闩锁也能看见)
 						int wLongGap = rc.WinLongGapCount;
 						rc.MoveSumM = 0; rc.PktJumpM = 0; rc.HeadDeg3s = 0;
-						rc.WinGapFreezeHits = 0; rc.WinMRateMin = 1f; rc.WinMRateMax = 1f; rc.WinExtMax = 0f;
+						rc.WinGapFreezeHits = 0; rc.WinGapFreezeFrames = 0; rc.WinMRateMin = 1f; rc.WinMRateMax = 1f; rc.WinExtMax = 0f;
 						rc.WinMaxGapMs = 0f; rc.WinLongGapCount = 0; rc.WinMoveMaxM = 0f;
+						rc.WinBodyTgtMaxM = 0f; rc.WinBodyBigSum = 0;
 						string newestPos = "?", vel = "?", accStr = "?", wStr = "?";
 						try
 						{
@@ -2302,20 +2519,23 @@ namespace Assets.Scripts.Net
 						try { headYaw = rc.SmoothedSrfRel.ToQuaternion().eulerAngles.y.ToString("F1"); } catch { }
 						Mod.LogLobby("MP smoothing P" + rc.PlayerId +
 							": buf=" + rc.BufferCount + "/" + RemoteCraft.BufferCapacity +
+							" fps=" + winFps.ToString("F0") +
 							" rtt/2=" + (rc.LatencyMs > 0f ? (rc.LatencyEmaMs > 0f ? rc.LatencyEmaMs : rc.LatencyMs).ToString("F0") : "?") + "ms" +
 							" gapEMA=" + rc.GapEmaMs.ToString("F0") + "ms jitterEMA=" + rc.JitterEmaMs.ToString("F0") + "ms" +
+							" recvHz=" + (rc.GapEmaMs > 0f ? (1000f / rc.GapEmaMs).ToString("F1") : "?") +
 							" frames=" + rc.TotalFrames + " snap=" + rc.SnapFrames + " extrap=" + rc.ExtrapolatedFrames +
 							" frozen=" + rc.FrozenFrames + " paused=" + (rc.RemotePaused ? 1 : 0) +
 							" rate=" + rc.SenderTimeRate.ToString("F3") + " mRate=" + rc.SenderMotionRate.ToString("F3") +
 							" mRateWin=(" + wMRateMin.ToString("F2") + "," + wMRateMax.ToString("F2") + ")" +
 							" extWin=(max=" + wExtMax.ToString("F3") + "s)" +
 							" gapWin=(max=" + wMaxGap.ToString("F0") + "ms,>250ms=" + wLongGap + ")" +
-							" gapFreeze=" + wGapFreeze.ToString("F0") +
+							" gapFreezeF=" + wGapFreeze +
 							" moveMax=" + wMoveMax.ToString("F2") + "m" +
-							" ageNow=" + rc.LastAgeNowSec.ToString("F3") + "s stall=" + rc.PktStallCount +
+							" ageNow=" + rc.LastAgeNowSec.ToString("F3") + "s age=" + rc.RealAgeSec.ToString("F3") + "s stall=" + rc.PktStallCount +
 							" pkΔ=" + rc.PktFreezeDeltaM.ToString("F4") + "m" +
 							" interpPct=" + rc.InterpPct.ToString("F2") +
 							" moveDelta=" + rc.LastMoveDeltaM.ToString("F2") + "m bodyDelta=" + rc.LastBodyPoseDeltaM.ToString("F2") + "m" +
+							" bodyTgt=" + wBodyTgtMax.ToString("F2") + "m bodyBig=" + wBodyBig + " bRmap=" + rc.BodyRemapCount +
 							" tfDrift=" + rc.LastTfDriftM.ToString("F2") + "m" +
 							" move3s=" + move3s.ToString("F3") + "m pktJump=" + pktJump.ToString("F3") + "m" +
 							" vel=" + vel + "m/s acc=" + accStr + "m/s² aExt=" + rc.LastAccelTermM.ToString("F2") + "m" +
@@ -2533,7 +2753,7 @@ namespace Assets.Scripts.Net
 		/// 不改动 target/缓冲样本)。参考:SP2 CraftStateSerializer.cs:78-94(速度自适应 k + 瞬移 + Slerp)、
 		/// BodyScript.cs:660-679(10·dt 平滑 + 近距快照)。首帧/body 数量变化时快照为 target。
 		/// </summary>
-		private static Mod.RemoteDataPack ApplyRemoteSmoothing(RemoteCraft rc, Mod.RemoteDataPack target, float dt)
+		private static Mod.RemoteDataPack ApplyRemoteSmoothing(RemoteCraft rc, Mod.RemoteDataPack target, float dt, float ext)
 		{
 			// 防御:目标位姿含非有限值(坏包/越界)时直接快照,防 NaN 传播到 Transform 造成瞬移/消失。
 			if (!IsFinite(target.Position) || !IsFinite(target.Velocity))
@@ -2568,7 +2788,11 @@ namespace Assets.Scripts.Net
 			}
 			else
 			{
-				float k = Mathf.Lerp(0.1f, 1f, Mathf.Min(1f, speed * 0.02f));
+				// F7(2026-09-15):高速最低平滑 —— 原 k 在 v≥50m/s 时=1 → alpha≈1 → 渲染 1:1 跟随目标
+				// 跳变(2026-09-15 Steam 实测 posErr=0、moveDelta 单帧 10~33m,帧率越低越明显)。
+				// 上限 0.6:匀速飞行时引入的滞后是常数(不可见);残余目标跳变被低通吸收(~2-3 帧摊平,
+				// 与下方 1.5·v·dt 步长上限叠加),观感不再 1:1 透出突发。低速段(<50m/s)行为不变。
+				float k = Mathf.Lerp(0.1f, 0.6f, Mathf.Min(1f, speed * 0.02f));
 				// SP2 是"逐物理步(50Hz) Lerp(position, target, k)" → 等价帧率无关收敛速率 dt*50:
 				// k=0.1 时时间常数≈0.2s(旧 dt*10 是≈1s,慢 5 倍 → 残差蠕动拖出可见滑动)。
 				float alpha = 1f - Mathf.Pow(1f - k, dt * 50f);
@@ -2610,11 +2834,18 @@ namespace Assets.Scripts.Net
 				rc.ReuseSmoothBodyRot.Clear();
 				float alphaBody = Mathf.Clamp01(10f * dt);
 				float maxBodyDelta = 0f;
+				float maxBodyTgtErr = 0f;
+				int bodyBigErr = 0;
 				for (int i = 0; i < n; i++)
 				{
 					Vector3 tpos = (target.BodyPositions != null && i < target.BodyPositions.Count) ? target.BodyPositions[i] : rc.SmoothedBodyPos[i];
 					Quaternion trot = (target.BodyRotations != null && i < target.BodyRotations.Count) ? Quaternion.Euler(target.BodyRotations[i]) : rc.SmoothedBodyRot[i];
 					Vector3 prevSp = rc.SmoothedBodyPos[i];
+					// 部件抖动诊断(2026-09-19):平滑前目标误差 = 该 body 相对位姿单帧跳变(>1m 即异常:
+					// 发送端部件甩动 或 装配索引错位/重排)。平滑后 bodyDelta 大 + bodyTgt 大 → 数据源跳。
+					float terr = (tpos - prevSp).magnitude;
+					if (terr > maxBodyTgtErr) maxBodyTgtErr = terr;
+					if (terr > 1.0f) bodyBigErr++;
 					Vector3 sp = prevSp;
 					Quaternion sr = rc.SmoothedBodyRot[i];
 					if ((tpos - sp).sqrMagnitude < 0.01f) sp = tpos;
@@ -2629,6 +2860,10 @@ namespace Assets.Scripts.Net
 					rc.ReuseSmoothBodyRot.Add(sr.eulerAngles);
 				}
 				rc.LastBodyPoseDeltaM = maxBodyDelta;
+				rc.LastBodyTgtErrM = maxBodyTgtErr;
+				rc.LastBodyBigErr = bodyBigErr;
+				if (maxBodyTgtErr > rc.WinBodyTgtMaxM) rc.WinBodyTgtMaxM = maxBodyTgtErr;
+				rc.WinBodyBigSum += bodyBigErr;
 				result.BodyPositions = rc.ReuseSmoothBodyPos;
 				result.BodyRotations = rc.ReuseSmoothBodyRot;
 			}
@@ -3006,9 +3241,26 @@ namespace Assets.Scripts.Net
 				// 接收端按 comRot 摆放 body 时会整体转错 → "分裂/散架 + 朝向不一致"。
 				Quaternion comRotUnity = craft.CraftScript.CenterOfMass != null
 					? craft.CraftScript.CenterOfMass.rotation : craft.CraftScript.Transform.rotation;
-				// body-sync P0:相对 comRot 位置采样需要 comRot 的 Transform(与接收端 TransformPoint 精确互逆,含 scale)
-				Transform comRotTransform = craft.CraftScript.CenterOfMass != null
-					? craft.CraftScript.CenterOfMass : craft.CraftScript.Transform;
+				// body-sync P0 稳定采样基准(2026-09-19):不再用实时 comRot Transform 做 InverseTransformPoint。
+				// 游戏 RecalculateCenterOfMass() 每帧把 comRot 锚到物理质心(Σ body.WorldCenterOfMass×mass,
+				// CraftScript.cs:1343)—— 刚体振动时 comRot 相对节点位置 ±2~3m 摆动(实测静止暂停时
+				// bodyMaxΔi 多索引轮流最大 = 共模摆动,而包 Position 稳定 pkΔ≈0)→ 用晃动基准采样会把晃动
+				// 写进 BodyPositions → 接收端 ghost 部件绕稳定中心晃(bodyTgt≈5m、bodyDelta 0.6~0.9m = 卡顿)。
+				// 改用包 Position 的帧空间对应点作稳定基准:接收端逻辑 comPos =
+				// frame.PlanetToFramePosition(SurfaceVectorToPlanetVector(data.Position)) —— 与
+				// sendFrame.PlanetToFramePosition(craft.Position) 同源互逆,采样基准与接收端摆放基准一致。
+				Vector3 stableBodyAnchor;
+				Quaternion invComRotUnity = Quaternion.Inverse(comRotUnity);
+				if (sendFrame != null)
+				{
+					stableBodyAnchor = sendFrame.PlanetToFramePosition(craft.Position);
+				}
+				else
+				{
+					Transform comRotTransformFallback = craft.CraftScript.CenterOfMass != null
+						? craft.CraftScript.CenterOfMass : craft.CraftScript.Transform;
+					stableBodyAnchor = comRotTransformFallback.position;
+				}
 				// LunaMultiplayer 方案:传输"相对行星地表"朝向 SrfRel。
 				// comRot 是帧空间;表面锁定帧 θ_frame = θ_planet + const(常量)。
 				// 相对地表朝向 = RotateY(θ_frame - θ_planet) * comRot(与行星自转无关)。
@@ -3021,26 +3273,79 @@ namespace Assets.Scripts.Net
 				IReadOnlyList<BodyData> bodyList = craft.CraftScript.Data.Assembly.Bodies;
 				if (bodyList != null)
 				{
+					// 2026-09-19 索引稳定性:BodyScript/Transform 瞬时空(部件销毁重建/装配刷新)时**不跳过**,
+					// 沿用上一帧已知位姿占位 —— 否则列表变短 → 接收端索引错位(实测 bodyMaxRelΔ 4~6m/1s)。
+					// 同时采集 BodyData.Id,接收端按 id 重排到幽灵装配顺序(双保险,见 ReorderRemoteBodiesByGhost)。
+					if (_lastBodyPos == null || _lastBodyPos.Length != bodyList.Count)
+					{
+						_lastBodyPos = new Vector3[bodyList.Count];
+						_lastBodyRot = new Vector3[bodyList.Count];
+						_hasLastBodyPose = new bool[bodyList.Count];
+						_diagBodyRbDeltas = new float[bodyList.Count];
+					}
 					for (int bi = 0; bi < bodyList.Count; bi++)
 					{
-						if (bodyList[bi].BodyScript != null && bodyList[bi].BodyScript.Transform != null)
+						bool ok = bodyList[bi].BodyScript != null && bodyList[bi].BodyScript.Transform != null;
+						Vector3 bPos;
+						Vector3 bRotEuler;
+						if (ok)
 						{
+							// 振荡来源诊断:视觉 Transform vs 物理刚体位置差。若刚体稳而 Transform 晃
+							// (或反之)→ 采样目标选错对象;两者同晃 → 真物理振荡(需按部件名定案)。
+							try
+							{
+								if (bodyList[bi].BodyScript.RigidBody != null)
+									_diagBodyRbDeltas[bi] = (bodyList[bi].BodyScript.Transform.position - bodyList[bi].BodyScript.RigidBody.position).magnitude;
+							}
+							catch { _diagBodyRbDeltas[bi] = -1f; }
 							// 相对质心 = comRot⁻¹ * body世界旋转（帧空间）
-							Quaternion relCom = Quaternion.Inverse(comRotUnity) * bodyList[bi].BodyScript.Transform.rotation;
-							data.BodyRotations.Add(relCom.eulerAngles);
+							Quaternion relCom = invComRotUnity * bodyList[bi].BodyScript.Transform.rotation;
 							// body-sync P0:相对 comRot 的位置(转轴/关节连接的子装配"整体移动"主要就是位置变化)。
 							// 与 BodyRotations 同循环同索引,接收端 body.Transform.position = comRot.TransformPoint(relPos)。
-							data.BodyPositions.Add(comRotTransform.InverseTransformPoint(bodyList[bi].BodyScript.Transform.position));
+							// 2026-09-19:用稳定基准(见 stableBodyAnchor)替代实时 comRot Transform,消除共模摆动。
+							bPos = invComRotUnity * (bodyList[bi].BodyScript.Transform.position - stableBodyAnchor);
+							bRotEuler = relCom.eulerAngles;
+							_lastBodyPos[bi] = bPos;
+							_lastBodyRot[bi] = bRotEuler;
+							_hasLastBodyPose[bi] = true;
 							// 抽搐诊断(发送端):每包 body[0] 相对 comRot 采样位置抖动。
 							// 若静止时此处>0.01m,说明"发送端数据本身在抖"(来源:发送端自身 comRot/body 微动,
 							// 或发送端 body 未静止),接收端平滑层只能衰减无法消除 → 需从发送端定位。
 							if (bi == 0)
 							{
-								Vector3 s0 = comRotTransform.InverseTransformPoint(bodyList[bi].BodyScript.Transform.position);
-								rcDiagBody0RelDelta = _diagBody0Rel.HasValue ? Vector3.Distance(s0, _diagBody0Rel.Value) : 0f;
-								_diagBody0Rel = s0;
+								rcDiagBody0RelDelta = _diagBody0Rel.HasValue ? Vector3.Distance(bPos, _diagBody0Rel.Value) : 0f;
+								_diagBody0Rel = bPos;
 							}
 						}
+						else
+						{
+							// 瞬时空:沿用上一帧已知位姿,保索引对齐(接收端按 id 重排不受影响,双保险)。
+							bPos = _hasLastBodyPose[bi] ? _lastBodyPos[bi] : Vector3.zero;
+							bRotEuler = _hasLastBodyPose[bi] ? _lastBodyRot[bi] : Vector3.zero;
+						}
+						data.BodyRotations.Add(bRotEuler);
+						data.BodyPositions.Add(bPos);
+						data.BodyIds.Add(bodyList[bi].Id);
+					}
+					// 一次性部件名 dump(2026-09-19):body 索引/id → 部件名,定位振荡部件。
+					// 实测 bodyMaxΔi 在 id 4,5,6,7 轮流最大 → 需知道它们是什么部件(轮子?机翼?起落架?)。
+					if (!_diagBodyNamesLogged)
+					{
+						_diagBodyNamesLogged = true;
+						string names = "";
+						for (int bi = 0; bi < bodyList.Count; bi++)
+						{
+							string nm = "?";
+							try
+							{
+								if (bodyList[bi].Parts != null && bodyList[bi].Parts.Count > 0 && bodyList[bi].Parts[0].Name != null)
+									nm = bodyList[bi].Parts[0].Name;
+							}
+							catch { }
+							if (bi > 0) names += ", ";
+							names += bi + "(id=" + bodyList[bi].Id + ")=" + nm;
+						}
+						Mod.LogLobby("MP bodyNames P" + PlayerId + ": " + names);
 					}
 				}
 

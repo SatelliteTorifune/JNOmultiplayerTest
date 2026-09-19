@@ -1,7 +1,7 @@
 # JNOMultiPlayer —— 会话上下文 + 设计文档索引(plans/README.md)
 
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod `MultiPlayer`;Steam AppID **870200**;Unity **2022.3.62f3**;C# 命名空间 `Assets.Scripts.*`)。思路:**反编译游戏源码导航内部 API** + 参考 KSP LunaMultiplayer 与 SP2(SimplePlanes 2)的联机实现。
-> **当前进度**:单船"幽灵船"原型已通过 **Steam 双账号公网实测**;§六 现有 **1 个活跃 plan**(2 阶外推期 1 已落地)+ **4 个待拍板** + **14 个已归档**;1.4.2 适配 / 部件开关回归 / 高延迟平滑 / Vizzy 隔离均已结案。
+> **当前进度**:单船"幽灵船"原型已通过 **Steam 双账号公网实测**;§六 现有 **1 个活跃 plan**(2 阶外推期 1 已落地)+ **6 个待拍板**(含 1 份参考资料)+ **14 个已归档**;1.4.2 适配 / 部件开关回归 / 高延迟平滑 / Vizzy 隔离均已结案。
 > 用法:新会话第一条上下文直接投喂本文档(§一~§五 即提示词核心)。本文档是**原 `AGENT_CONTEXT.md`(会话上下文)+ 原 `README.md`(索引/决策/规则)的合并版**,只读参考;**方案 / 决策类内容一律写进对应主题 plan**,再同步本文档索引与决策速查。
 > **职责边界(重要)**:mod 的**打包 / 部署 / DLL 更新 / 发布链条**(装进游戏的 DLL、AssetBundle、版本号、GitHub Releases)**全部由用户负责**——agent 不执行、不代劳、不为此改版本号或构建产物;agent 只负责**源码改动 + 文档同步 + `dotnet build MultiPlayer.csproj -c Debug` 验证(0 错误 0 警告)**。
 > 调试日志:`<USERPROFILE>\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log`(Unity 运行时日志;`Mod.LogLobby` / `MP smoothing` 等输出在这里)。
@@ -107,6 +107,7 @@
 - `CommandPodScript`(激活组 1-indexed 1..10、`SetActivationGroupState`)/ `PartScript.Activate()/Deactivate()` / `CraftControls`(public 可写)
 - `EvaScript` / `CommandPodScript.IsEva` / `CrewCompartmentScript`(Drood EVA)
 - 详见 `proposals/multi-craft-sync-2026-08-16.md` §七(切换 / 对接 / EVA)、§八(边界排查,含 Harmony 拦 `ChangePlayersActiveCommandPodImmediate` 防劫持、无 pod 残骸处理)。
+- **EVA 机制定论(2026-09-18,EVA 专题)**:出舱 = `EvaScript.TakeControl` → `UnloadFromCrewCompartment`(销毁 body 关节)→ `CraftSplitter.ProcessDisconnectedBody/SplitCraftNode` → 新 `CraftNode` + `CraftNodeAdded` → `ChangePlayersActiveCommandPodImmediate` 接管;回舱 = `LoadIntoCrewCompartment` → `ConnectParts` → `CraftSplitter.MergeCraftNode`(吸收 EVA 节点并 `DestroyCraft` → `CraftNodeRemoved`)。本机换节点信号 = `FlightSceneScript.CraftChanged`。**乘组成员走存档级 roster(`EvaData.cs:295` 按 `crewId` 查本地 roster),联机下必须另行处理**。详见 [`proposals/eva-sync-2026-09-18.md`](proposals/eva-sync-2026-09-18.md) §一、§四。
 
 ## 五、调试与验证
 
@@ -139,6 +140,8 @@
 | [`proposals/remote-craft-velocity-2026-09-13.md`](proposals/remote-craft-velocity-2026-09-13.md) | **远程船游戏侧速度缺行星自转项**(静止船读到 ≈0)根因分析 | 📋 **分析完成,修复未做** | 接收端写 `GroundedSurfaceVelocity=data.Velocity`(地表相对速度)漏 ω×r → 游戏 `CraftNode.UpdateCraft` 换算出的 `craft.Velocity` 缺分量(测试行星 158.85 m/s);修复方向见 §五,已并入 physics-sync P0 |
 | [`proposals/smoothing-comparison-2026-09-14.md`](proposals/smoothing-comparison-2026-09-14.md) | **平滑方案对照**(SP2 / LunaMultiplayer / 现行)+ 改进清单 R1~R6 | 📋 **研究完成,未实施**(2026-09-14 拍板"只存档") | 病灶:旋转无外推(R1)、延迟估计未平滑(R2)、外推上限 1.0s 过宽(R3)、无时钟同步(R5)、速度源不准(R6);**建议先 R1+R2+R3** 小改一轮实测。⚠️ 现状:**R2 已由同批的 F3(`LatencyEmaMs`)覆盖**,另有 F1/F2'/F4 三项旁路改动(见 §三 平滑段);R1/R3/R5/R6 仍未实施 |
 | [`proposals/physics-sync-2026-09-14.md`](proposals/physics-sync-2026-09-14.md) | **SP2 式物理同步移植评估**(每 body 速度注入 + 开销 / 工期) | 📋 **研究完成,未实施**(建议 P0+P1 约 3~5 天) | 开销:每包 +24B/body(≈9.6 KB/s@20Hz×20body,可忽略)、CPU≈0;P0 = 协议速度 + 修 §八 #10,1~2 天;P1 = 旋转 1 阶外推 0.5~1 天;**不建议照搬真实刚体架构(P3,高风险)** |
+| [`proposals/eva-sync-2026-09-18.md`](proposals/eva-sync-2026-09-18.md) | **EVA 出舱 / 回舱联机同步**(Drood 机制 / 乘组 roster / 幽灵 EVA 加固 / M0~M4) | 📋 **方案研究,代码零实现** | **EVA 就是 craft(出舱=split、回舱=merge)→ 必须并到多 craft 身份层,不能单开小灶**;现状"一按 EVA 就错位"(状态包旧 NodeId 装新节点坐标);特有难点 = `CrewMember` 是存档级 roster;另发现 EVA 专有控制通道(`Eva*`)一个字段都没传;含 8 条必做的既有坑(P1 拦 `ChangePlayersActiveCommandPodImmediate` 的 patch **尚未写**) |
+| [`proposals/eva-internals-2026-09-18.md`](proposals/eva-internals-2026-09-18.md) | **EVA 底层机制参考**(逐方法级事实清单 + 全局静态状态) | 📋 参考资料,不是 plan | 上一行的**支撑材料**:出舱/入舱调用链、持久化状态、相机耦合、`IsPlayerCraft` 单玩家假设;**文末「复核与修正」已推翻初稿的"ghost 受 G 力伤害"结论**,引用前先读该节 |
 
 ### 6.3 已归档(历史 / 已完成)
 
@@ -184,10 +187,12 @@
 | 更新检查(ModUpdater) | **✅ 已实现并接线**(`Mod.OnModInitialized` 末尾调用) | [archive/update-reminder-port-2026-09-10.md](archive/update-reminder-port-2026-09-10.md) |
 | Volken 冲突(`SceneLoaded` 链 NRE) | **✅ 根因已定位并修复**(`OnSceneLoaded` 空值护栏) | [archive/volken-sceneloaded-nre-2026-08-27.md](archive/volken-sceneloaded-nre-2026-08-27.md) |
 | 多 craft 同步 | 📋 **方案研究,代码零实现**(每玩家一船、无 `Guid`、状态包无船标识) | [proposals/multi-craft-sync-2026-08-16.md](proposals/multi-craft-sync-2026-08-16.md) §〇 |
+| **EVA 出舱 / 回舱同步** | 📋 **方案研究,代码零实现**;**定论:EVA 就是 craft(出舱=split / 回舱=merge)→ 必须并到多 craft 身份层,不做"每玩家两艘"特例** | [proposals/eva-sync-2026-09-18.md](proposals/eva-sync-2026-09-18.md) §〇、§二 |
 
 **当前待定(尚未拍板 / 未调研)**:
 
 - **多 craft**:A1 方案选型(推荐 A+B 混合)、A2 里程碑顺序、A3 残骸同步策略、A4 观察他人第二艘船;B1 跨机身份(Guid + `InitialCraftNodeIds` 溯源)、B2 对账参数、B3 轨道残骸 spawn 可行性、B4 未加载节点采样、B5 MapView 多船回归、B6 时钟对齐——见 [proposals/multi-craft-sync-2026-08-16.md](proposals/multi-craft-sync-2026-08-16.md)。
+- **EVA 同步**:E1 乘组处理选型(C1 影子成员 / C2 名字占位,建议先 C2)、E2 里程碑是否按 M0→M1→M2→M3 顺序推进(**M1 换节点即时性可独立先做**)、E3 `EvaGhostPatch` 是否与 `JetEngineGhostPatch` 合并为一个"幽灵飞行循环总闸"、E4 是否补 `CraftSituation`(轨道出舱,与 MC2 合并)、E5 舱内可见乘员是否需要在母船包里带"舱内乘组"——见 [proposals/eva-sync-2026-09-18.md](proposals/eva-sync-2026-09-18.md) §五、§六、§八、§九。
 - **SP2 式物理同步**:研究完成待拍板,建议 P0(每 body 速度进协议 + 修 §八 #10)+ P1(旋转 1 阶外推)约 3~5 天——见 [proposals/physics-sync-2026-09-14.md](proposals/physics-sync-2026-09-14.md)。
 - **速度修复项**:远程船游戏侧速度缺自转项,分析完成待实施,修复已并入 physics-sync P0——见 [proposals/remote-craft-velocity-2026-09-13.md](proposals/remote-craft-velocity-2026-09-13.md)。
 - **平滑剩余项**:朝向外推待 ω 符号实测(定案后一行开启 `EnableRotationExtrap`);R1~R6 待拍板——见 [acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md)、[proposals/smoothing-comparison-2026-09-14.md](proposals/smoothing-comparison-2026-09-14.md)。
@@ -209,6 +214,7 @@
 | 8 | **NetSim 无法包 Steam**;`NetSimDuplicate` 无 UI | `LagSimTransport.cs:63-65`;`MultiPlayerUI.cs:175-212` | 延迟模拟只能配合 TCP;重复包只能走控制台 |
 | 9 | **`LiteNetLibTransport` 是死代码**(未实现 `IMpTransport`) | `LiteNetLibTransport.cs:25` | 备用传输实际不可选 |
 | 10 | **远程飞船游戏侧速度缺自转项(静止船读到 ≈0)**:`ApplyRemoteGroundedSurface` 写 `GroundedSurfaceVelocity=data.Velocity`(地表相对速度),但游戏约定该字段是"地表系惯性速度"(含自转项),`CraftNode.UpdateCraft` 每帧纯旋转换算回行星空间 → `Orbit.Velocity` 缺 ω×r;`CraftFlightData` 在游戏阶段快照该值、mod 反射刷新不覆盖速度字段、`CraftScript.FrameVelocity` 从 kinematic 刚体推导≈0 | `MpNetworkManager.cs:2866`(写)vs 反编译 `CraftNode.cs:1235-1240/1366-1371`、`CraftFlightData.cs:578-584`、`CraftScript.cs:410-441`;详见 [proposals/remote-craft-velocity-2026-09-13.md](proposals/remote-craft-velocity-2026-09-13.md) | 相对速度计算、HUD / 导航球 / Vizzy 读远程船速度出错(静止船读到 0,运动船缺 158.85 m/s 分量);碰撞伤害走 Unity `Collision.relativeVelocity` 不受影响 |
+| 11 | **防幽灵被 `[ ]` 接管的 Harmony patch 只决策未落地** | §七 决策行 + multi-craft plan §8.1-3 已定"用 Harmony prefix 拦总入口 `FlightSceneScript.ChangePlayersActiveCommandPodImmediate`",但 `Assets/Scripts/HarmonyPatches/` 目前只有 `JetEngineGhostPatch` / `LayoutRebuildPatch` / `VizzyIsolationPatch`(全仓库 grep `ChangePlayersActiveCommandPodImmediate` **0 命中**) | 接收端按 `[ ]` / 地图 inspector / Vizzy 可切到带 pod 的远程幽灵 → 该类末尾 `craftNode.AllowPlayerControl = true`(`FlightSceneScript.cs:383`)→ 幽灵变本机船 → 双向污染。**EVA 上线后风险放大**(Drood 部件本身就是命令舱,`CommandPodScript.IsEva`)——见 [proposals/eva-sync-2026-09-18.md](proposals/eva-sync-2026-09-18.md) §七 P1 |
 
 ## 九、开发流程约定
 

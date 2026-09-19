@@ -242,6 +242,15 @@ namespace Assets.Scripts
 			public List<Vector3> BodyPositions;
 
 			/// <summary>
+			/// 每个 body 的稳定标识(BodyData.Id,craft XML 的 id 属性,与 BodyPositions 平行同索引)。
+			/// 2026-09-19:发送端装配顺序/列表可能与本机幽灵不一致(实测 bodyMaxRelΔ 4~6m/1s、
+			/// 接收端 bodyTgt≈5m 恒定 → 索引错位把不同部件位姿互写 → 部件持续追赶抖动)。
+			/// 接收端按 id 重排到幽灵装配顺序(见 MpNetworkManager.ReorderRemoteBodiesByGhost);
+			/// 旧对端无此字段时回退索引直用。仅在包尾传输,双向兼容。
+			/// </summary>
+			public List<int> BodyIds;
+
+			/// <summary>
 			/// 每台引擎的"视觉 throttle"(0..1)，按确定顺序(Data.Assembly.Parts 顺序→每部件 modifiers 顺序)
 			/// 与接收端一一对应：液体引擎=EngineThrottle，航发=EngineThrottle(接收端据此推导加力尾焰驱动值 ab)。
 			/// 接收端据此驱动幽灵船尾焰(液体走 ExhaustThrottleOverride;航发加力由 MP 层直接驱动)。
@@ -307,6 +316,7 @@ namespace Assets.Scripts
 				Stage = 0;
 				BodyRotations = new List<Vector3>();
 				BodyPositions = new List<Vector3>();
+				BodyIds = new List<int>();
 				EngineThrottles = new List<float>();
 				PartActivated = new List<bool>();
 				Paused = false;
