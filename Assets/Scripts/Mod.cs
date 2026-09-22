@@ -251,6 +251,26 @@ namespace Assets.Scripts
 			public List<int> BodyIds;
 
 			/// <summary>
+			/// 每个 body 的角速度(**body 自身局部系**,弧度/秒,与 BodyPositions 平行同索引,rotating-body-sync)。
+			/// 旋翼叶片等高速旋转 body 在 20Hz 位置快照下每包相位跳 90°+(实测接收端 bodyTgt≈5.9m 恒定、
+			/// bodyBig 数百) → 10·dt 平滑追不上 → 叶片"跳着转"。接收端据此做"刚体旋转外推":
+			/// 目标位置/朝向 = 包内值绕 ω 轴旋转 ω·ext(与朝向外推同手法)。
+			/// 局部系定义:发送端采样 Quaternion.Inverse(body.Transform.rotation) * rigidbody.angularVelocity。
+			/// 协议尾部追加(2026-09-22):旧对端包读到 EOF → 零值(无外推,行为不变)。
+			/// </summary>
+			public List<Vector3> BodyAngularVelocities;
+
+			/// <summary>
+			/// 每个 body 相对 comRot 的**线速度**(comRot 局部系,米/秒,与 BodyPositions 平行同索引,
+			/// rotating-body-sync)。旋翼叶片绕桨毂公转时位置快照每包跳 90°+,且桨毂不在 comRot 上
+			/// (绕 comRot 原点外推位置会画错圆) → 发送端直接传"相对 comRot 位置的变化率"
+			/// (数值差分 BodyPositions),接收端对旋转 body 逐帧积分:sp += v·dt,切线方向随 ω 旋转。
+			/// 不需要知道旋转中心,逐帧小步积分(60fps 下 θ_frame≈0.5rad)天然精确。
+			/// 协议尾部追加(2026-09-22):旧对端包读到 EOF → 零值(无位置外推,行为不变)。
+			/// </summary>
+			public List<Vector3> BodyVelocities;
+
+			/// <summary>
 			/// 每台引擎的"视觉 throttle"(0..1)，按确定顺序(Data.Assembly.Parts 顺序→每部件 modifiers 顺序)
 			/// 与接收端一一对应：液体引擎=EngineThrottle，航发=EngineThrottle(接收端据此推导加力尾焰驱动值 ab)。
 			/// 接收端据此驱动幽灵船尾焰(液体走 ExhaustThrottleOverride;航发加力由 MP 层直接驱动)。
@@ -317,6 +337,8 @@ namespace Assets.Scripts
 				BodyRotations = new List<Vector3>();
 				BodyPositions = new List<Vector3>();
 				BodyIds = new List<int>();
+				BodyAngularVelocities = new List<Vector3>();
+				BodyVelocities = new List<Vector3>();
 				EngineThrottles = new List<float>();
 				PartActivated = new List<bool>();
 				Paused = false;

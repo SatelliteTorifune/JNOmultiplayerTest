@@ -537,6 +537,26 @@ namespace Assets.Scripts.Net
 			int bidCount = d.BodyIds == null ? 0 : d.BodyIds.Count;
 			w.Write(bidCount);
 			for (int i = 0; i < bidCount; i++) w.Write(d.BodyIds[i]);
+
+			// body 角速度(2026-09-22,rotating-body-sync):body 自身局部系,弧度/秒,与 BodyPositions 平行同索引。
+			// 仍**最后**追加:旧端读新包忽略尾部;新端读旧包 EOF → BodyAngularVelocities=null → 无旋转外推(兼容)。
+			int bwCount = d.BodyAngularVelocities == null ? 0 : d.BodyAngularVelocities.Count;
+			w.Write(bwCount);
+			for (int i = 0; i < bwCount; i++)
+			{
+				Vector3 bw = d.BodyAngularVelocities[i];
+				w.Write(bw.x); w.Write(bw.y); w.Write(bw.z);
+			}
+
+			// body 相对 comRot 线速度(2026-09-22,rotating-body-sync):comRot 局部系,米/秒,与 BodyPositions 平行同索引。
+			// 仍**最后**追加:旧端读新包忽略尾部;新端读旧包 EOF → BodyVelocities=null → 无位置外推(兼容)。
+			int bvCount = d.BodyVelocities == null ? 0 : d.BodyVelocities.Count;
+			w.Write(bvCount);
+			for (int i = 0; i < bvCount; i++)
+			{
+				Vector3 bv = d.BodyVelocities[i];
+				w.Write(bv.x); w.Write(bv.y); w.Write(bv.z);
+			}
 		}
 
 		public static Mod.RemoteDataPack ReadRecdata(BinaryReader r)
@@ -609,6 +629,28 @@ namespace Assets.Scripts.Net
 				for (int i = 0; i < bidCount; i++) d.BodyIds.Add(r.ReadInt32());
 			}
 			catch { d.BodyIds = null; }
+
+			// body 角速度(2026-09-22,rotating-body-sync):仍尾部最后;旧对端包无 → EOF → null(无旋转外推)。
+			try
+			{
+				int bwCount = r.ReadInt32();
+				for (int i = 0; i < bwCount; i++)
+				{
+					d.BodyAngularVelocities.Add(new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
+				}
+			}
+			catch { d.BodyAngularVelocities = null; }
+
+			// body 相对 comRot 线速度(2026-09-22,rotating-body-sync):仍尾部最后;旧对端包无 → EOF → null(无位置外推)。
+			try
+			{
+				int bvCount = r.ReadInt32();
+				for (int i = 0; i < bvCount; i++)
+				{
+					d.BodyVelocities.Add(new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
+				}
+			}
+			catch { d.BodyVelocities = null; }
 
 			return d;
 		}

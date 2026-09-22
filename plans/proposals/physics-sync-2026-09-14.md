@@ -54,7 +54,7 @@ SP2 联机在 `Multiplayer/` 下,核心五件套:
 
 ### 2.3 架构差异(SP2 真实刚体 vs JNO kinematic 幽灵)——**不建议照搬**
 
-JNO 的 `SetPhysicsEnabled(false, Warp)` + 全 kinematic + collider 关闭 + `InContactWithPlanet=true` + `GroundedSurface*` 反射写,是经过 latency-smoothing §9.7~§9.16 多轮修出来的稳定形态(抽搐/暂停/慢放全收工)。SP2 的真实刚体依赖 `RigidBodyRemote` 贯穿整个游戏代码(`RemoteAircraft` 标志遍布 ~50 处)——JNO 是 Harmony 补丁改出来的 mod,没有这个贯穿渠道,强行改真实刚体会重开全部已修问题。
+JNO 的 `SetPhysicsEnabled(false, Warp)` + 全 kinematic + collider 关闭 + `InContactWithPlanet=true` + `GroundedSurface*` 反射写,是经过 latency-smoothing §9.5 修复链(速度帧/暂停/慢放/VA 有界)多轮修出来的稳定形态(抽搐/暂停/慢放全收工)。SP2 的真实刚体依赖 `RigidBodyRemote` 贯穿整个游戏代码(`RemoteAircraft` 标志遍布 ~50 处)——JNO 是 Harmony 补丁改出来的 mod,没有这个贯穿渠道,强行改真实刚体会重开全部已修问题。
 
 **结论:取其收益(速度正确),不取其架构(真实刚体)。**
 
@@ -152,7 +152,7 @@ JNO 平滑管线(采样→序列化→外推→平滑→应用)已存在且稳�
 
 ## 七、回归判据(开工后验收)
 
-- **保持**:§9.17 终态全部指标不回归——`b0dLate=0`、`gapEMA≈50ms`、暂停/慢放/切换速度模式三项(见 latency-smoothing §9.7~§9.16、update-1.4.2 §〇之四);
+- **保持**:§9.5 终态全部指标不回归——`b0dLate=0`、`gapEMA≈50ms`、暂停/慢放/切换速度模式三项(见 latency-smoothing §9.5、update-1.4.2 §〇之四);
 - **新增**:
   - 静止远程船游戏侧 `craft.Velocity.magnitude ≈ 行星自转线速度`(≠0),`FlightData.VelocityMagnitude` 同理;
   - 运动远程船 `craft.Velocity` 帧内游戏阶段/mod 阶段一致(无振荡);

@@ -76,6 +76,20 @@ namespace Assets.Scripts.Net
 		private const float MaxAccelMs = 60f;
 		/// <summary>角速度幅值钳制(rad/s,≈0.5 rev/s):防快速自旋/异常包让朝向外推过量。</summary>
 		private const float MaxAngVelRad = 3f;
+		/// <summary>body 角速度幅值钳制(rad/s,≈1700 RPM):旋翼叶片等高速旋转 body(300+ RPM≈31 rad/s、
+		/// 螺旋桨可达 ~1500 RPM≈157 rad/s)远高于整船翻滚(MaxAngVelRad=3)。钳制仅防异常包,
+		/// 正常旋翼/螺旋桨转速在钳制内。</summary>
+		private const float MaxBodyAngVelRad = 180f;
+		/// <summary>body 旋转外推(ω·ext)总开关(2026-09-22,rotating-body-sync):旋翼叶片位置快照在
+		/// 20Hz 下每包相位跳 90°+ → 目标按"包内绝对相位绕 ω 轴旋转 ω·ext"外推,包间叶片连续转。</summary>
+		private const bool EnableBodyRotationExtrap = true;
+		/// <summary>body 视为"显著旋转"的角速度阈值(rad/s,≈57°/s):≥此值才用高收敛率(50·dt)跟随
+		/// 外推目标并绕 ω 轴外推位置/朝向。低于此值(展开中的太阳能板等缓转部件)保持原 10·dt 平滑,
+		/// 避免把包抖动透出。</summary>
+		private const float BodySpinThresholdRad = 1.0f;
+		/// <summary>body 差分线速度幅值钳制(m/s):防瞬时空/部件销毁重建时位置突变产生毛刺差分
+		/// (叶片正常切线速度 ≈ ω×半径 ≤ 180 m/s;钳制仅防异常)。</summary>
+		private const float MaxBodyVelMs = 180f;
 		/// <summary>接收端平移 2 阶外推(½·a·ext²)总开关。加速度域无符号约定问题,可安全开启。</summary>
 		private const bool EnableSecondOrderExtrap = true;
 		/// <summary>
@@ -108,14 +122,23 @@ namespace Assets.Scripts.Net
 		// 2026-09-19 body 索引稳定性:body 采样瞬时空时沿用上一帧已知位姿(保 BodyPositions 与装配同序同长)。
 		private Vector3[] _lastBodyPos;
 		private Vector3[] _lastBodyRot;
+		private Vector3[] _lastBodyAngVel;        // 2026-09-22 rotating-body-sync:body 局部系角速度占位(与 _lastBodyRot 平行)
 		private bool[] _hasLastBodyPose;
 		private float[] _diagBodyRbDeltas;       // 每 body |Transform.position − RigidBody.position|(帧空间,诊断振荡来源)
+		private float _lastBodySampleTime = -1f;  // rotating-body-sync:上一包 body 采样时刻(差分线速度用)
 		// --- 2 阶外推(发送端):加速度/角速度 EMA 状态 + 原始采样诊断 + ω 符号自校验状态 ---
 		private Vector3 _accelEma; private bool _hasAccelEma;
 		private Vector3 _angVelEma; private bool _hasAngVelEma;
 		private Vector3 _accelRawDiag; private Vector3 _angVelRawDiag;
 		private Quaternion? _diagPrevSrfRel;   // 上一 sendDiag 时刻的 SrfRel(ω 符号自校验)
 		private float _diagPrevSrfTime;
+		// rotating-body-sync(2026-09-22):body ω 符号自校验。保存上一 sendDiag 时刻的 body 相对位姿,
+		// 用"绕 ω 轴正/反向旋转 ω·dt"预测当前位置,与实际对比:误差小者 = 正确旋转方向。
+		// 与朝向外推 errF+/errF- 同方法(proposal rotating-body-sync §三);叶片高速旋转时每包相位
+		// 跳 90°+,预测位置误差直接反映外推方向是否正确。
+		private Vector3[] _diagPrevBodyPosRel;
+		private Vector3[] _diagPrevBodyRotRel;
+		private float _diagPrevBodyTime;
 		private float _craftResendTimer; // 客户端重发 CraftData 节流计时
 		private float _hostCraftResendTimer; // 房主重发 host craft（PlayerJoin）节流计时
 		private bool _craftReported;      // 本机飞船已上报且被房主确认（客户端收到 CraftDataAck 才置 true）
@@ -594,6 +617,8 @@ namespace Assets.Scripts.Net
 			{
 				rc.ReuseReorderPos = new Vector3[gn];
 				rc.ReuseReorderRot = new Vector3[gn];
+				rc.ReuseReorderAngVel = new Vector3[gn];
+				rc.ReuseReorderVel = new Vector3[gn];
 				rc.ReuseReorderFilled = new bool[gn];
 			}
 			for (int g = 0; g < gn; g++) rc.ReuseReorderFilled[g] = false;
@@ -606,6 +631,10 @@ namespace Assets.Scripts.Net
 				{
 					rc.ReuseReorderPos[g] = data.BodyPositions[i];
 					rc.ReuseReorderRot[g] = data.BodyRotations[i];
+					rc.ReuseReorderAngVel[g] = (data.BodyAngularVelocities != null && i < data.BodyAngularVelocities.Count)
+						? data.BodyAngularVelocities[i] : Vector3.zero;
+					rc.ReuseReorderVel[g] = (data.BodyVelocities != null && i < data.BodyVelocities.Count)
+						? data.BodyVelocities[i] : Vector3.zero;
 					rc.ReuseReorderFilled[g] = true;
 					mapped++;
 				}
@@ -629,14 +658,20 @@ namespace Assets.Scripts.Net
 				{
 					rc.ReuseReorderPos[g] = (rc.SmoothedBodyPos != null && g < rc.SmoothedBodyPos.Length) ? rc.SmoothedBodyPos[g] : Vector3.zero;
 					rc.ReuseReorderRot[g] = (rc.SmoothedBodyRot != null && g < rc.SmoothedBodyRot.Length) ? rc.SmoothedBodyRot[g].eulerAngles : Vector3.zero;
+					rc.ReuseReorderAngVel[g] = Vector3.zero; // 未命中:无角速度 → 接收端该 body 无旋转外推(安全)
+					rc.ReuseReorderVel[g] = Vector3.zero;    // 未命中:无线速度 → 接收端该 body 无位置外推(安全)
 				}
 			}
 			data.BodyPositions.Clear();
 			data.BodyRotations.Clear();
+			data.BodyAngularVelocities?.Clear();
+			data.BodyVelocities?.Clear();
 			for (int g = 0; g < gn; g++)
 			{
 				data.BodyPositions.Add(rc.ReuseReorderPos[g]);
 				data.BodyRotations.Add(rc.ReuseReorderRot[g]);
+				if (data.BodyAngularVelocities != null) data.BodyAngularVelocities.Add(rc.ReuseReorderAngVel[g]);
+				if (data.BodyVelocities != null) data.BodyVelocities.Add(rc.ReuseReorderVel[g]);
 			}
 			data.BodyIds = null; // 已重排为幽灵序,后续按索引直用
 		}
@@ -842,6 +877,74 @@ namespace Assets.Scripts.Net
 					_diagPrevSrfTime = Time.unscaledTime;
 				}
 				catch { }
+				// body ω 符号自校验(rotating-body-sync):对旋转最快的 body,预测位置 = 上一时刻相对位置
+				// 绕 ω 轴转 ω·dt。errB+/errB- = 正向/反向旋转的预测误差;errB+ < errB- → 当前符号正确。
+				// 注意:外推旋转中心近似取 comRot(与接收端一致),桨毂偏离 comRot 时两方向误差都偏大,
+				// 但较小者仍指示正确方向。仅当旋转体存在时输出。
+				string bodyWSignDiag = "-";
+				try
+				{
+					if (_diagPrevBodyPosRel != null && data.BodyPositions != null && data.BodyAngularVelocities != null &&
+						_diagPrevBodyPosRel.Length == data.BodyPositions.Count &&
+						_diagPrevBodyRotRel != null && _diagPrevBodyRotRel.Length == data.BodyRotations.Count &&
+						Time.unscaledTime - _diagPrevBodyTime > 0.01f)
+					{
+						float dtDiag = Time.unscaledTime - _diagPrevBodyTime;
+						// 找 |ω| 最大的 body(旋翼叶片;排除整船翻滚 ω 已含在 data.AngularVelocity)
+						int wi = -1; float wmax = 0f;
+						for (int bi = 0; bi < data.BodyAngularVelocities.Count; bi++)
+						{
+							float wm = data.BodyAngularVelocities[bi].magnitude;
+							if (wm > wmax) { wmax = wm; wi = bi; }
+						}
+						if (wi >= 0 && wmax > BodySpinThresholdRad)
+						{
+							Vector3 wLocal = data.BodyAngularVelocities[wi];
+							Vector3 axisPrev = Quaternion.Euler(_diagPrevBodyRotRel[wi]) * (wLocal / wmax);
+							Vector3 pPrev = _diagPrevBodyPosRel[wi];
+							Vector3 pCur = data.BodyPositions[wi];
+							float theta = wmax * dtDiag * Mathf.Rad2Deg;
+							// 与接收端逐帧积分同法(位置沿切线推进):预测 = 上一包位置 + 切线速度×dt。
+							// 切线方向 = 上一包朝向把"v_local(差分切线速度)"转回 comRot 系;
+							// err+ = 沿切线正向推进的误差(应小,因为 v 本身就是差分出来的真实切线速度),
+							// err- = 反向推进的误差(应大)。err+ 显著 < err- → v 方向与接收端一致。
+							Vector3 vAdv = Vector3.zero;
+							if (data.BodyVelocities != null && wi < data.BodyVelocities.Count && dtDiag > 0.001f)
+								vAdv = Quaternion.Euler(_diagPrevBodyRotRel[wi]) * data.BodyVelocities[wi];
+							Vector3 predPlus = pPrev + vAdv * dtDiag;
+							Vector3 predMinus = pPrev - vAdv * dtDiag;
+							bodyWSignDiag = "bErr+=" + (predPlus - pCur).magnitude.ToString("F2") + "m" +
+								" bErr-=" + (predMinus - pCur).magnitude.ToString("F2") + "m" +
+								" bIdx=" + wi + " bω=" + wmax.ToString("F1") + "rad/s";
+						}
+					}
+					if (data.BodyPositions != null && data.BodyPositions.Count > 0)
+					{
+						if (_diagPrevBodyPosRel == null || _diagPrevBodyPosRel.Length != data.BodyPositions.Count)
+							_diagPrevBodyPosRel = new Vector3[data.BodyPositions.Count];
+						if (_diagPrevBodyRotRel == null || _diagPrevBodyRotRel.Length != data.BodyRotations.Count)
+							_diagPrevBodyRotRel = new Vector3[data.BodyRotations.Count];
+						for (int bi = 0; bi < data.BodyPositions.Count; bi++) _diagPrevBodyPosRel[bi] = data.BodyPositions[bi];
+						for (int bi = 0; bi < data.BodyRotations.Count; bi++) _diagPrevBodyRotRel[bi] = data.BodyRotations[bi];
+						_diagPrevBodyTime = Time.unscaledTime;
+					}
+				}
+				catch { }
+				// rotating-body-sync(2026-09-22)发送端诊断:旋转 body 数 + 最大 |ω|(rad/s)。
+				// wMax≈30 rad/s 量级 = 旋翼叶片高速旋转(300+RPM);wMax=0 → 对端旧版无此字段。
+				int bSpinCount = 0; float bSpinMaxW = 0f;
+				try
+				{
+					if (data.BodyAngularVelocities != null)
+					{
+						for (int bi = 0; bi < data.BodyAngularVelocities.Count; bi++)
+						{
+							float wm = data.BodyAngularVelocities[bi].magnitude;
+							if (wm > 0.001f) { bSpinCount++; if (wm > bSpinMaxW) bSpinMaxW = wm; }
+						}
+					}
+				}
+				catch { }
 				Mod.LogLobby("MP sendDiag P" + PlayerId +
 					": vel=" + data.Velocity.magnitude.ToString("F3") + "m/s" +
 					" paused=" + (data.Paused ? 1 : 0) +
@@ -855,10 +958,11 @@ namespace Assets.Scripts.Net
 					" rbΔ=" + (_diagBodyRbDeltas != null && bodyMaxIdx >= 0 && bodyMaxIdx < _diagBodyRbDeltas.Length ? _diagBodyRbDeltas[bodyMaxIdx].ToString("F3") : "?") + "m" +
 					" body0Rel=" + body0Rel.ToString("F4") + "m" +
 					" bodyCnt=" + (data.BodyPositions != null ? data.BodyPositions.Count : 0) +
+					" bSpin=" + bSpinCount + " bWMax=" + bSpinMaxW.ToString("F1") + "rad/s" +
 					" sendGap=" + (_lastSendTime >= 0f ? _sendGapEmaMs.ToString("F0") : "?") + "ms" +
 					" sendHz=" + (_sendGapEmaMs > 0f ? (1000f / _sendGapEmaMs).ToString("F1") : "?") + "Hz" +
 					" fps=" + _fpsEma.ToString("F0") +
-					" " + wSignDiag);
+					" " + wSignDiag + " " + bodyWSignDiag);
 			}
 			// 发送节奏诊断(2026-09-14):实际发包间隔 EMA。记录在真正发包处,过滤采样失败未发帧;
 			// 与接收端 MP gap(到达间隔)对账定位突发来源(发送端自身 vs 网络 relay)。
@@ -1474,6 +1578,8 @@ namespace Assets.Scripts.Net
 			public object BodyIdMapGhost;          // 建映射时的幽灵 Assembly 引用(被替换则重建,修 bRmap 掉到 2)
 			public Vector3[] ReuseReorderPos;      // 重排结果(幽灵序)
 			public Vector3[] ReuseReorderRot;
+			public Vector3[] ReuseReorderAngVel;   // 2026-09-22 rotating-body-sync:重排 body 角速度(与 pos/rot 平行)
+			public Vector3[] ReuseReorderVel;      // 2026-09-22 rotating-body-sync:重排 body 线速度(与 pos/rot 平行)
 			public bool[] ReuseReorderFilled;
 			public int BodyRemapCount;             // 本帧按 id 成功重排的 body 数(诊断:>0=重排生效)
 			public bool BodyMapDiagLogged;         // 首次 bodyMap 诊断行已输出
@@ -1530,6 +1636,10 @@ namespace Assets.Scripts.Net
 			public double LastAgeNowSec;           // 本帧实际使用的外推量(诊断)
 			public float LastAccelTermM;           // 2 阶外推:本帧加速度项位移(½|a|·ext²,m)
 			public float LastAngExtRad;            // 2 阶外推:本帧朝向外推角(|ω|·ext,rad)
+			// rotating-body-sync(2026-09-22)诊断:窗口内"旋转中的 body"计数与最大 |ω|(rad/s)。
+			// 验收判据:叶片 bodyTgt 应从恒 ≈5.9m 降到平滑残差(<0.5m)、bodyBig 归零。
+			public int SpinBodyCount;              // 本窗口内 ω>0.001 的 body 数(旋转 body 数)
+			public float SpinBodyMaxW;             // 本窗口内最大 body |ω|(rad/s)
 
 			// --- 突发/顿挫诊断(2026-09-14,smoothing-comparison §四:200ms+ 真实联机"一卡一卡"定位) ---
 			// 两个候选机制:①mRate 被到达间隔(突发 0/几百 ms)污染 → ext 摆动 → 速度脉冲;
@@ -1610,6 +1720,53 @@ namespace Assets.Scripts.Net
 			public Vector3 DiagSmoothedBody0;      // 平滑后 body[0] 相对 comRot 位置(目标)
 			public float LastTwitchLogTime;        // 抽搐诊断周期日志计时
 
+			// --- 帧级匀速性诊断(2026-09-22 纯观测,零行为改动;MP ext / MP frame / MP chain / MP diag) ---
+			// 依据 acceleration-smoothing 文档 §六之七/十六/十八:r27 定位残余抖动在"目标速度抖"与
+			// "帧显示节拍",r30 四层抖动(目标/可见物/部件/显示)并列 + SEG= 自打结论是最有效读法。
+			// 所有字段只记录、不参与任何位置计算;总开关 ExtraDiagEnabled 改 false 即关闭全部新日志。
+			public const bool ExtraDiagEnabled = true;
+			public int DiagPktThisFrame;           // 本帧到达包数(PushSample 自增,UpdateRemoteCrafts 帧首清零)
+			public float DiagVaRaw;                // 本帧 VA 钳制前原值(自造时钟是否活着:恒定 0/负 → 时钟死)
+			public Vector3d DiagPrevTgtPos;        // 上一帧目标位置(外推后、平滑前;算 tgtMove)
+			public bool DiagHasPrevTgtPos;
+			public bool DiagClampHit;              // 本帧 maxStep 钳制命中(ApplyRemoteSmoothing 置位)
+			public Vector3 DiagFramePrevComPos;    // 上一帧 comRot 世界位置(visAcc 采样)
+			public bool DiagHasFramePrevComPos;
+			public float DiagFramePrevComVel;      // 上一帧 comRot 速度(visAcc = |v_t − v_{t−1}|,对帧时长抖动免疫)
+			public Vector3 DiagFramePrevPartPos;   // 上一帧首部件世界位置(partAcc 采样)
+			public bool DiagHasFramePrevPartPos;
+			public float DiagFramePrevPartVel;
+			public struct FrameSample
+			{
+				public float DtMs;                 // 本帧时长(ms)
+				public float StepM;                // 本帧渲染位移(平滑后,m)
+				public float TgtM;                 // 本帧目标推进量(平滑前,m)
+				public float Ratio;                // StepM ÷ (vEff×dt),理想恒 1.0
+				public int Pkt;                    // 本帧到包数
+				public bool Clamp;                 // 本帧是否被 maxStep 钳制
+			}
+			public const int FrameRingSize = 64;
+			public readonly FrameSample[] FrameRing = new FrameSample[FrameRingSize];
+			public int FrameRingHead;
+			public int FrameRingCount;
+			// 3s 窗口累加器(MP frame / MP diag 用;窗口结束时取局部再清零)
+			public int DiagWinFrames;              // 窗口有效帧数
+			public float DiagWinDtMaxMs, DiagWinDtMinMs = float.MaxValue, DiagWinDtSumMs;
+			public float DiagWinRatioMin = float.MaxValue, DiagWinRatioMax;
+			public double DiagWinRatioSum; public int DiagWinRatioN;
+			public int DiagWinJerk;                // ratio 超出 [0.65,1.35] 的帧数
+			public int DiagWinClampF;              // maxStep 钳制命中帧数
+			public int DiagWinPktSum;
+			public double DiagWinStepSum, DiagWinExpectSum;   // 渲染位移累计 vs 期望位移累计(应≈1)
+			public double DiagWinLagSum; public float DiagWinLagMax;   // 目标−渲染距离(平滑器掉队量)
+			public double DiagWinVisAccSum, DiagWinVisVelSum; public float DiagWinVisAccMax; public int DiagWinVisN;
+			public double DiagWinTgtVelSum; public float DiagWinTgtVelMin = float.MaxValue, DiagWinTgtVelMax; public int DiagWinTgtVelN;
+			public double DiagWinPartAccSum; public float DiagWinPartAccMax; public int DiagWinPartN;
+			public float LastExtLogTime;           // MP ext 周期日志计时(1s)
+			public float LastFrameLogTime;         // MP frame 周期日志计时(3s)
+			public float LastDiagLogTime;          // MP diag 周期日志计时(2s)
+			public float LastChainLogTime;         // MP chain dump 节流(防刷屏)
+
 			public struct StateSample
 			{
 				public float ArrivalTime;  // 到达端 Time.unscaledTime（单调）
@@ -1620,6 +1777,8 @@ namespace Assets.Scripts.Net
 			/// <summary>环形追加一条样本；按到达时间天然有序，满则覆盖最旧。</summary>
 			public void PushSample(float arrivalTime, double packetTime, Mod.RemoteDataPack data)
 			{
+				// 帧级诊断:本帧到达包数(UpdateRemoteCrafts 帧首清零;供 MP frame/chain 判断"目标是否随包到达成串推进")
+				if (RemoteCraft.ExtraDiagEnabled && DiagPktThisFrame < 999) DiagPktThisFrame++;
 				// 2026-09-19:按 BodyData.Id 把发送端 body 列表重排为幽灵装配顺序(索引错位修复)。
 				// 须在入缓冲前完成,让缓冲/平滑/应用全部按幽灵序索引对齐。
 				MpNetworkManager.ReorderRemoteBodiesByGhost(this, data);
@@ -2314,6 +2473,18 @@ namespace Assets.Scripts.Net
 					if (!rc.IsInitialized) continue;
 
 					rc.TotalFrames++;
+					// 帧级诊断(2026-09-22 纯观测):帧首清零计数;writeDrift = 游戏在帧间自己动了幽灵多少
+					// (本帧开头读到的 Transform.position − 上次 mod 写完记下的值;r27 判决性指标,>0.005m 即游戏侧移动)。
+					if (RemoteCraft.ExtraDiagEnabled)
+					{
+						rc.DiagPktThisFrame = 0;
+						rc.DiagClampHit = false;
+						if (rc.HasApplied && rc.Node.CraftScript != null && rc.Node.CraftScript.Transform != null)
+						{
+							try { rc.LastTfDriftM = (rc.Node.CraftScript.Transform.position - rc.LastWrittenFramePos).magnitude; }
+							catch { }
+						}
+					}
 					// SP2 式:不用插值缓冲,始终拿最新包,按速度连续外推(dead-reckoning),再 per-frame 平滑。
 					// 插值缓冲在 Steam 突发间隔下 gapEMA 滞后→lookback 过小→频繁欠载→幽灵跳到最新包
 					// →"一卡一卡"。SP2 直接拿最新包,Lerp 平滑过渡,不发散不抖动,不依赖缓冲(CraftStateSerializer.cs:76-86)。
@@ -2502,6 +2673,7 @@ namespace Assets.Scripts.Net
 						rc.WinGapFreezeHits = 0; rc.WinGapFreezeFrames = 0; rc.WinMRateMin = 1f; rc.WinMRateMax = 1f; rc.WinExtMax = 0f;
 						rc.WinMaxGapMs = 0f; rc.WinLongGapCount = 0; rc.WinMoveMaxM = 0f;
 						rc.WinBodyTgtMaxM = 0f; rc.WinBodyBigSum = 0;
+						rc.SpinBodyCount = 0; rc.SpinBodyMaxW = 0f;
 						string newestPos = "?", vel = "?", accStr = "?", wStr = "?";
 						try
 						{
@@ -2536,6 +2708,7 @@ namespace Assets.Scripts.Net
 							" interpPct=" + rc.InterpPct.ToString("F2") +
 							" moveDelta=" + rc.LastMoveDeltaM.ToString("F2") + "m bodyDelta=" + rc.LastBodyPoseDeltaM.ToString("F2") + "m" +
 							" bodyTgt=" + wBodyTgtMax.ToString("F2") + "m bodyBig=" + wBodyBig + " bRmap=" + rc.BodyRemapCount +
+							" spin=" + rc.SpinBodyCount + " wMax=" + rc.SpinBodyMaxW.ToString("F1") + "rad/s" +
 							" tfDrift=" + rc.LastTfDriftM.ToString("F2") + "m" +
 							" move3s=" + move3s.ToString("F3") + "m pktJump=" + pktJump.ToString("F3") + "m" +
 							" vel=" + vel + "m/s acc=" + accStr + "m/s² aExt=" + rc.LastAccelTermM.ToString("F2") + "m" +
@@ -2833,6 +3006,10 @@ namespace Assets.Scripts.Net
 				rc.ReuseSmoothBodyPos.Clear();
 				rc.ReuseSmoothBodyRot.Clear();
 				float alphaBody = Mathf.Clamp01(10f * dt);
+				// rotating-body-sync:旋转 body 用更高收敛率(50·dt)直接跟随外推目标 —— 10·dt 追不上
+				// 旋翼转速(31 rad/s 叶片每帧转 ~0.5rad,10·dt 每帧只追 ~0.09rad → 永远滞后 + 跳)。
+				// 高 alpha 让渲染紧贴"包内相位 × ω·ext"的连续旋转轨迹;非旋转 body 保持 10·dt 不变。
+				float alphaBodySpin = Mathf.Clamp01(50f * dt);
 				float maxBodyDelta = 0f;
 				float maxBodyTgtErr = 0f;
 				int bodyBigErr = 0;
@@ -2840,24 +3017,94 @@ namespace Assets.Scripts.Net
 				{
 					Vector3 tpos = (target.BodyPositions != null && i < target.BodyPositions.Count) ? target.BodyPositions[i] : rc.SmoothedBodyPos[i];
 					Quaternion trot = (target.BodyRotations != null && i < target.BodyRotations.Count) ? Quaternion.Euler(target.BodyRotations[i]) : rc.SmoothedBodyRot[i];
+					// rotating-body-sync(2026-09-22):旋翼叶片等高速旋转 body —— 20Hz 位置快照下
+					// 每包相位跳 90°+(实测 bodyTgt≈5.9m 恒定),10·dt 平滑追不上 → 叶片"跳着转"。
+					// 修复 = 模拟 SP2 的"写回刚体速度由 PhysX 积分":我们没有 PhysX(幽灵 kinematic),
+					// 故每帧手动积分 —— 平滑状态先按发送端速度推进(位置 sp += v·dt、切线方向随 ω 旋转、
+					// 朝向绕 ω 轴转),再向包内目标收敛(修正积分误差)。推进让包间叶片连续转,
+					// 包到目标与推进后的状态只差积分误差(小)→ bodyTgt 从 5.9m 降到残差。
+					//   - ω = body 局部系角速度(发送端采样 rigidbody.angularVelocity 转局部系);
+					//   - v = body 相对 comRot 线速度(发送端数值差分 BodyPositions);
+					//   - 轴 = ω 经"当前平滑朝向"转回 comRot 系:sr·ω̂(主轴在 comRot 系方向恒定)。
+					// 桨毂不在 comRot 上也没关系:v 直接就是"相对位置变化率",推进不需要知道旋转中心。
+					// 旧对端无 ω/v(EOF→null)→ 不进入此分支,行为不变。
+					bool bodySpinning = false;
+					float bodyWMag = 0f;
+					Vector3 bodyV = Vector3.zero;
+					if (EnableBodyRotationExtrap &&
+						target.BodyAngularVelocities != null && i < target.BodyAngularVelocities.Count)
+					{
+						Vector3 wLocal = target.BodyAngularVelocities[i];
+						if (IsFinite(wLocal))
+						{
+							float wMag = wLocal.magnitude;
+							if (wMag > 0.001f)
+							{
+								if (wMag >= BodySpinThresholdRad) bodySpinning = true;
+								bodyWMag = wMag;
+								if (wMag > MaxBodyAngVelRad) { wLocal *= (MaxBodyAngVelRad / wMag); wMag = MaxBodyAngVelRad; }
+								if (target.BodyVelocities != null && i < target.BodyVelocities.Count)
+								{
+									bodyV = target.BodyVelocities[i];
+									if (!IsFinite(bodyV)) bodyV = Vector3.zero;
+								}
+							}
+						}
+					}
 					Vector3 prevSp = rc.SmoothedBodyPos[i];
 					// 部件抖动诊断(2026-09-19):平滑前目标误差 = 该 body 相对位姿单帧跳变(>1m 即异常:
 					// 发送端部件甩动 或 装配索引错位/重排)。平滑后 bodyDelta 大 + bodyTgt 大 → 数据源跳。
+					// rotating-body-sync:旋转 body 的 terr 因推进而大幅缩小(推进后状态≈包内相位)。
 					float terr = (tpos - prevSp).magnitude;
 					if (terr > maxBodyTgtErr) maxBodyTgtErr = terr;
 					if (terr > 1.0f) bodyBigErr++;
 					Vector3 sp = prevSp;
 					Quaternion sr = rc.SmoothedBodyRot[i];
-					if ((tpos - sp).sqrMagnitude < 0.01f) sp = tpos;
-					else sp = Vector3.Lerp(sp, tpos, alphaBody);
-					if (Quaternion.Angle(sr, trot) < 0.01f) sr = trot;
-					else sr = Quaternion.Slerp(sr, trot, alphaBody);
+					float alphaUse = bodySpinning ? alphaBodySpin : alphaBody;
+					if (bodySpinning)
+					{
+						// 逐帧积分推进:本帧旋转增量 qFrame(轴 = 主轴在 comRot 系方向,由当前平滑朝向转出)。
+						Vector3 wLocal = target.BodyAngularVelocities[i];
+						float wMag = wLocal.magnitude;
+						if (wMag > MaxBodyAngVelRad) wLocal *= (MaxBodyAngVelRad / wMag);
+						Vector3 axisCom = sr * (wLocal / wMag);
+						if (!IsFinite(axisCom)) axisCom = Vector3.zero;
+						if (axisCom.sqrMagnitude > 0.0001f)
+						{
+							Quaternion qFrame = Quaternion.AngleAxis(wMag * dt * Mathf.Rad2Deg, axisCom);
+							// 位置:v 存 body 局部系(叶片局部切线方向恒定),用当前平滑朝向 sr 转回
+							// comRot 系 → 方向随旋转自动累计(第 n 帧方向 = 包时刻方向转 n·帧角,即当前切线)。
+							// 欧拉积分 sp += v·dt,误差 O(dt²),60fps 下 ~0.5rad/帧。
+							Vector3 vAdv = sr * bodyV;
+							sp = sp + vAdv * dt;
+							// 朝向:绕主轴推进(叶片随桨毂公转时朝向绕主轴转)。
+							sr = qFrame * sr;
+						}
+						// 向包内目标收敛:修正积分误差(推进≈真实运动 → 残差小;高 alpha 快速吸收)。
+						if ((tpos - sp).sqrMagnitude < 0.01f) sp = tpos;
+						else sp = Vector3.Lerp(sp, tpos, alphaUse);
+						if (Quaternion.Angle(sr, trot) < 0.01f) sr = trot;
+						else sr = Quaternion.Slerp(sr, trot, alphaUse);
+					}
+					else
+					{
+						if ((tpos - sp).sqrMagnitude < 0.01f) sp = tpos;
+						else sp = Vector3.Lerp(sp, tpos, alphaUse);
+						if (Quaternion.Angle(sr, trot) < 0.01f) sr = trot;
+						else sr = Quaternion.Slerp(sr, trot, alphaUse);
+					}
 					float bd = (sp - prevSp).magnitude;
 					if (bd > maxBodyDelta) maxBodyDelta = bd;
 					rc.SmoothedBodyPos[i] = sp;
 					rc.SmoothedBodyRot[i] = sr;
 					rc.ReuseSmoothBodyPos.Add(sp);
 					rc.ReuseSmoothBodyRot.Add(sr.eulerAngles);
+					// rotating-body-sync 诊断:旋转 body 计数与最大 |ω|(smoothing 行输出)
+					if (bodySpinning)
+					{
+						rc.SpinBodyCount++;
+						if (bodyWMag > rc.SpinBodyMaxW) rc.SpinBodyMaxW = bodyWMag;
+					}
 				}
 				rc.LastBodyPoseDeltaM = maxBodyDelta;
 				rc.LastBodyTgtErrM = maxBodyTgtErr;
@@ -3280,6 +3527,7 @@ namespace Assets.Scripts.Net
 					{
 						_lastBodyPos = new Vector3[bodyList.Count];
 						_lastBodyRot = new Vector3[bodyList.Count];
+						_lastBodyAngVel = new Vector3[bodyList.Count];
 						_hasLastBodyPose = new bool[bodyList.Count];
 						_diagBodyRbDeltas = new float[bodyList.Count];
 					}
@@ -3288,6 +3536,8 @@ namespace Assets.Scripts.Net
 						bool ok = bodyList[bi].BodyScript != null && bodyList[bi].BodyScript.Transform != null;
 						Vector3 bPos;
 						Vector3 bRotEuler;
+						Vector3 bAngVelLocal = Vector3.zero; // rotating-body-sync:body 自身局部系角速度(弧度/秒)
+						Vector3 bVelLocal = Vector3.zero;    // rotating-body-sync:body 相对 comRot 线速度(comRot 局部系,差分)
 						if (ok)
 						{
 							// 振荡来源诊断:视觉 Transform vs 物理刚体位置差。若刚体稳而 Transform 晃
@@ -3305,8 +3555,50 @@ namespace Assets.Scripts.Net
 							// 2026-09-19:用稳定基准(见 stableBodyAnchor)替代实时 comRot Transform,消除共模摆动。
 							bPos = invComRotUnity * (bodyList[bi].BodyScript.Transform.position - stableBodyAnchor);
 							bRotEuler = relCom.eulerAngles;
+							// rotating-body-sync(2026-09-22):旋翼叶片等高速旋转 body 的角速度。
+							// 局部系 = RigidBody.angularVelocity(世界系)转 body 自身局部系(Quaternion.Inverse(世界旋转)),
+							// 与 BodyRotations 同基准(相对 comRot):接收端外推 "目标相位 = 包内绝对相位 × ω·ext" 时
+							// 右乘 Euler(ω_local·ext) 即绕 body 自身轴转,与发送端叶片旋转轴一致。
+							// 注意:叶片是独立 Rigidbody,angularVelocity 是真实物理转速(悬停时也 300+ RPM),
+							// 不可用 craft 级 AngularVelocity(那是整船翻滚)。零/NaN 防御后入包。
+							try
+							{
+								Rigidbody rb = bodyList[bi].BodyScript.RigidBody;
+								if (rb != null)
+								{
+									Vector3 wWorld = rb.angularVelocity;
+									if (!IsFinite(wWorld)) wWorld = Vector3.zero;
+									bAngVelLocal = Quaternion.Inverse(bodyList[bi].BodyScript.Transform.rotation) * wWorld;
+									if (!IsFinite(bAngVelLocal)) bAngVelLocal = Vector3.zero;
+								}
+							}
+							catch { bAngVelLocal = Vector3.zero; }
+							// rotating-body-sync:相对 comRot 线速度(数值差分上一包 bPos),再转 **body 局部系**。
+							// 用途:叶片绕桨毂公转时,桨毂不在 comRot 上(绕 comRot 原点外推位置画错圆),
+							// 接收端对旋转 body 用 v 逐帧积分位置(sp += v·dt)。v 存 body 局部系:
+							// 叶片局部系中"切线方向"恒定(叶片随主轴公转,局部朝向同步转),接收端每帧
+							// 用当前平滑朝向 sr·v_local 转出正确世界方向,自动随旋转累计(无需跨帧状态)。
+							// 差分间隔 = 发包间隔(50ms@20Hz),叶片 31rad/s → 每包 1.55rad,信噪比充足。
+							// 首包/瞬时空 dt 无效 → 0(接收端仅位置外推,无 v 时退回纯快照平滑)。
+							if (_lastBodySampleTime >= 0f && _hasLastBodyPose[bi])
+							{
+								float dtSample = Time.unscaledTime - _lastBodySampleTime;
+								if (dtSample > 0.001f)
+								{
+									Vector3 bVelCom = (bPos - _lastBodyPos[bi]) / dtSample;
+									if (!IsFinite(bVelCom)) bVelCom = Vector3.zero;
+									if (bVelCom.magnitude > MaxBodyVelMs) bVelCom = bVelCom.normalized * MaxBodyVelMs;
+									bVelLocal = Quaternion.Inverse(relCom) * bVelCom;
+									if (!IsFinite(bVelLocal)) bVelLocal = Vector3.zero;
+								}
+							}
+							// 暂停时叶片物理停转(angularVelocity 保留暂停前值):若仍随包发送,接收端
+							// 会按 ω·ext 继续外推旋转 → 暂停中叶片空转。清零与 Paused 语义一致
+							// (接收端暂停期停止位置外推,旋转也不应继续)。
+							if (data.Paused) { bAngVelLocal = Vector3.zero; bVelLocal = Vector3.zero; }
 							_lastBodyPos[bi] = bPos;
 							_lastBodyRot[bi] = bRotEuler;
+							_lastBodyAngVel[bi] = bAngVelLocal;
 							_hasLastBodyPose[bi] = true;
 							// 抽搐诊断(发送端):每包 body[0] 相对 comRot 采样位置抖动。
 							// 若静止时此处>0.01m,说明"发送端数据本身在抖"(来源:发送端自身 comRot/body 微动,
@@ -3322,11 +3614,15 @@ namespace Assets.Scripts.Net
 							// 瞬时空:沿用上一帧已知位姿,保索引对齐(接收端按 id 重排不受影响,双保险)。
 							bPos = _hasLastBodyPose[bi] ? _lastBodyPos[bi] : Vector3.zero;
 							bRotEuler = _hasLastBodyPose[bi] ? _lastBodyRot[bi] : Vector3.zero;
+							bAngVelLocal = _hasLastBodyPose[bi] ? _lastBodyAngVel[bi] : Vector3.zero;
 						}
 						data.BodyRotations.Add(bRotEuler);
 						data.BodyPositions.Add(bPos);
+						data.BodyAngularVelocities.Add(bAngVelLocal);
+						data.BodyVelocities.Add(bVelLocal);
 						data.BodyIds.Add(bodyList[bi].Id);
 					}
+					_lastBodySampleTime = Time.unscaledTime;
 					// 一次性部件名 dump(2026-09-19):body 索引/id → 部件名,定位振荡部件。
 					// 实测 bodyMaxΔi 在 id 4,5,6,7 轮流最大 → 需知道它们是什么部件(轮子?机翼?起落架?)。
 					if (!_diagBodyNamesLogged)
