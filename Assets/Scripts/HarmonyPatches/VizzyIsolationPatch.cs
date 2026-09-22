@@ -7,6 +7,7 @@ using Assets.Scripts.Net;
 using HarmonyLib;
 using ModApi.Craft.Program;
 using ModApi.Craft.Program.Craft;
+using Assets.Scripts.Net.Session;
 
 namespace Assets.Scripts
 {

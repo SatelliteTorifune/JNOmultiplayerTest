@@ -3,6 +3,7 @@ using Assets.Scripts.Net;
 using ModApi;
 using ModApi.Scenes.Events;
 using UnityEngine;
+using Assets.Scripts.Net.Session;
 
 namespace Assets.Scripts
 {

@@ -8,6 +8,7 @@ using UnityEngine;
 
 using HarmonyLib;
 using Jundroo.ModTools;
+using Assets.Scripts.Net.Session;
 
 namespace Assets.Scripts
 {

@@ -2,8 +2,9 @@ using System;
 using ModApi.Craft;
 using ModApi.Craft.Parts;
 using UnityEngine;
+using Assets.Scripts.Net.Sync;
 
-namespace Assets.Scripts.Net
+namespace Assets.Scripts.Net.CraftVisual
 {
 	/// <summary>
 	/// 幽灵"控制输入"应用(P3,见 plans/part-switch-sync-feasibility.md §11)。
@@ -24,7 +25,7 @@ namespace Assets.Scripts.Net
 	public static class ControlVisualSync
 	{
 		/// <summary>把同步控制输入 + 激活组状态应用到幽灵活动舱 Controls(输入驱动部件由此获得远程姿态)。</summary>
-		public static void ApplyRemoteControls(MpNetworkManager.RemoteCraft rc, Mod.RemoteDataPack data)
+		public static void ApplyRemoteControls(RemoteCraft rc, Mod.RemoteDataPack data)
 		{
 			if (rc == null || rc.Node == null || rc.Node.CraftScript == null)
 			{

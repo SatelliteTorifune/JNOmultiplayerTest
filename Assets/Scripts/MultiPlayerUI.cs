@@ -13,6 +13,7 @@ using ModApi.Ui.Inspector;
 using Steamworks;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using Assets.Scripts.Net.Session;
 
 namespace Assets.Scripts
 {

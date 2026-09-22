@@ -10,7 +10,7 @@ using ModApi.Craft.Parts;
 using ModApi.Flight.GameView;
 using UnityEngine;
 
-namespace Assets.Scripts.Net
+namespace Assets.Scripts.Net.CraftVisual
 {
 	/// <summary>
 	/// 异步 prefab 预加载器（SP2 式"异步预加载 + 真实百分比加载框"）：

@@ -11,8 +11,9 @@ using Assets.Scripts.Flight.Sim;
 using ModApi.Craft.Parts;
 using ModApi.Flight.Sim;
 using UnityEngine;
+using Assets.Scripts.Net.Sync;
 
-namespace Assets.Scripts.Net
+namespace Assets.Scripts.Net.CraftVisual
 {
 	/// <summary>
 	/// 幽灵船"部件开关/展开状态"同步(方案 B + P3,见 plans/part-switch-sync-feasibility.md §3/§4/§9/§11)。
@@ -102,7 +103,7 @@ namespace Assets.Scripts.Net
 		/// 白名单部件调 Activate()/Deactivate() 让游戏自身驱动视觉;其余部件只记录不处理。
 		/// 幂等:每次 ApplyRemoteState 调用,无状态变化时为空操作;幽灵本地偏差下一包自愈。
 		/// </summary>
-		public static void ApplyRemotePartActivated(MpNetworkManager.RemoteCraft rc, Mod.RemoteDataPack data)
+		public static void ApplyRemotePartActivated(RemoteCraft rc, Mod.RemoteDataPack data)
 		{
 			if (rc == null || rc.Node == null || rc.Node.CraftScript == null || data.PartActivated == null)
 			{

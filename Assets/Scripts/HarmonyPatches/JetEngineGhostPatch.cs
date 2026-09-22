@@ -6,6 +6,7 @@ using Assets.Scripts.Flight.Sim;
 using Assets.Scripts.Net;
 using HarmonyLib;
 using ModApi.GameLoop.Interfaces;
+using Assets.Scripts.Net.Session;
 
 namespace Assets.Scripts
 {

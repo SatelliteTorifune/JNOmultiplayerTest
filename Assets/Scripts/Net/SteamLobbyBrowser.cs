@@ -4,6 +4,7 @@ using System.Reflection;
 using ModApi;
 using Steamworks;
 using UnityEngine;
+using Assets.Scripts.Net.Session;
 
 namespace Assets.Scripts.Net
 {
