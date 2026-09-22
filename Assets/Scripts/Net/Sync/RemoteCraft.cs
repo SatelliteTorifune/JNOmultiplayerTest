@@ -9,7 +9,7 @@ using Assets.Scripts.Net.CraftVisual;
 namespace Assets.Scripts.Net.Sync
 {
 	/// <summary>
-	/// 一艘远程(幽灵)飞船的全部接收端状态(2026-09-22 重构:自 MpNetworkManager 嵌套类整体搬来,字段与方法逐字保留)。
+	/// 一艘远程(幽灵)飞船的全部接收端状态(2026-09-22 重构:自 MultiPlayerNetworkManager 嵌套类整体搬来,字段与方法逐字保留)。
 	/// 状态缓冲 / 外推时钟 / 停顿检测 / 平滑状态 / body 重排缓存 / 引擎视觉缓存 / 诊断统计都在这里;
 	/// 注释是 30 轮双端实测的决策记录,改动前先读 plans/archive/latency-smoothing-2026-08-22.md。
 	/// </summary>
@@ -137,8 +137,8 @@ namespace Assets.Scripts.Net.Sync
 
 		// --- 突发/顿挫诊断(2026-09-14,smoothing-comparison §四:200ms+ 真实联机"一卡一卡"定位) ---
 		// 两个候选机制:①mRate 被到达间隔(突发 0/几百 ms)污染 → ext 摆动 → 速度脉冲;
-		// ②长静默冻结分支(age>max(3·gapEMA,0.25s),MpNetworkManager.cs:2056)误触发 → 停→冲。
-		// 以下窗口量(3s 随 MP smoothing 行输出)+ 事件日志(MP gap / MP gapfreeze)用于区分主导机制。
+		// ②长静默冻结分支(age>max(3·gapEMA,0.25s),MultiPlayerNetworkManager.cs:2056)误触发 → 停→冲。
+		// 以下窗口量(3s 随 MultiPlayer smoothing 行输出)+ 事件日志(MultiPlayer gap / MultiPlayer gapfreeze)用于区分主导机制。
 		public float LastExtSec;                // 本帧外推量 ext(诊断,s)
 		public bool GapFreezeActive;            // 本帧长静默冻结分支是否激活(机制 ②)
 		public float WinGapFreezeHits;          // 3s 窗口:进入长静默冻结的次数(机制 ② 命中率)
@@ -148,7 +148,7 @@ namespace Assets.Scripts.Net.Sync
 		public float WinMaxGapMs;               // 3s 窗口:最大到达间隔(ms,突发程度)
 		public int WinLongGapCount;             // 3s 窗口:到达间隔 >250ms 的次数(突发静默次数)
 		public float WinMoveMaxM;               // 3s 窗口:单帧渲染位移最大值(m,停→冲的"冲"幅度)
-		public float LastGapLogTime;            // MP gap 事件日志节流(unscaledTime)
+		public float LastGapLogTime;            // MultiPlayer gap 事件日志节流(unscaledTime)
 
 		// --- F1(2026-09-14,smoothing-comparison §五 / README §三):虚拟 age —— 目标推进时钟 ---
 		// 突发到达(背靠背 0ms / 静默几百 ms)下,"距最新包到达的真实时间 age"会随包到达归零,
@@ -214,7 +214,7 @@ namespace Assets.Scripts.Net.Sync
 		public Vector3 DiagSmoothedBody0;      // 平滑后 body[0] 相对 comRot 位置(目标)
 		public float LastTwitchLogTime;        // 抽搐诊断周期日志计时
 
-		// --- 帧级匀速性诊断(2026-09-22 纯观测,零行为改动;MP ext / MP frame / MP chain / MP diag) ---
+		// --- 帧级匀速性诊断(2026-09-22 纯观测,零行为改动;MultiPlayer ext / MultiPlayer frame / MultiPlayer chain / MultiPlayer diag) ---
 		// 依据 acceleration-smoothing 文档 §六之七/十六/十八:r27 定位残余抖动在"目标速度抖"与
 		// "帧显示节拍",r30 四层抖动(目标/可见物/部件/显示)并列 + SEG= 自打结论是最有效读法。
 		// 所有字段只记录、不参与任何位置计算;总开关 ExtraDiagEnabled 改 false 即关闭全部新日志。
@@ -243,7 +243,7 @@ namespace Assets.Scripts.Net.Sync
 		public readonly FrameSample[] FrameRing = new FrameSample[FrameRingSize];
 		public int FrameRingHead;
 		public int FrameRingCount;
-		// 3s 窗口累加器(MP frame / MP diag 用;窗口结束时取局部再清零)
+		// 3s 窗口累加器(MultiPlayer frame / MultiPlayer diag 用;窗口结束时取局部再清零)
 		public int DiagWinFrames;              // 窗口有效帧数
 		public float DiagWinDtMaxMs, DiagWinDtMinMs = float.MaxValue, DiagWinDtSumMs;
 		public float DiagWinRatioMin = float.MaxValue, DiagWinRatioMax;
@@ -256,10 +256,10 @@ namespace Assets.Scripts.Net.Sync
 		public double DiagWinVisAccSum, DiagWinVisVelSum; public float DiagWinVisAccMax; public int DiagWinVisN;
 		public double DiagWinTgtVelSum; public float DiagWinTgtVelMin = float.MaxValue, DiagWinTgtVelMax; public int DiagWinTgtVelN;
 		public double DiagWinPartAccSum; public float DiagWinPartAccMax; public int DiagWinPartN;
-		public float LastExtLogTime;           // MP ext 周期日志计时(1s)
-		public float LastFrameLogTime;         // MP frame 周期日志计时(3s)
-		public float LastDiagLogTime;          // MP diag 周期日志计时(2s)
-		public float LastChainLogTime;         // MP chain dump 节流(防刷屏)
+		public float LastExtLogTime;           // MultiPlayer ext 周期日志计时(1s)
+		public float LastFrameLogTime;         // MultiPlayer frame 周期日志计时(3s)
+		public float LastDiagLogTime;          // MultiPlayer diag 周期日志计时(2s)
+		public float LastChainLogTime;         // MultiPlayer chain dump 节流(防刷屏)
 
 		public struct StateSample
 		{
@@ -271,7 +271,7 @@ namespace Assets.Scripts.Net.Sync
 		/// <summary>环形追加一条样本；按到达时间天然有序，满则覆盖最旧。</summary>
 		public void PushSample(float arrivalTime, double packetTime, Mod.RemoteDataPack data)
 		{
-			// 帧级诊断:本帧到达包数(UpdateRemoteCrafts 帧首清零;供 MP frame/chain 判断"目标是否随包到达成串推进")
+			// 帧级诊断:本帧到达包数(UpdateRemoteCrafts 帧首清零;供 MultiPlayer frame/chain 判断"目标是否随包到达成串推进")
 			if (RemoteCraft.ExtraDiagEnabled && DiagPktThisFrame < 999) DiagPktThisFrame++;
 			// 2026-09-19:按 BodyData.Id 把发送端 body 列表重排为幽灵装配顺序(索引错位修复)。
 			// 须在入缓冲前完成,让缓冲/平滑/应用全部按幽灵序索引对齐。
@@ -300,7 +300,7 @@ namespace Assets.Scripts.Net.Sync
 					if (arrivalTime - LastGapLogTime > 1f)
 					{
 						LastGapLogTime = arrivalTime;
-						Mod.LogLobby("MP gap P" + PlayerId + ": gap=" + gapMs.ToString("F0") + "ms" +
+						Mod.LogLobby("MultiPlayer gap P" + PlayerId + ": gap=" + gapMs.ToString("F0") + "ms" +
 							" gapEMA=" + GapEmaMs.ToString("F0") + "ms" +
 							" jitterEMA=" + JitterEmaMs.ToString("F0") + "ms" +
 							" mRate=" + SenderMotionRate.ToString("F3") +
@@ -538,7 +538,7 @@ namespace Assets.Scripts.Net.Sync
 			if (!rc.BodyMapDiagLogged)
 			{
 				rc.BodyMapDiagLogged = true;
-				Mod.LogLobby("MP bodyMap P" + rc.PlayerId + ": ids=" + n + " ghost=" + gn + " mapped=" + mapped + " miss=" + miss +
+				Mod.LogLobby("MultiPlayer bodyMap P" + rc.PlayerId + ": ids=" + n + " ghost=" + gn + " mapped=" + mapped + " miss=" + miss +
 					" (mapped=15 → 重排生效;mapped=0 → 旧对端/幽灵 id 不匹配)");
 			}
 			for (int g = 0; g < gn; g++)

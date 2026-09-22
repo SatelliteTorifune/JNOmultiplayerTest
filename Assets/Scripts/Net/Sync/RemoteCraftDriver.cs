@@ -5,7 +5,7 @@ using ModApi;
 using ModApi.Craft.Parts;
 using UnityEngine;
 using static Assets.Scripts.Net.Sync.GhostPoseWriter;
-using static Assets.Scripts.Net.Sync.MpSyncUtil;
+using static Assets.Scripts.Net.Sync.MultiPlayerSyncUtil;
 using static Assets.Scripts.Net.Sync.RemoteCraftSmoothing;
 using Assets.Scripts.Net.CraftVisual;
 using Assets.Scripts.Net.Session;
@@ -13,20 +13,20 @@ using Assets.Scripts.Net.Session;
 namespace Assets.Scripts.Net.Sync
 {
 	/// <summary>
-	/// 接收端每帧驱动(2026-09-22 重构:自 MpNetworkManager 逐字搬来):外推时钟推进、冻结/停顿处理、
+	/// 接收端每帧驱动(2026-09-22 重构:自 MultiPlayerNetworkManager 逐字搬来):外推时钟推进、冻结/停顿处理、
 	/// 2 阶外推、平滑目标计算、位姿写回,以及 LateUpdate 的朝向强制刷新。算法一字未动。
 	/// </summary>
 	internal class RemoteCraftDriver
 	{
-		private readonly MpNetworkManager _mp;
+		private readonly NetworkManager _multiPlayer;
 
-		internal RemoteCraftDriver(MpNetworkManager mp) { _mp = mp; }
+		internal RemoteCraftDriver(NetworkManager multiPlayer) { _multiPlayer = multiPlayer; }
 
 		/// <summary>每帧插值应用远程飞船状态（朝向直接赋值，与 Replay 一致）。</summary>
 		internal void UpdateRemoteCrafts()
 		{
 			if (FlightSceneScript.Instance == null) return;
-			foreach (RemoteCraft rc in _mp.Crafts._remoteCrafts.Values)
+			foreach (RemoteCraft rc in _multiPlayer.Crafts._remoteCrafts.Values)
 			{
 				if (rc.Node == null || !rc.HasState) continue;
 				try
@@ -36,7 +36,7 @@ namespace Assets.Scripts.Net.Sync
 					rc.Node.InContactWithPlanet = true;
 
 					// CraftScript 可能延迟构建：先做一次懒初始化（幻影模式），未就绪则跳过本帧
-					if (!rc.IsInitialized) _mp.Crafts.InitializeRemoteCraft(rc);
+					if (!rc.IsInitialized) _multiPlayer.Crafts.InitializeRemoteCraft(rc);
 					if (!rc.IsInitialized) continue;
 
 					rc.TotalFrames++;
@@ -100,7 +100,7 @@ namespace Assets.Scripts.Net.Sync
 						{
 							// 一次性状态跃迁日志(便于实测确认"暂停=冻结"是否按预期生效):
 							// 进入冻结 → 速度外推被抑制,幽灵停在最新包位置;退出冻结 → 恢复正常 dead-reckoning。
-							Mod.LogLobby("MP freeze P" + rc.PlayerId + ": " + (pausedNow ? "ENTER" : "EXIT") +
+							Mod.LogLobby("MultiPlayer freeze P" + rc.PlayerId + ": " + (pausedNow ? "ENTER" : "EXIT") +
 								" (flag=" + (rc.LastPktPausedFlag ? 1 : 0) + " stall=" + rc.PktStallCount +
 								" pkΔ=" + rc.PktFreezeDeltaM.ToString("F4") + "m vel=" + latest.Velocity.magnitude.ToString("F2") + "m/s)");
 						}
@@ -131,7 +131,7 @@ namespace Assets.Scripts.Net.Sync
 							if (gapFreezeNow)
 							{
 								rc.WinGapFreezeHits++;
-								Mod.LogLobby("MP gapfreeze P" + rc.PlayerId +
+								Mod.LogLobby("MultiPlayer gapfreeze P" + rc.PlayerId +
 									": ENTER age=" + age.ToString("F3") + "s thr=" + gapFreezeThr.ToString("F3") + "s" +
 									" gapEMA=" + rc.GapEmaMs.ToString("F0") + "ms" +
 									" mRate=" + rc.SenderMotionRate.ToString("F3") +
@@ -140,7 +140,7 @@ namespace Assets.Scripts.Net.Sync
 							}
 							else
 							{
-								Mod.LogLobby("MP gapfreeze P" + rc.PlayerId +
+								Mod.LogLobby("MultiPlayer gapfreeze P" + rc.PlayerId +
 									": EXIT age=" + age.ToString("F3") + "s thr=" + gapFreezeThr.ToString("F3") + "s" +
 									" mRate=" + rc.SenderMotionRate.ToString("F3"));
 							}
@@ -256,7 +256,7 @@ namespace Assets.Scripts.Net.Sync
 						// 朝向:应用 SrfRel 的 Yaw 角(连续日志对比可发现慢旋转——同样会被感知为"滑动")
 						string headYaw = "?";
 						try { headYaw = rc.SmoothedSrfRel.ToQuaternion().eulerAngles.y.ToString("F1"); } catch { }
-						Mod.LogLobby("MP smoothing P" + rc.PlayerId +
+						Mod.LogLobby("MultiPlayer smoothing P" + rc.PlayerId +
 							": buf=" + rc.BufferCount + "/" + RemoteCraft.BufferCapacity +
 							" fps=" + winFps.ToString("F0") +
 							" rtt/2=" + (rc.LatencyMs > 0f ? (rc.LatencyEmaMs > 0f ? rc.LatencyEmaMs : rc.LatencyMs).ToString("F0") : "?") + "ms" +
@@ -331,7 +331,7 @@ namespace Assets.Scripts.Net.Sync
 								}
 							}
 							catch { }
-							Mod.LogLobby("MP slowmo P" + rc.PlayerId +
+							Mod.LogLobby("MultiPlayer slowmo P" + rc.PlayerId +
 								": timeScale=" + Time.timeScale.ToString("F3") +
 								" rate=" + rc.SenderTimeRate.ToString("F3") +
 								" mRate=" + rc.SenderMotionRate.ToString("F3") +
@@ -357,7 +357,7 @@ namespace Assets.Scripts.Net.Sync
 					if (Time.unscaledTime - rc.LastTwitchLogTime > 1f)
 					{
 						rc.LastTwitchLogTime = Time.unscaledTime;
-						Mod.LogLobby("MP twitch P" + rc.PlayerId +
+						Mod.LogLobby("MultiPlayer twitch P" + rc.PlayerId +
 							": comLink=" + rc.DiagComLinkM.ToString("F4") + "m" +
 							" comCross=" + rc.DiagComCrossFrameM.ToString("F4") + "m" +
 							" b0d=" + rc.DiagBody0DeltaM.ToString("F4") + "m" +
@@ -385,7 +385,7 @@ namespace Assets.Scripts.Net.Sync
 								foreach (Renderer r in renderers) { rendererCount++; if (r.enabled) enabledCount++; }
 							}
 						}
-						catch (Exception e) { Mod.LogError("MP visualDiag error (p" + rc.PlayerId + "): " + e.Message); }
+						catch (Exception e) { Mod.LogError("MultiPlayer visualDiag error (p" + rc.PlayerId + "): " + e.Message); }
 					}
 
 					
@@ -404,8 +404,8 @@ namespace Assets.Scripts.Net.Sync
 		/// </summary>
 		internal void LateUpdateWriteBacks()
 		{
-			if (!_mp.IsConnected || _mp.Crafts._remoteCrafts.Count == 0) return;
-			foreach (RemoteCraft rc in _mp.Crafts._remoteCrafts.Values)
+			if (!_multiPlayer.IsConnected || _multiPlayer.Crafts._remoteCrafts.Count == 0) return;
+			foreach (RemoteCraft rc in _multiPlayer.Crafts._remoteCrafts.Values)
 			{
 				if (rc.Node == null || rc.Node.CraftScript == null || !rc.HasState || !rc.HasApplied) continue;
 				try

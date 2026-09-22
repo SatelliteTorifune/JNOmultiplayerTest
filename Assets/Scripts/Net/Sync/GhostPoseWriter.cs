@@ -16,7 +16,7 @@ using Assets.Scripts.Net.CraftVisual;
 namespace Assets.Scripts.Net.Sync
 {
 	/// <summary>
-	/// 幽灵位姿写回(2026-09-22 重构:自 MpNetworkManager 静态方法逐字搬来)。
+	/// 幽灵位姿写回(2026-09-22 重构:自 MultiPlayerNetworkManager 静态方法逐字搬来)。
 	/// 把状态包写进 CraftNode:GroundedSurface*(反射)/SetStateVectors/帧空间朝向/逻辑 comRot 基准的 body 摆放/FlightData 刷新。
 	/// 坐标系公式注释是全项目最贵的知识,一字未动。
 	/// </summary>
@@ -298,7 +298,7 @@ namespace Assets.Scripts.Net.Sync
 						if (!_flightDiagLogged)
 						{
 							_flightDiagLogged = true;
-							Mod.Log("MP FlightData 刷新诊断: posNormProp=" + (_flightPositionNormalizedProp != null) +
+							Mod.Log("MultiPlayer FlightData 刷新诊断: posNormProp=" + (_flightPositionNormalizedProp != null) +
 								" fwdProp=" + (_flightCraftForwardProp != null) +
 								" | 写后CraftForward=(" + rfd.CraftForward.x.ToString("F3") + "," + rfd.CraftForward.y.ToString("F3") + "," + rfd.CraftForward.z.ToString("F3") + ")" +
 								" 期望=(" + expCraftFwd.x.ToString("F3") + "," + expCraftFwd.y.ToString("F3") + "," + expCraftFwd.z.ToString("F3") + ")");

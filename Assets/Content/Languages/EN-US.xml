@@ -1,6 +1,6 @@
 <Strings>
-    <s id="MultiPlayer.MultiPlayerUI.MPinspector">MultiPlayerUI</s>
-    <s id="MultiPlayer.MultiPlayerUI.MpButtonTooltip">Toggle Multiplayer UI</s>
+    <s id="MultiPlayer.MultiPlayerUI.MultiPlayerInspector">MultiPlayerUI</s>
+    <s id="MultiPlayer.MultiPlayerUI.MultiPlayerButtonTooltip">Toggle Multiplayer UI</s>
     <s id="MultiPlayer.MultiPlayerUI.PlayerJoined">{0} joined the game</s>
     <s id="MultiPlayer.MultiPlayerUI.PlayerLeft">{0} left the game</s>
     <s id="MultiPlayer.MultiPlayerUI.ConnectedToHost">Connected to host as {0} (Player {1})</s>

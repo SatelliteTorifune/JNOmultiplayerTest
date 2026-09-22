@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Assets.Scripts.Flight;
 using Assets.Scripts.Flight.Sim;
+using Assets.Scripts.Net.MultiPlayerTransport;
 using ModApi;
 using ModApi.Craft.Parts;
 using UnityEngine;
@@ -12,27 +13,27 @@ namespace Assets.Scripts.Net.Session
 	/// <summary>
 	/// 联机网络管理器（主机中继模式）——**瘦门面 + 组合根**（2026-09-22 重构）：
 	/// - 只负责：Unity 生命周期、会话身份状态、对外 API（供 UI / LobbyManager / Harmony patch 使用）、每帧驱动各组件；
-	/// - 具体职责已拆到：<see cref="MpPlayerRegistry"/>（玩家表）、<see cref="MpCraftCatalog"/>（飞船 XML 分发）、
+	/// - 具体职责已拆到：<see cref="MultiPlayerRegistry"/>（玩家表）、<see cref="MultiPlayerCraftCatalog"/>（飞船 XML 分发）、
 	///   <see cref="LocalCraftSender"/>（发送端:采样 + 发包节拍）、
 	///   <see cref="RemoteCraftManager"/>（幽灵生命周期）、<see cref="RemoteCraftDriver"/>（接收端外推/平滑驱动）、
-	///   <see cref="MpMessageRouter"/>（协议分发）、FlightUI 提示(直接在本类内)；
-	///   共享常量/工具在 <see cref="MpSyncTuning"/> / <see cref="MpMath"/> / <see cref="GhostPoseWriter"/> /
+	///   <see cref="MultiPlayerMessageRouter"/>（协议分发）、FlightUI 提示(直接在本类内)；
+	///   共享常量/工具在 <see cref="MultiPlayerSyncUtil"/> / <see cref="GhostPoseWriter"/> /
 	///   <see cref="RemoteCraftSmoothing"/> / <see cref="GhostBodyRemapper"/>。
 	/// - 协议、平滑算法、日志行、热路径零分配、注释均与重构前一致（纯搬移）。
 	/// - 客户端把状态包发给房主，房主转发给其他所有客户端；房主负责房间管理（Hello/Welcome/PlayerJoin/PlayerLeave）。
 	/// 由 Mod 在飞行场景挂载到独立 GameObject 上。
 	/// </summary>
 	[DefaultExecutionOrder(1000)]
-	public class MpNetworkManager : MonoBehaviour
+	public class NetworkManager : MonoBehaviour
 	{
-		public static MpNetworkManager Instance { get; private set; }
+		public static NetworkManager Instance { get; private set; }
 
 		// 传输层切换点：
 		// - SteamTransport：Steam P2P（Steam Networking Sockets），零端口转发/零 frp，最推荐（SP2 的 FishySteamworks 同款）。
 		// - TcpTransport：TCP，可走 frp/nginx 等纯 TCP 内网穿透（无 MTU 限制，无需分片）；缺点 head-of-line blocking。
 		// - LiteNetLibTransport：UDP + 可靠/不可靠通道分离 + 应用层分片；缺点公网需 UDP 端口转发。
 		// 默认 Steam；本地虚拟机 debug 时用控制台 TcpHostLobby / TcpJoinLobby 切到 TcpTransport（见 SetTransport）。
-		public IMpTransport Transport { get; private set; } = new SteamTransport();
+		public IMultiPlayerTransport Transport { get; private set; } = new SteamTransport();
 
 		public bool IsServer { get; private set; }
 		public bool IsConnected { get; private set; }
@@ -52,9 +53,9 @@ namespace Assets.Scripts.Net.Session
 		public long TimeoutMs = 60000;
 
 		/// <summary>收到远程玩家加入。</summary>
-		public event Action<MpPeer> OnPlayerJoined;
+		public event Action<MultiPlayerPeer> OnPlayerJoined;
 		/// <summary>远程玩家离开/掉线。</summary>
-		public event Action<MpPeer> OnPlayerLeft;
+		public event Action<MultiPlayerPeer> OnPlayerLeft;
 		/// <summary>收到远程飞船状态（playerId, nodeId, 时间, recdata）。</summary>
 		public event Action<int, int, double, Mod.RemoteDataPack> OnRemoteState;
 
@@ -66,31 +67,31 @@ namespace Assets.Scripts.Net.Session
 		private float _clientJoinedTime = -1f;
 
 		// ---- 职责组件（2026-09-22 重构:原上帝类按职责拆分;门面在 Awake 里组装并每帧驱动） ----
-		internal MpPlayerRegistry Registry { get; private set; }
-		internal MpCraftCatalog Catalog { get; private set; }
+		internal MultiPlayerRegistry Registry { get; private set; }
+		internal MultiPlayerCraftCatalog Catalog { get; private set; }
 		internal LocalCraftSender Sender { get; private set; }
 		internal RemoteCraftManager Crafts { get; private set; }
 		internal RemoteCraftDriver Driver { get; private set; }
-		internal MpMessageRouter Router { get; private set; }
+		internal MultiPlayerMessageRouter Router { get; private set; }
 
 		private void Awake()
 		{
 			Instance = this;
-			Registry = new MpPlayerRegistry(this);
-			Catalog = new MpCraftCatalog(this);
+			Registry = new MultiPlayerRegistry(this);
+			Catalog = new MultiPlayerCraftCatalog(this);
 			Sender = new LocalCraftSender(this);
 			Crafts = new RemoteCraftManager(this);
 			Driver = new RemoteCraftDriver(this);
-			Router = new MpMessageRouter(this);
+			Router = new MultiPlayerMessageRouter(this);
 			Transport.OnDataReceived += Router.HandlePacket;
 			Transport.OnPeerTimeout += Registry.HandlePeerTimeout;
-			Mod.LogLobby("MP build r10 2026-09-19 (= r6 baseline: r4 id-remap + r5 stable-anchor + bodyNames/rbΔ diag; r7 orbit / r8 freeze / r9 SP2 dead-reckon all removed)");
-			Mod.LogLobby("MpNetworkManager created on GameObject '" + gameObject.name + "' (Awake)");
+			Mod.LogLobby("MultiPlayer build r10 2026-09-19 (= r6 baseline: r4 id-remap + r5 stable-anchor + bodyNames/rbΔ diag; r7 orbit / r8 freeze / r9 SP2 dead-reckon all removed)");
+			Mod.LogLobby("MultiPlayerNetworkManager created on GameObject '" + gameObject.name + "' (Awake)");
 		}
 
 		private void OnDestroy()
 		{
-			Mod.LogLobby("MpNetworkManager destroyed (OnDestroy)");
+			Mod.LogLobby("MultiPlayerNetworkManager destroyed (OnDestroy)");
 			Transport.OnDataReceived -= Router.HandlePacket;
 			Transport.OnPeerTimeout -= Registry.HandlePeerTimeout;
 			Transport.Stop();
@@ -103,14 +104,14 @@ namespace Assets.Scripts.Net.Session
 		// 重构改为显式直调,调用顺序与原订阅顺序一致:内部清理 → UI 提示 → 对外事件。
 
 		/// <summary>玩家加入:UI 提示后广播事件(顺序同重构前:ShowPlayerJoinedNotice → 订阅者)。</summary>
-		internal void RaisePlayerJoined(MpPeer peer)
+		internal void RaisePlayerJoined(MultiPlayerPeer peer)
 		{
 			ShowPlayerJoinedNotice(peer);
 			OnPlayerJoined?.Invoke(peer);
 		}
 
 		/// <summary>玩家离开:先清理幽灵飞船,再 UI 提示,最后广播事件(顺序同重构前)。</summary>
-		internal void RaisePlayerLeft(MpPeer peer)
+		internal void RaisePlayerLeft(MultiPlayerPeer peer)
 		{
 			Crafts.HandlePlayerLeft(peer);
 			ShowPlayerLeftNotice(peer);
@@ -137,7 +138,7 @@ namespace Assets.Scripts.Net.Session
 			else
 			{
 				// 客户端：发给房主，由房主转发
-				foreach (MpPeer peer in Transport.GetPeers())
+				foreach (MultiPlayerPeer peer in Transport.GetPeers())
 				{
 					if (peer.IsServer) { Transport.SendTo(peer, packet); break; }
 				}
@@ -179,17 +180,17 @@ namespace Assets.Scripts.Net.Session
 			try { PlayerName = ModSettings.Instance.PlayerName.Value; }
 			catch { PlayerName = "Player"; }
 			if (string.IsNullOrWhiteSpace(PlayerName)) PlayerName = "Player";
-			Mod.LogLobby("MP.Host(): starting " + Transport.GetType().Name + " on port " + port + " ...");
+			Mod.LogLobby("MultiPlayer.Host(): starting " + Transport.GetType().Name + " on port " + port + " ...");
 			if (!Transport.Start(port))
 			{
-				Mod.LogError("MP.Host FAILED: Transport.Start(" + port + ") returned false (port may be in use)");
+				Mod.LogError("MultiPlayer.Host FAILED: Transport.Start(" + port + ") returned false (port may be in use)");
 				return false;
 			}
 			IsServer = true;
 			IsConnected = true;
 			PlayerId = 0;
 			LocalNodeId = LocalCraftSender.GetLocalCraftNodeId();
-			Mod.LogLobby("MP.Host SUCCESS: port=" + port + ", boundLocalPort=" + Transport.LocalPort +
+			Mod.LogLobby("MultiPlayer.Host SUCCESS: port=" + port + ", boundLocalPort=" + Transport.LocalPort +
 				", IsServer=" + IsServer + ", IsConnected=" + IsConnected +
 				", PlayerId=" + PlayerId + ", LocalNodeId=" + LocalNodeId +
 				", Transport.IsRunning=" + Transport.IsRunning +
@@ -211,16 +212,16 @@ namespace Assets.Scripts.Net.Session
 			PlayerName = playerName;
 			LocalNodeId = LocalCraftSender.GetLocalCraftNodeId();
 			Catalog._craftReported = false;
-			byte[] hello = MpMessages.EncodeHello(PlayerName);
-			Mod.LogLobby("MP.Join(): connecting to " + host + ":" + port + " as '" + PlayerName + "' ...");
+			byte[] hello = MultiPlayerMessages.EncodeHello(PlayerName);
+			Mod.LogLobby("MultiPlayer.Join(): connecting to " + host + ":" + port + " as '" + PlayerName + "' ...");
 			if (!Transport.StartClient(host, port, hello))
 			{
-				Mod.LogError("MP.Join FAILED: Transport.StartClient(" + host + ":" + port + ") returned false");
+				Mod.LogError("MultiPlayer.Join FAILED: Transport.StartClient(" + host + ":" + port + ") returned false");
 				return false;
 			}
 			IsServer = false;
 			IsConnected = true; // 握手完成后视为已连接（Welcome 用于同步身份）
-			Mod.LogLobby("MP.Join SUCCESS: host=" + host + ":" + port +
+			Mod.LogLobby("MultiPlayer.Join SUCCESS: host=" + host + ":" + port +
 				", boundLocalPort=" + Transport.LocalPort + ", IsConnected=" + IsConnected +
 				", PlayerName='" + PlayerName + "', LocalNodeId=" + LocalNodeId +
 				", peerCount=" + Transport.GetPeersCount() +
@@ -243,7 +244,7 @@ namespace Assets.Scripts.Net.Session
 			ResetForStop();
 			Registry.Clear();
 			Crafts.DestroyAllRemoteCrafts();
-			Mod.LogLobby("MP.Stop: wasServer=" + wasServer + ", wasConnected=" + wasConnected +
+			Mod.LogLobby("MultiPlayer.Stop: wasServer=" + wasServer + ", wasConnected=" + wasConnected +
 				", wasPlayerId=" + wasPlayerId + ", Transport.IsRunning=" + Transport.IsRunning);
 		}
 
@@ -251,7 +252,7 @@ namespace Assets.Scripts.Net.Session
 		/// 切换到指定传输实例（debug 用：切到 TcpTransport 走本地 TCP，虚拟机按宿主 IP:端口 连接）。
 		/// 会停止当前会话、退订旧传输事件、挂接新传输事件。默认仍为 SteamTransport，仅在显式调用时切换。
 		/// </summary>
-		public void SetTransport(IMpTransport newTransport)
+		public void SetTransport(IMultiPlayerTransport newTransport)
 		{
 			if (ReferenceEquals(newTransport, Transport)) return;
 			if (Transport != null)
@@ -267,7 +268,7 @@ namespace Assets.Scripts.Net.Session
 				Transport.OnDataReceived += Router.HandlePacket;
 				Transport.OnPeerTimeout += Registry.HandlePeerTimeout;
 			}
-			Mod.LogLobby("MP.SetTransport: switched to " + (Transport == null ? "<null>" : Transport.GetType().Name));
+			Mod.LogLobby("MultiPlayer.SetTransport: switched to " + (Transport == null ? "<null>" : Transport.GetType().Name));
 		}
 
 		/// <summary>
@@ -328,11 +329,11 @@ namespace Assets.Scripts.Net.Session
 			TickRate = clamped;
 			SendIntervalMs = 1000f / clamped;
 			RenderDelayMs = Mathf.Clamp(2000f / clamped, 40f, 400f);
-			Mod.LogLobby("MP.SetTickRate: " + clamped + " Hz (interval=" + SendIntervalMs.ToString("F1") +
+			Mod.LogLobby("MultiPlayer.SetTickRate: " + clamped + " Hz (interval=" + SendIntervalMs.ToString("F1") +
 				"ms, renderDelay=" + RenderDelayMs.ToString("F1") + "ms, IsServer=" + IsServer + ")");
 			if (IsServer)
 			{
-				Transport.Broadcast(MpMessages.EncodeTickRate(clamped));
+				Transport.Broadcast(MultiPlayerMessages.EncodeTickRate(clamped));
 			}
 		}
 
@@ -344,7 +345,7 @@ namespace Assets.Scripts.Net.Session
 			Registry.KickPlayer(playerId);
 		}
 
-		public IReadOnlyCollection<MpPeer> GetPlayers()
+		public IReadOnlyCollection<MultiPlayerPeer> GetPlayers()
 		{
 			return Registry.GetPlayers();
 		}
@@ -362,7 +363,7 @@ namespace Assets.Scripts.Net.Session
 		internal void ResetForStop() { _joinNoticeShown.Clear(); _clientJoinedTime = -1f; }
 
 		/// <summary>有玩家加入：FlightUI 提示（按 playerId 去重，只提示一次）。</summary>
-		internal void ShowPlayerJoinedNotice(MpPeer peer)
+		internal void ShowPlayerJoinedNotice(MultiPlayerPeer peer)
 		{
 			if (peer == null || peer.PlayerId < 0) return;
 			// 客户端不把房主(playerId 0)当"新加入"提示（房主是房间创建者，避免与"连接成功"混淆）
@@ -379,7 +380,7 @@ namespace Assets.Scripts.Net.Session
 
 
 		/// <summary>有玩家离开：FlightUI 提示。</summary>
-		internal void ShowPlayerLeftNotice(MpPeer peer)
+		internal void ShowPlayerLeftNotice(MultiPlayerPeer peer)
 		{
 			if (peer == null || peer.PlayerId < 0) return;
 			// 客户端不把房主(playerId 0)离开当"玩家离开"提示（房主掉线由连接断开处理）

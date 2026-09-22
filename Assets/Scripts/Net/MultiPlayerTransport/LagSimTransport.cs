@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 
-namespace Assets.Scripts.Net
+namespace Assets.Scripts.Net.MultiPlayerTransport
 {
 	/// <summary>
-	/// 延迟/抖动/丢包/重复 模拟传输层(装饰器,包住任意 IMpTransport)。
+	/// 延迟/抖动/丢包/重复 模拟传输层(装饰器,包住任意 IMultiPlayerTransport)。
 	///
 	/// 用途:没有 Steam 好友时,用 TCP + 本地虚拟机联机无法暴露真实公网的延迟/抖动/丢包。
 	/// 本类在"接收路径"(inner.OnDataReceived → 延迟队列 → 到点再触发上层 OnDataReceived)注入
@@ -17,10 +17,10 @@ namespace Assets.Scripts.Net
 	///   3. 会话进行中可直接改静态配置(NetSimDelay 200 等),已激活的实例逐包实时生效;
 	///   4. NetSimReset 归零;NetSim 查看当前配置与投递统计。
 	///
-	/// 注意:对 MpNetworkManager 完全透明(它只看到 IMpTransport);收发路径中 SendTo/Broadcast 直通,
+	/// 注意:对 MultiPlayerNetworkManager 完全透明(它只看到 IMultiPlayerTransport);收发路径中 SendTo/Broadcast 直通,
 	/// 只在"接收"侧打延迟 —— 对端到达时间分布与真实网络一致,足够复现插值层问题。
 	/// </summary>
-	public class LagSimTransport : IMpTransport
+	public class LagSimTransport : IMultiPlayerTransport
 	{
 		// ---------------- 静态配置(UI Toggle/输入框 + 控制台命令修改;开房命令据此决定是否包装) ----------------
 		/// <summary>延迟模拟总开关(UI Toggle / NetSimOn / NetSimOff)。关闭=直通(不延迟、不丢包),
@@ -57,7 +57,7 @@ namespace Assets.Scripts.Net
 		/// 按当前静态配置决定是否包装:未启用(总开关关或无数值)时原样返回 inner(保证 LobbyManager 的
 		/// "Transport is SteamTransport" 判断等类型检查仍成立);启用时包一层 LagSimTransport。
 		/// </summary>
-		public static IMpTransport MaybeWrap(IMpTransport inner)
+		public static IMultiPlayerTransport MaybeWrap(IMultiPlayerTransport inner)
 		{
 			if (inner == null || !Enabled) return inner;
 			// Steam 暂不包装:LobbyManager.HostLobby 依赖 "Transport is SteamTransport" 做 SteamId 预检,
@@ -91,7 +91,7 @@ namespace Assets.Scripts.Net
 
 		// ---------------- 实例 ----------------
 
-		private readonly IMpTransport _inner;
+		private readonly IMultiPlayerTransport _inner;
 		private readonly object _lock = new object();
 		private readonly List<QueuedPacket> _pending = new List<QueuedPacket>();
 		private readonly Random _rng = new Random();
@@ -106,17 +106,17 @@ namespace Assets.Scripts.Net
 		/// <summary>毫秒级时间戳（纯 .NET，与 TcpTransport 同款实现）。</summary>
 		private static long NowMs => DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;
 
-		public event Action<MpPeer, byte[]> OnDataReceived;
-		public event Action<MpPeer> OnPeerTimeout;
+		public event Action<MultiPlayerPeer, byte[]> OnDataReceived;
+		public event Action<MultiPlayerPeer> OnPeerTimeout;
 
-		public LagSimTransport(IMpTransport inner)
+		public LagSimTransport(IMultiPlayerTransport inner)
 		{
 			_inner = inner;
 			inner.OnDataReceived += OnInnerData;
 			inner.OnPeerTimeout += OnPeerTimeout; // 超时/断开直接转发(不延迟)
 		}
 
-		private void OnInnerData(MpPeer peer, byte[] data)
+		private void OnInnerData(MultiPlayerPeer peer, byte[] data)
 		{
 			// 总开关关闭:直通(不延迟、不丢包)——保证其它 TCP 场景延迟尽量小
 			if (!ToggleOn)
@@ -194,12 +194,12 @@ namespace Assets.Scripts.Net
 			_inner.Stop();
 		}
 
-		public void SendTo(MpPeer peer, byte[] data) => _inner.SendTo(peer, data);
+		public void SendTo(MultiPlayerPeer peer, byte[] data) => _inner.SendTo(peer, data);
 		public void Broadcast(byte[] data) => _inner.Broadcast(data);
 		public void CheckTimeouts(long timeoutMs) => _inner.CheckTimeouts(timeoutMs);
-		public IReadOnlyCollection<MpPeer> GetPeers() => _inner.GetPeers();
+		public IReadOnlyCollection<MultiPlayerPeer> GetPeers() => _inner.GetPeers();
 		public int GetPeersCount() => _inner.GetPeersCount();
-		public void DisconnectPeer(MpPeer peer) => _inner.DisconnectPeer(peer);
+		public void DisconnectPeer(MultiPlayerPeer peer) => _inner.DisconnectPeer(peer);
 
 		public void Dispose()
 		{
@@ -212,7 +212,7 @@ namespace Assets.Scripts.Net
 		private struct QueuedPacket
 		{
 			public long DueMs;
-			public MpPeer Peer;
+			public MultiPlayerPeer Peer;
 			public byte[] Data;
 		}
 	}

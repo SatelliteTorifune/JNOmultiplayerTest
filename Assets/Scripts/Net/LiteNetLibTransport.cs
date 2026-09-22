@@ -7,13 +7,13 @@ using LiteNetLib.Utils;
 namespace Assets.Scripts.Net
 {
     /// <summary>
-    /// LiteNetLib 传输封装：接口与 TcpTransport 完全兼容，MpNetworkManager 只需把字段类型从
+    /// LiteNetLib 传输封装：接口与 TcpTransport 完全兼容，MultiPlayerNetworkManager 只需把字段类型从
     /// TcpTransport 换成 LiteNetLibTransport 即可无缝切换，房间逻辑/游戏同步逻辑完全不动。
     ///
     /// 为什么用 LiteNetLib（FishNet 的 Tugboat 底层库）而不是 FishNet Broadcast：
     /// - FishNet 的 Broadcast/RPC 泛型序列化依赖 codegen（GenericWriter<T>），而模组的
     ///   aMptest.dll 是运行时加载的，codegen 不会为其生成序列化器 → "Write method not found"；
-    /// - LiteNetLib 无 codegen、无框架约束，纯 UDP 字节通道，正好匹配我们已有的 MpMessages 序列化；
+    /// - LiteNetLib 无 codegen、无框架约束，纯 UDP 字节通道，正好匹配我们已有的 MultiPlayerMessages 序列化；
     /// - 自带可靠(ReliableOrdered)/不可靠(Unreliable)通道：状态包走不可靠，大 XML 走可靠。
     ///
     /// 重要：UDP 单包受 MTU 限制（LiteNetLib 默认 1432），且本 LiteNetLib 版本已移除自动分片
@@ -25,13 +25,13 @@ namespace Assets.Scripts.Net
     public class LiteNetLibTransport : IDisposable
     {
         /// <summary>收到完整消息（主线程回调，由 PollEvents 触发）。</summary>
-        public event Action<MpPeer, byte[]> OnDataReceived;
+        public event Action<MultiPlayerPeer, byte[]> OnDataReceived;
         /// <summary>对端超时/断开。</summary>
-        public event Action<MpPeer> OnPeerTimeout;
+        public event Action<MultiPlayerPeer> OnPeerTimeout;
 
         /// <summary>分片单包最大字节（小于 MTU 1432，留足余量）。</summary>
         private const int MaxChunkSize = 1200;
-        /// <summary>分片消息首字节标记（不会与 MpMessageType 1~11 冲突）。</summary>
+        /// <summary>分片消息首字节标记（不会与 MultiPlayerMessageType 1~11 冲突）。</summary>
         private const byte FragmentMarker = 0xFC;
         /// <summary>分片头长度：marker(1) + totalLen(4) + chunkIndex(4) + chunkCount(4)。</summary>
         private const int FragmentHeaderSize = 13;
@@ -41,12 +41,12 @@ namespace Assets.Scripts.Net
         private bool _isServer;
         private volatile bool _running;
 
-        // 房主：peer.Id -> MpPeer / NetPeer 映射
-        private readonly Dictionary<int, MpPeer> _serverPeers = new();
+        // 房主：peer.Id -> MultiPlayerPeer / NetPeer 映射
+        private readonly Dictionary<int, MultiPlayerPeer> _serverPeers = new();
         private readonly Dictionary<int, NetPeer> _serverNetPeers = new();
         private readonly object _peersLock = new();
         // 客户端：到房主的 peer
-        private MpPeer _serverPeer;
+        private MultiPlayerPeer _serverPeer;
         private NetPeer _clientNetPeer;
         // 客户端：连接建立后要发的首个包（Hello）
         private byte[] _pendingHello;
@@ -70,7 +70,7 @@ namespace Assets.Scripts.Net
         /// <summary>根据消息首字节自动选投递方式：状态包不可靠，其余可靠有序。</summary>
         private static DeliveryMethod GetDelivery(byte[] data)
         {
-            if (data != null && data.Length > 0 && data[0] == (byte)MpMessageType.State)
+            if (data != null && data.Length > 0 && data[0] == (byte)MultiPlayerMessageType.State)
                 return DeliveryMethod.Unreliable;
             return DeliveryMethod.ReliableOrdered;
         }
@@ -217,7 +217,7 @@ namespace Assets.Scripts.Net
 
         // ---------------- 发送 ----------------
 
-        public void SendTo(MpPeer peer, byte[] data)
+        public void SendTo(MultiPlayerPeer peer, byte[] data)
         {
             if (data == null || data.Length == 0 || _nm == null || !_running) return;
             try
@@ -301,12 +301,12 @@ namespace Assets.Scripts.Net
 
         // ---------------- 连接管理 ----------------
 
-        public IReadOnlyCollection<MpPeer> GetPeers()
+        public IReadOnlyCollection<MultiPlayerPeer> GetPeers()
         {
             lock (_peersLock)
             {
-                if (_isServer) return new List<MpPeer>(_serverPeers.Values);
-                return _serverPeer == null ? new List<MpPeer>() : new List<MpPeer> { _serverPeer };
+                if (_isServer) return new List<MultiPlayerPeer>(_serverPeers.Values);
+                return _serverPeer == null ? new List<MultiPlayerPeer>() : new List<MultiPlayerPeer> { _serverPeer };
             }
         }
 
@@ -354,8 +354,8 @@ namespace Assets.Scripts.Net
         {
             if (_isServer)
             {
-                // 用 peer.Id 合成唯一 EndPoint（端口=peerId），MpPeer.EndPoint 兼容
-                var mp = new MpPeer
+                // 用 peer.Id 合成唯一 EndPoint（端口=peerId），MultiPlayerPeer.EndPoint 兼容
+                var multiPlayer = new MultiPlayerPeer
                 {
                     EndPoint = new IPEndPoint(IPAddress.Loopback, peer.Id),
                     IsServer = false,
@@ -363,7 +363,7 @@ namespace Assets.Scripts.Net
                 };
                 lock (_peersLock)
                 {
-                    _serverPeers[peer.Id] = mp;
+                    _serverPeers[peer.Id] = multiPlayer;
                     _serverNetPeers[peer.Id] = peer;
                 }
                 Mod.LogLobby("LiteNetLibTransport: client " + peer.Id + " connected, peers=" + GetPeersCount());
@@ -371,7 +371,7 @@ namespace Assets.Scripts.Net
             else
             {
                 _clientNetPeer = peer;
-                _serverPeer = new MpPeer
+                _serverPeer = new MultiPlayerPeer
                 {
                     EndPoint = new IPEndPoint(IPAddress.Loopback, 0),
                     IsServer = true,
@@ -392,7 +392,7 @@ namespace Assets.Scripts.Net
         {
             if (_isServer)
             {
-                MpPeer removed = null;
+                MultiPlayerPeer removed = null;
                 lock (_peersLock)
                 {
                     if (_serverPeers.TryGetValue(peer.Id, out removed))
@@ -407,7 +407,7 @@ namespace Assets.Scripts.Net
             }
             else
             {
-                MpPeer p = _serverPeer;
+                MultiPlayerPeer p = _serverPeer;
                 _serverPeer = null;
                 _clientNetPeer = null;
                 _running = false;
@@ -478,11 +478,11 @@ namespace Assets.Scripts.Net
         {
             if (_isServer)
             {
-                MpPeer mp;
-                lock (_peersLock) { _serverPeers.TryGetValue(peer.Id, out mp); }
-                if (mp == null) return;
-                mp.LastReceiveTick = NowMs;
-                OnDataReceived?.Invoke(mp, data);
+                MultiPlayerPeer multiPlayer;
+                lock (_peersLock) { _serverPeers.TryGetValue(peer.Id, out multiPlayer); }
+                if (multiPlayer == null) return;
+                multiPlayer.LastReceiveTick = NowMs;
+                OnDataReceived?.Invoke(multiPlayer, data);
             }
             else
             {

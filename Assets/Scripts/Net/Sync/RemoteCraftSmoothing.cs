@@ -1,13 +1,13 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-using static Assets.Scripts.Net.Sync.MpSyncUtil;
+using static Assets.Scripts.Net.Sync.MultiPlayerSyncUtil;
 
 namespace Assets.Scripts.Net.Sync
 {
 	/// <summary>
 	/// 接收端平滑(SP2 式指数收敛 + 近距快照 + 瞬移 + 旋转 body 逐帧积分;
-	/// 2026-09-22 重构:自 MpNetworkManager 静态方法逐字搬来,算法与参数一字未动)。
+	/// 2026-09-22 重构:自 MultiPlayerNetworkManager 静态方法逐字搬来,算法与参数一字未动)。
 	/// </summary>
 	internal static class RemoteCraftSmoothing
 	{

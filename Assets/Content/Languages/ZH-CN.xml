@@ -1,6 +1,6 @@
 <Strings>
-    <s id="MultiPlayer.MultiPlayerUI.MPinspector">联机UI</s>
-    <s id="MultiPlayer.MultiPlayerUI.MpButtonTooltip">打开联机UI</s>
+    <s id="MultiPlayer.MultiPlayerUI.MultiPlayerInspector">联机UI</s>
+    <s id="MultiPlayer.MultiPlayerUI.MultiPlayerButtonTooltip">打开联机UI</s>
     <s id="MultiPlayer.MultiPlayerUI.PlayerJoined">{0} 加入了游戏</s>
     <s id="MultiPlayer.MultiPlayerUI.PlayerLeft">{0} 离开了游戏</s>
     <s id="MultiPlayer.MultiPlayerUI.ConnectedToHost">已作为 {0} 连接到主机（玩家 {1}）</s>

@@ -36,7 +36,7 @@ namespace Assets.Scripts
         /// </summary>
         public static void LogLobby(object message)
         {
-            UnityEngine.Debug.Log("[Mptest][Lobby] " + message);
+            UnityEngine.Debug.Log("[MultiPlayer][Lobby] " + message);
         }
 
         /// <summary>
@@ -46,7 +46,7 @@ namespace Assets.Scripts
         /// </summary>
         public static void LogUpdate(object message)
         {
-            UnityEngine.Debug.Log("[Mptest][Update] " + message);
+            UnityEngine.Debug.Log("[MultiPlayer][Update] " + message);
         }
     }
 }

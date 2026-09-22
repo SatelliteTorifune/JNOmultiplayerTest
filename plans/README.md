@@ -1,10 +1,10 @@
 # JNOMultiPlayer —— 会话上下文 + 设计文档索引(plans/README.md)
 
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod `MultiPlayer`;Steam AppID **870200**;Unity **2022.3.62f3**;C# 命名空间 `Assets.Scripts.*`)。思路:**反编译游戏源码导航内部 API** + 参考 KSP LunaMultiplayer 与 SP2(SimplePlanes 2)的联机实现。
-> **当前进度**:单船"幽灵船"原型已通过 **Steam 双账号公网实测**;**架构重构已完成归档(2026-09-22)**:`MpNetworkManager` 上帝类(3717 行)拆为 **391 行瘦门面 + 11 个职责类**,并按 4 层目录分类(`Net/` 传输协议 / `Net/Session/` 会话房间 / `Net/Sync/` 同步管线 / `Net/CraftVisual/` 远程船呈现,共 25 文件;行为保持,构建 0/0,见 `archive/refactor-mpnetworkmanager-2026-09-22.md`);§六 现有 **0 个待办活跃主题**(平滑主题 = 已回滚收工的稳定基线参考)+ **5 个待拍板**(含 1 份参考资料)+ **16 个已归档**;1.4.2 适配 / 部件开关回归 / 高延迟平滑 / Vizzy 隔离 / 旋翼 body 同步均已结案。
+> **当前进度**:单船"幽灵船"原型已通过 **Steam 双账号公网实测**;**架构重构已完成归档(2026-09-22)**:`MpNetworkManager` 上帝类(3717 行)拆为 **391 行瘦门面 + 11 个职责类**,并按 5 层目录分类(`Net/` 协议基础 / `Net/MultiPlayerTransport/` 传输实现 / `Net/Session/` 会话房间 / `Net/Sync/` 同步管线 / `Net/CraftVisual/` 远程船呈现,共 25 文件;行为保持,构建 0/0,见 `archive/refactor-mpnetworkmanager-2026-09-22.md`);**2026-09-22 再整理:残留 `Mp*`/`MP`/`_mp` 命名统一为 `MultiPlayer`**(`MpNetworkManager`→`NetworkManager`、`MpMessageRouter`→`MultiPlayerMessageRouter`、`MpCraftCatalog`→`MultiPlayerCraftCatalog`、`MpPlayerRegistry`→`MultiPlayerRegistry`、`MpSyncUtil`→`MultiPlayerSyncUtil`、`MpCraftPreloader`→`MultiPlayerCraftPreloader`、`MpMessage.cs`→`MultiPlayerMessages.cs`、`_mp`→`_multiPlayer`、`EnsureMpManager`→`EnsureMultiPlayerManager`、`MPTest`→`MultiPlayer`、`mp_name`→`multiPlayer_name`、日志前缀 `MP.`→`MultiPlayer.`;重命名脚本 `plans/archive/rename-mp-to-multiplayer.ps1`);§六 现有 **0 个待办活跃主题**(平滑主题 = 已回滚收工的稳定基线参考)+ **5 个待拍板**(含 1 份参考资料)+ **16 个已归档**;1.4.2 适配 / 部件开关回归 / 高延迟平滑 / Vizzy 隔离 / 旋翼 body 同步均已结案。
 > 用法:新会话第一条上下文直接投喂本文档(§一~§五 即提示词核心)。本文档是**原 `AGENT_CONTEXT.md`(会话上下文)+ 原 `README.md`(索引/决策/规则)的合并版**,只读参考;**方案 / 决策类内容一律写进对应主题 plan**,再同步本文档索引与决策速查。
 > **职责边界(重要)**:mod 的**打包 / 部署 / DLL 更新 / 发布链条**(装进游戏的 DLL、AssetBundle、版本号、GitHub Releases)**全部由用户负责**——agent 不执行、不代劳、不为此改版本号或构建产物;agent 只负责**源码改动 + 文档同步 + `dotnet build MultiPlayer.csproj -c Debug` 验证(0 错误 0 警告)**。
-> 调试日志(联机双端,真实路径见 `LOCAL_PATHS.md`):本机 `<USERPROFILE>\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log`(Unity 运行时日志;`Mod.LogLobby` / `MP smoothing` / `MP twitch` / `MP sendDiag` 等输出在这里);对面(VM 客户端)`<SHARED>\Player.log`。⚠️ 双开同机时两个实例写同一本机日志会互相覆盖,双端取证必须用 VM。
+> 调试日志(联机双端,真实路径见 `LOCAL_PATHS.md`):本机 `<USERPROFILE>\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log`(Unity 运行时日志;`Mod.LogLobby` / `MultiPlayer smoothing` / `MultiPlayer twitch` / `MultiPlayer sendDiag` 等输出在这里);对面(VM 客户端)`<SHARED>\Player.log`。⚠️ 双开同机时两个实例写同一本机日志会互相覆盖,双端取证必须用 VM。
 
 ---
 
@@ -37,25 +37,26 @@
 
 | 文件 | 职责 |
 |---|---|
-| `Mod.cs` | 入口:`Harmony("MPTest").PatchAll()` + `JetEngineGhostPatch.Apply`;`RemoteDataPack`(状态包结构体);DevConsole 命令注册;UI 对象创建;`ModVersion` + `ModUpdater` 启动 |
-| `LobbyManager.cs` | 房间生命周期(Host/Join/Stop、`DontDestroyOnLoad`、`SceneLoaded`→`OnFlightSceneLoaded`、创建/持有 `MpNetworkManager`) |
-| **`Net/`(根层,namespace `Assets.Scripts.Net`)= 传输与协议基础** | `IMpTransport.cs`(传输薄接口) / `SteamTransport.cs`(默认) / `TcpTransport.cs`(debug) / `LiteNetLibTransport.cs`(备用未启用) / `LagSimTransport.cs`(NetSim 延迟模拟装饰器) / `SteamLobbyBrowser.cs`(Steam 房间列表) / `MpMessage.cs`(二进制消息编解码 + GZip XML 分片) / `MpPeer.cs`(对端) / `SteamSpike.cs` `FishNetSpike.cs`(spike 参考) |
+| `Mod.cs` | 入口:`Harmony("MultiPlayer").PatchAll()` + `JetEngineGhostPatch.Apply`;`RemoteDataPack`(状态包结构体);DevConsole 命令注册;UI 对象创建;`ModVersion` + `ModUpdater` 启动 |
+| `LobbyManager.cs` | 房间生命周期(Host/Join/Stop、`DontDestroyOnLoad`、`SceneLoaded`→`OnFlightSceneLoaded`、创建/持有 `NetworkManager`) |
+| **`Net/`(根层,namespace `Assets.Scripts.Net`)= 协议基础与 spike 参考** | `MultiPlayerMessages.cs`(二进制消息编解码 + GZip XML 分片;`MultiPlayerMessageType`/`MultiPlayerMessages`) / `MultiPlayerPeer.cs`(对端) / `LiteNetLibTransport.cs`(备用未启用) / `SteamLobbyBrowser.cs`(Steam 房间列表) / `SteamSpike.cs` `FishNetSpike.cs`(spike 参考) |
+| **`Net/MultiPlayerTransport/`(namespace `Assets.Scripts.Net.MultiPlayerTransport`)= 传输实现**(2026-09-22 传输目录整理) | `IMultiPlayerTransport.cs`(传输薄接口) / `SteamTransport.cs`(默认) / `TcpTransport.cs`(debug) / `LagSimTransport.cs`(NetSim 延迟模拟装饰器);消费点 `Mod.cs` / `MultiPlayerUI.cs` / `LobbyManager.cs` 需 `using Assets.Scripts.Net.MultiPlayerTransport;`(同文件内 `Net.` 前缀会被 `namespace Assets.Scripts` 下的 `Net` 子命名空间解析,不再是传输类所在命名空间) |
 | **`Net/Session/`(namespace `...Net.Session`)= 会话与房间** | |
-| `Net/Session/MpNetworkManager.cs` | **瘦门面 + 组合根(391 行)**:会话身份(`IsServer`/`PlayerId`/`TickRate`…)、对外 API(UI/LobbyManager/Harmony patch 用)、FlightUI 提示、`Awake` 组建组件、`Update`/`LateUpdate` 按序驱动、`Raise*` 广播、`SendOrBroadcastToNet` 发包出口 |
-| `Net/Session/MpMessageRouter.cs` | 协议分发(`HandlePacket`)+ 房间流程处理器(Hello/Welcome/PlayerJoin/PlayerLeave/State/Pong/Kick/TickRate);CraftData 与 XML 类消息转 `MpCraftCatalog` |
-| `Net/Session/MpCraftCatalog.cs` | 飞船内容分发:本机飞船上报、XML 按需下载(SP2)、客户端 `CraftData` 与房主 host craft 的双向重发确认 |
-| `Net/Session/MpPlayerRegistry.cs` | 玩家表:PlayerId 分配、登记、超时/踢出/离开的统一移除出口 |
+| `Net/Session/NetworkManager.cs` | **瘦门面 + 组合根(391 行)**:会话身份(`IsServer`/`PlayerId`/`TickRate`…)、对外 API(UI/LobbyManager/Harmony patch 用)、FlightUI 提示、`Awake` 组建组件、`Update`/`LateUpdate` 按序驱动、`Raise*` 广播、`SendOrBroadcastToNet` 发包出口 |
+| `Net/Session/MultiPlayerMessageRouter.cs` | 协议分发(`HandlePacket`)+ 房间流程处理器(Hello/Welcome/PlayerJoin/PlayerLeave/State/Pong/Kick/TickRate);CraftData 与 XML 类消息转 `MultiPlayerCraftCatalog` |
+| `Net/Session/MultiPlayerCraftCatalog.cs` | 飞船内容分发:本机飞船上报、XML 按需下载(SP2)、客户端 `CraftData` 与房主 host craft 的双向重发确认 |
+| `Net/Session/MultiPlayerRegistry.cs` | 玩家表:PlayerId 分配、登记、超时/踢出/离开的统一移除出口 |
 | **`Net/Sync/`(namespace `...Net.Sync`)= 状态同步管线** | |
-| `Net/Sync/LocalCraftSender.cs` | **发送端**(采样 + 节拍合一):坐标系换算、body 位姿/角速度/线速度差分、加速度 EMA 与钳制、控制输入采集;状态包节流(F4/F5/F6b)、暂停降频、保活心跳、`MP sendDiag` |
+| `Net/Sync/LocalCraftSender.cs` | **发送端**(采样 + 节拍合一):坐标系换算、body 位姿/角速度/线速度差分、加速度 EMA 与钳制、控制输入采集;状态包节流(F4/F5/F6b)、暂停降频、保活心跳、`MultiPlayer sendDiag` |
 | `Net/Sync/RemoteCraftManager.cs` | **幽灵生命周期**:登记表、异步预加载生成协程、加载进度框、幻影模式懒初始化、移除/可见性强制、场景加载清理、`IsRemoteCraftNode` |
 | `Net/Sync/RemoteCraftDriver.cs` | **接收端每帧驱动**:外推时钟、冻结/停顿处理、2 阶外推、平滑调度、位姿写回 + `LateUpdate` 朝向强制刷新 |
 | `Net/Sync/RemoteCraft.cs` | 每艘幽灵的接收端状态(缓冲/时钟/平滑/body 重排缓存/引擎视觉缓存/诊断统计)+ body 重排(原独立类并入) |
 | `Net/Sync/RemoteCraftSmoothing.cs` / `Net/Sync/GhostPoseWriter.cs` | 平滑算法 / 位姿写回(反射 + 坐标公式);纯静态,算法一字未动 |
-| `Net/Sync/MpSyncUtil.cs` | 共享调参常量(外推/钳制/EMA 系数)+ 数学工具(`IsFinite`/`UpdateEma`/`ClampMagnitude`) |
+| `Net/Sync/MultiPlayerSyncUtil.cs` | 共享调参常量(外推/钳制/EMA 系数)+ 数学工具(`IsFinite`/`UpdateEma`/`ClampMagnitude`) |
 | **`Net/CraftVisual/`(namespace `...Net.CraftVisual`)= 远程船呈现** | |
 | `Net/CraftVisual/EngineVisualSync.cs` | 引擎尾焰/烟雾/过膨胀 + `InjectGhostMotion` 速度注入(kinematic 幽灵视觉) |
 | `Net/CraftVisual/PartVisualSync.cs` / `ControlVisualSync.cs` | 部件开关白名单(`PartActivated` → `Activate()/Deactivate()`)/ 幽灵 `CraftControls` 控制输入 + 激活组 |
-| `Net/CraftVisual/MpCraftPreloader.cs` | 幽灵船 prefab 异步预热(消除加入白屏 + 真实加载百分比)+ `MpCraftLoadingIndicator` 加载进度框 |
+| `Net/CraftVisual/MultiPlayerCraftPreloader.cs` | 幽灵船 prefab 异步预热(消除加入白屏 + 真实加载百分比)+ `MultiPlayerCraftLoadingIndicator` 加载进度框 |
 | `ModUpdater.cs` | 更新检查(GitHub Releases API + `version.txt` 兜底、看门狗超时、三按钮弹窗) |
 | `ModUtils.cs` | 日志封装(`Log`/`LogError`/`LogLobby`/`LogUpdate`,受 `DebugMode` 控制) |
 | `ModSettings.cs` | Mod 设置项 |
@@ -75,15 +76,15 @@
 **幽灵船(remote craft)**
 - **幽灵模式**:`AllowPlayerControl=false` + 物理禁用 `SetPhysicsEnabled(false, PhysicsChangeReason.Warp)`(**必须用 Warp**:`UnloadPhysics` 会让 MapCraft 被销毁却留在注册表里 → MapView NRE)+ `CraftUtils.DisableCraftPhysicCalculation`(colliders off、`PreventDebris=true`、`IncludeInDrag=false`、`Damage`/`HeatShield` 拉满)+ 所有 body `RigidBody.isKinematic = true`。
 - `InContactWithPlanet` **每帧重申为 true**,并同步 `GroundedSurface*`(private set,反射写),避免游戏把它拉回轨道/坠落。
-- 幽灵 modifier(引擎等)**仍会收到 `IFlightUpdate`/`IFlightFixedUpdate`** —— 这是 `MpNetworkManager.IsRemoteCraftNode` 存在的原因(JetEngineGhostPatch / Vizzy 隔离都靠它)。
+- 幽灵 modifier(引擎等)**仍会收到 `IFlightUpdate`/`IFlightFixedUpdate`** —— 这是 `NetworkManager.IsRemoteCraftNode` 存在的原因(JetEngineGhostPatch / Vizzy 隔离都靠它)。
 - **幽灵判定统一入口:`VizzyIsolationPatch.IsGhostCraft(IPartScript)`,三层判定**——① 权威:登记表 `IsRemoteCraftNode`;② **NodeId 记忆** `_ghostNodeIds`(封「断线 / 移除窗口」:`SpawnCraft` 返回后到 `_remoteCrafts` 赋值之间、以及移除后登记表已清但对象仍在的一帧);③ 兜底:命名约定「`对方玩家名|船名`」(`SpawnRemoteCraftAtPosition` 的命名约定)。**新写的"幽灵跳过"补丁请复用该入口,不要只查登记表。**
-- **契约:`VizzyIsolationPatch.ClearGhostNodeCache()` 必须由 `MpNetworkManager.OnFlightSceneLoaded` 在飞行场景加载 / 卸载时调用**(2026-09-22 重构后:门面转发 → `RemoteCraftManager.OnFlightSceneLoaded()`),连同各诊断去重集合一起清空——NodeId 由 `FlightState.GetNextNodeId()` 单调分配、场景内唯一但**跨场景会复用**,不清空会把下一飞行里的本地船误判成幽灵(本地 Vizzy 被误杀)。
+- **契约:`VizzyIsolationPatch.ClearGhostNodeCache()` 必须由 `NetworkManager.OnFlightSceneLoaded` 在飞行场景加载 / 卸载时调用**(2026-09-22 重构后:门面转发 → `RemoteCraftManager.OnFlightSceneLoaded()`),连同各诊断去重集合一起清空——NodeId 由 `FlightState.GetNextNodeId()` 单调分配、场景内唯一但**跨场景会复用**,不清空会把下一飞行里的本地船误判成幽灵(本地 Vizzy 被误杀)。
 - 可见性**每帧强制恢复**(`EnforceRemoteCraftVisuals`,所有子 Renderer `enabled = true`)。
 
 **状态包(recdata = `Mod.cs` 的 `RemoteDataPack`)**
 - Position/Velocity/Heading(行星空间)+ `SrfRel`(相对地表朝向)+ Pitch/Yaw/Roll/Throttle/Brake/Sliders/Translate + `ActivationGroupStates` + `Stage` + `BodyRotations` + `BodyPositions`(每 body;位置采样基准 2026-09-19 起为包 Position 稳定锚点,此前 comRot)+ `EngineThrottles` + `PartActivated` + `Paused` + `Acceleration`/`AngularVelocity`(2 阶外推,2026-09-14;尾部追加字段,EOF 容错)+ `BodyIds`(body 稳定标识,2026-09-19 索引错位修复;尾部最后,EOF 容错)。
 - **无燃料 / 资源数值、无部件损伤**(已知限制);**无 craft id / 无多船数组**(多 craft 未做)。
-- 消息类型 `MpMessageType`:Hello=1、Welcome=2、PlayerJoin=3、PlayerLeave=4、State=5、Pause=6、CraftData=7、Ping=8、Pong=9、CraftDataAck=10、PlayerJoinAck=11、CraftXmlRequest=12、CraftXmlResponse=13、TickRate=14、Kick=15。
+- 消息类型 `MultiPlayerMessageType`:Hello=1、Welcome=2、PlayerJoin=3、PlayerLeave=4、State=5、Pause=6、CraftData=7、Ping=8、Pong=9、CraftDataAck=10、PlayerJoinAck=11、CraftXmlRequest=12、CraftXmlResponse=13、TickRate=14、Kick=15。
 
 **朝向 / 速度坐标系(最容易踩坑)**
 - **朝向同步 = `recdata.SrfRel`(相对地表朝向)**:解决①游戏每帧用 pod 座椅朝向覆盖根朝向、②跨机行星自转角差。`LateUpdate`(`[DefaultExecutionOrder(1000)]`)重写朝向以抗游戏覆盖。
@@ -113,7 +114,7 @@
 
 ## 五、调试与验证
 
-- **日志**:`Mod.LogLobby`(联机流程)、`Mod.LogUpdate`(更新检查,不受 `DebugMode` 限制)、`Mod.Log`(通用)。接收端平滑诊断 3 秒一条 `MP smoothing P<id>`;1 秒一条的有接收端 `MP twitch`(整船/部件位移)与发送端 `MP sendDiag`;事件式有 `MP gap`/`MP gapfreeze`/`MP freeze`/`MP slowmo`/`MP bodyMap`(只进 `Player.log`,无悬浮窗)。逐字段口径见 [archive/latency-smoothing-2026-08-22.md](archive/latency-smoothing-2026-08-22.md) §9.6 与 [acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md) §一。
+- **日志**:`Mod.LogLobby`(联机流程)、`Mod.LogUpdate`(更新检查,不受 `DebugMode` 限制)、`Mod.Log`(通用)。接收端平滑诊断 3 秒一条 `MultiPlayer smoothing P<id>`;1 秒一条的有接收端 `MultiPlayer twitch`(整船/部件位移)与发送端 `MultiPlayer sendDiag`;事件式有 `MultiPlayer gap`/`MultiPlayer gapfreeze`/`MultiPlayer freeze`/`MultiPlayer slowmo`/`MultiPlayer bodyMap`(只进 `Player.log`,无悬浮窗)。逐字段口径见 [archive/latency-smoothing-2026-08-22.md](archive/latency-smoothing-2026-08-22.md) §9.6 与 [acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md) §一。
 - **DevConsole 命令**:
   - 房间:`HostLobbyPort <port>` / `JoinLobbyPort <ip> <port>` / `StopLobby` / `SteamHostLobby <port>` / `SteamJoinLobby <hostSteamId>` / `TcpHostLobby <port>` / `TcpJoinLobby <ip> <port>` / `SetTickRate <hz>`(1~120,房主广播);房间列表:`SteamLobbyList` / `SteamLobbyListWorld` / `SteamLobbyCreate <名>` / `SteamLobbyJoin <id>` / `SteamLobbyLeave`;延迟模拟(NetSim,需 TCP):`NetSimDelay/Jitter/Loss/Duplicate/On/Off/Reset/NetSim`(**数值与总开关分离**);历史 spike:`FishNetSpike` / `SteamSpike`。
 - **本地 VM debug**:本机 `TcpHostLobby 25555`(防火墙放行入站);VM `TcpJoinLobby <宿主IP> 25555` —— **✅ 已实测可行**。
@@ -150,7 +151,7 @@
 
 | 文档 | 主题 | 状态 | 一句话摘要 |
 |---|---|---|---|
-| [`archive/refactor-mpnetworkmanager-2026-09-22.md`](archive/refactor-mpnetworkmanager-2026-09-22.md) | **MpNetworkManager 上帝类重构**(3717 行 → 391 行瘦门面;15 类 → 合并 11 类 + 4 层目录) | ✅ **已完成归档**(2026-09-22:构建 0/0、文本级行为对账通过;双端实测回归待用户复跑) | 分析 + 实施 + 目录二次整理同日完成。**目录**:`Net/`(传输协议)/`Net/Session/`(会话房间)/`Net/Sync/`(同步管线)/`Net/CraftVisual/`(远程船呈现),25 文件;**验证**(可复用):字符串字面量多重集对账(新增 0、缺失 18 处全是死代码 `Q()`)+ `Mod.Log*` 84→84 + 4 个大方法逐字节重建比对;**含 8 条经验教训**;未做:P3 诊断收拢、§八 #5/#12/#13 修复 |
+| [`archive/refactor-mpnetworkmanager-2026-09-22.md`](archive/refactor-mpnetworkmanager-2026-09-22.md) | **MpNetworkManager 上帝类重构**(3717 行 → 391 行瘦门面;15 类 → 合并 11 类 + 4 层目录;后改名 `NetworkManager`) | ✅ **已完成归档**(2026-09-22:构建 0/0、文本级行为对账通过;双端实测回归待用户复跑) | 分析 + 实施 + 目录二次整理同日完成。**目录**:`Net/`(传输协议)/`Net/Session/`(会话房间)/`Net/Sync/`(同步管线)/`Net/CraftVisual/`(远程船呈现),25 文件;**验证**(可复用):字符串字面量多重集对账(新增 0、缺失 18 处全是死代码 `Q()`)+ `Mod.Log*` 84→84 + 4 个大方法逐字节重建比对;**含 8 条经验教训**;未做:P3 诊断收拢、§八 #5/#12/#13 修复 |
 | [`archive/rotating-body-sync-2026-09-22.md`](archive/rotating-body-sync-2026-09-22.md) | **旋转 body(旋翼)位置快照同步修理**(每 body 角速度+线速度进协议 + 接收端逐帧积分外推) | ✅ **已实现归档**(2026-09-22 双端实测通过,用户确认) | 2026-09-22 实测:旋翼叶片 `bodyTgt` 恒 ≈5.9m(采样混叠 + 对称叶片相位歧义 + 10·dt 追不上);修复 = 协议加 `BodyAngularVelocities`+`BodyVelocities`(+24B/body)+ 接收端逐帧积分(位置 sp+=v·dt、朝向绕 ω 轴转,模拟 SP2 写回刚体积分);**含** 5 条经验教训;**不含** physics-sync P0(游戏侧速度)与低速悬停误判冻结(另案) |
 | [`archive/body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md) | Body 级姿态同步(转轴 / 关节连接部件"整体移动") | ✅ 已实现归档(BodyPoses) | `BodyRotations`→`BodyPoses`(相对 comRot 位置 + 旋转),含残骸小碎片位置缺口;P1~P3 可选优化未排期 |
 | [`archive/part-switch-sync-2026-08-18.md`](archive/part-switch-sync-2026-08-18.md) | 起落架等部件展开 / 开关状态同步 | ✅ 核心已实现归档(方案 B P0 实测通过;P3 控制输入已实现) | 同步 per-part `Activated` + 幽灵本地仿真;分离器 / 整流罩 / 对接只记录不处理;剩余项:降落伞驱动(P2)、`ExtensionPercent` 相位对齐(P1)、`Stage` 应用;**1.4.2 回归结案(§12):任一方暂停时不跟随,判定不修** |
@@ -160,11 +161,11 @@
 | [`archive/steam-lobby-2026-09-12.md`](archive/steam-lobby-2026-09-12.md) | Steam 大厅系统移植(房间列表替代手动输入 SteamId) | ✅ 已落地归档(2026-09-12 拍板执行;旧决策"Lobby 不做"翻案) | `SteamLobbyBrowser`(SteamMatchmaking 直调:开房 / 列表版本过滤 / 加入 / 邀请)复用 `SteamTransport`,传输零改动;2026-09-13 修回调刷屏 |
 | [`archive/update-1.4.2-experimental-2026-09-03.md`](archive/update-1.4.2-experimental-2026-09-03.md) | 游戏 1.4.2(Experimental 分支)兼容适配 | ✅ **已归档**(2026-09,用户确认修复并双端实测完成;原状态:🔧 部分落地) | P0 三项全执行(程序集刷新 / API 迁移 / body 脱离层级修复);朝向 + body 同步 bug 定位并修复;Vizzy 1.4.2 核证 + G1/G2/G3 已封;P1-1~P1-4 与「双飞静止一方抽搐」已实测结案 |
 | [`archive/volken-sceneloaded-nre-2026-08-27.md`](archive/volken-sceneloaded-nre-2026-08-27.md) | Volken 冲突:JNO 的 NRE 中断 `SceneLoaded` 事件链 | ✅ 排查完成归档(根因已定位,JNO 侧修复已提交) | `MultiPlayerUI.OnSceneLoaded` 的 `inspectorPanel` 为 null → NRE 中断 .NET 多播事件链 → 排在后面的 Volken `OnSceneLoaded` 不执行(看不到云);护栏见 §九 #4 |
-| [`archive/heading-sync-2026-08-17.md`](archive/heading-sync-2026-08-17.md) | 朝向同步(srfRel) | ✅ 已完成并双端实测通过 | 相对地表朝向同步的最终方案;当前实现在 `MpNetworkManager` + `recdata.SrfRel` |
+| [`archive/heading-sync-2026-08-17.md`](archive/heading-sync-2026-08-17.md) | 朝向同步(srfRel) | ✅ 已完成并双端实测通过 | 相对地表朝向同步的最终方案;当前实现在 `NetworkManager` + `recdata.SrfRel` |
 | [`archive/replay-to-multiplayer-2026-08-04.md`](archive/replay-to-multiplayer-2026-08-04.md) | Replay→联机可行性(历史) | 📋 历史分析,大部分已落地 | 联机基础能力 / 架构 / 选型的早期论证;其中"下一步重心"已被 multi-craft-sync 继承 |
-| [`archive/steam-integration-2026-08-13.md`](archive/steam-integration-2026-08-13.md) | 传输层:Steam P2P | ✅ 已落地 | `SteamTransport` 已实现并设为默认(`MpNetworkManager.Transport`) |
-| [`archive/tcp-transport-2026-08-15.md`](archive/tcp-transport-2026-08-15.md) | 传输层:TCP(VM debug) | ✅ 已落地 | `IMpTransport` + `TcpTransport` + `TcpHostLobby`/`TcpJoinLobby` 命令已实现 |
-| [`archive/async-prefab-preload-2026-08-18.md`](archive/async-prefab-preload-2026-08-18.md) | 异步 prefab 预加载(消除加入白屏) | ✅ 已实现(MSBuild exit 0;游戏内实测待复跑) | `MpCraftPreloader` 协程预热主 prefab + 真实百分比旋转白框 + 玩家列表 "⏳ N%" |
+| [`archive/steam-integration-2026-08-13.md`](archive/steam-integration-2026-08-13.md) | 传输层:Steam P2P | ✅ 已落地 | `SteamTransport` 已实现并设为默认(`NetworkManager.Transport`) |
+| [`archive/tcp-transport-2026-08-15.md`](archive/tcp-transport-2026-08-15.md) | 传输层:TCP(VM debug) | ✅ 已落地 | `IMultiPlayerTransport` + `TcpTransport` + `TcpHostLobby`/`TcpJoinLobby` 命令已实现 |
+| [`archive/async-prefab-preload-2026-08-18.md`](archive/async-prefab-preload-2026-08-18.md) | 异步 prefab 预加载(消除加入白屏) | ✅ 已实现(MSBuild exit 0;游戏内实测待复跑) | `MultiPlayerCraftPreloader` 协程预热主 prefab + 真实百分比旋转白框 + 玩家列表 "⏳ N%" |
 | [`archive/engine-fx-sync-2026-08-18.md`](archive/engine-fx-sync-2026-08-18.md) | 幽灵引擎尾焰 / 烟雾 / 过膨胀同步 | ✅ 已实现并实测通过 | 尾焰(液体 + 航发两段加力)、烟雾(`InjectGhostMotion` 速度注入)、过膨胀(`ExpansionRatio` 双保险);含 kinematic 写 velocity 告警刷屏修法(§10.3.1) |
 
 > ✅ 归档文档已修订为**最终状态**并附「〇、经验教训」小节:文档头"状态"均为最终结论,实施步骤的复选框标记实际落地情况。**未勾选项 = 未留档的待验证项**,或**归档时仍挂起的剩余项**(如 part-switch 的 P1/P2),按需复跑,**勿当作当前待办执行**。
@@ -212,17 +213,17 @@
 |---|---|---|---|
 | 1 | ~~mod 版本号自相矛盾~~ **✅ 已解决** | `Assets/ModData.asset:35-36` vs `version.txt`(现均为 1.51) | ~~ModUpdater 每次启动弹"有新版本"~~ 不再误报 |
 | 2 | **UI 图标资源路径不一致** **✅ 已解决(2026-09-14,工作区未提交)**:资源库前缀与条目已统一为 `MultiPlayer/`,代码请求同名完整路径。关键结论(反编译 `XmlLayout.dll`):`sprite` 经 `ToSprite → LoadResource → XmlLayoutResourceDatabase.GetResource` 按**条目路径逐字匹配(OrdinalIgnoreCase)**,运行时**不自动拼 `PathPrefix`** | `MultiPlayerUI.cs:82`(工作区改动)vs `Content/XML UI/UIResourceDatabase.asset:15,21-23` | 旧值 `/Sprites/UIIcon` 匹配不到条目 ⇒ `[XmlLayout] Unable to load sprite...`、NavPanel 图标空白;改后需游戏内验证再提交 |
-| 3 | **日志前缀不统一**:`Log`/`LogError` 已改 `[MultiPlayer]`,但 `LogLobby`/`LogUpdate` 仍是 `[Mptest]` | `ModUtils.cs:21,30` vs `:39,49` | 仅可读性;按前缀过滤日志会漏 |
+| 3 | **日志前缀不统一** **✅ 已解决(2026-09-22,mp→MultiPlayer 改名)**:`Log`/`LogError` 已改 `[MultiPlayer]`,但 `LogLobby`/`LogUpdate` 曾是 `[Mptest]` | `ModUtils.cs:21,30` vs `:39,49`(已统一为 `[MultiPlayer]`) | ~~按前缀过滤日志会漏~~ 已消除 |
 | 4 | ~~`FlightEnded` 订阅在空值护栏之外~~ **✅ 已修复**:`OnSceneLoaded` 已加 `inspectorPanel` 护栏(2026-08-27 排查;2026-09 又补 Unity 假 null + try/catch 双保险) | `MultiPlayerUI.cs:824-860`;根因见 [archive/volken-sceneloaded-nre-2026-08-27.md](archive/volken-sceneloaded-nre-2026-08-27.md) | ~~NRE 中断 `SceneLoaded` 事件链(Volken 看不到云)~~ 已消除 |
-| 5 | **TickRate 默认值自相矛盾**:`TickRate = 30` 但 `SendIntervalMs = 50f`(20Hz) | `Session/MpNetworkManager.cs:48` vs `:44`;`SetTickRate` 同值早退 `:324`(2026-09-22 重构 + 目录分类后行号) | 未调用 `SetTickRate` 前,上报频率与实际发包间隔不一致;UI 滑块初始值也对不上 |
+| 5 | **TickRate 默认值自相矛盾**:`TickRate = 30` 但 `SendIntervalMs = 50f`(20Hz) | `Session/NetworkManager.cs:48` vs `:44`;`SetTickRate` 同值早退 `:324`(2026-09-22 重构 + 目录分类后行号) | 未调用 `SetTickRate` 前,上报频率与实际发包间隔不一致;UI 滑块初始值也对不上 |
 | 6 | **插值时代死代码** **✅ 部分清理(2026-09-22 上帝类重构)**:已删 `TryGetInterpolatedState`(79 行)、`ApplyRemoteTransformDirect`、`ClearBuffer`、`UnderrunFrames`、`ReuseInterpBodyPos/Rot`、`Q(Quaterniond)/Q(Quaternion)`;`SnapFrames`/`InterpPct`/`RenderDelayMs` **有意保留** | 见 [refactor-mpnetworkmanager-2026-09-22.md](archive/refactor-mpnetworkmanager-2026-09-22.md) §10.3 | `snap=`/`interpPct=`/`posErr=` 成为结构性常量,排查时会误导;**保留三项是因为 `MP smoothing`/`MP.SetTickRate` 日志行仍读取它们**(删除会改日志字段),留待 P3 与诊断口径一起处理 |
-| 7 | **暂停动作同步仍未实现** | `Session/MpMessageRouter.cs:225` 的 `OnPause` 仍整体注释掉(2026-09-22 重构后:原 `MpNetworkManager` 原地搬入) | `Pause` 消息类型仍在协议里分发但无效果;**但"飞船有速度时暂停 → 观察方抽搐"已全部修复收工(2026-09-13)**:发送端 `Paused` 标记 + 降速上报、接收端冻结期停外推(§9.5);**另:任一方暂停时部件开关同样不跟随(2026-09-16 实测,判定可接受、不修**——观察侧暂停时游戏只分发 `*Paused` 接口,幽灵 `IFlightUpdate` 不跑) |
-| 8 | **NetSim 无法包 Steam**;`NetSimDuplicate` 无 UI | `LagSimTransport.cs:63-65`;`MultiPlayerUI.cs:175-212` | 延迟模拟只能配合 TCP;重复包只能走控制台 |
-| 9 | **`LiteNetLibTransport` 是死代码**(未实现 `IMpTransport`) | `LiteNetLibTransport.cs:25` | 备用传输实际不可选 |
+| 7 | **暂停动作同步仍未实现** | `Session/MultiPlayerMessageRouter.cs:225` 的 `OnPause` 仍整体注释掉(2026-09-22 重构后:原 `MpNetworkManager` 原地搬入,现已改名 `NetworkManager`) | `Pause` 消息类型仍在协议里分发但无效果;**但"飞船有速度时暂停 → 观察方抽搐"已全部修复收工(2026-09-13)**:发送端 `Paused` 标记 + 降速上报、接收端冻结期停外推(§9.5);**另:任一方暂停时部件开关同样不跟随(2026-09-16 实测,判定可接受、不修**——观察侧暂停时游戏只分发 `*Paused` 接口,幽灵 `IFlightUpdate` 不跑) |
+| 8 | **NetSim 无法包 Steam**;`NetSimDuplicate` 无 UI | `MultiPlayerTransport/LagSimTransport.cs:63-65`;`MultiPlayerUI.cs:194-241`(2026-09-22 传输目录整理后行号) | 延迟模拟只能配合 TCP;重复包只能走控制台 |
+| 9 | **`LiteNetLibTransport` 是死代码**(未实现 `IMultiPlayerTransport`) | `LiteNetLibTransport.cs:25` | 备用传输实际不可选 |
 | 10 | **远程飞船游戏侧速度缺自转项(静止船读到 ≈0)**:`ApplyRemoteGroundedSurface` 写 `GroundedSurfaceVelocity=data.Velocity`(地表相对速度),但游戏约定该字段是"地表系惯性速度"(含自转项),`CraftNode.UpdateCraft` 每帧纯旋转换算回行星空间 → `Orbit.Velocity` 缺 ω×r;`CraftFlightData` 在游戏阶段快照该值、mod 反射刷新不覆盖速度字段、`CraftScript.FrameVelocity` 从 kinematic 刚体推导≈0 | `Sync/GhostPoseWriter.cs:335`(写;2026-09-22 重构 + 目录分类后位置)vs 反编译 `CraftNode.cs:1235-1240/1366-1371`、`CraftFlightData.cs:578-584`、`CraftScript.cs:410-441`;详见 [proposals/remote-craft-velocity-2026-09-13.md](proposals/remote-craft-velocity-2026-09-13.md) | 相对速度计算、HUD / 导航球 / Vizzy 读远程船速度出错(静止船读到 0,运动船缺 158.85 m/s 分量);碰撞伤害走 Unity `Collision.relativeVelocity` 不受影响 |
 | 11 | **防幽灵被 `[ ]` 接管的 Harmony patch 只决策未落地** | §七 决策行 + multi-craft plan §8.1-3 已定"用 Harmony prefix 拦总入口 `FlightSceneScript.ChangePlayersActiveCommandPodImmediate`",但 `Assets/Scripts/HarmonyPatches/` 目前只有 `JetEngineGhostPatch` / `LayoutRebuildPatch` / `VizzyIsolationPatch`(全仓库 grep `ChangePlayersActiveCommandPodImmediate` **0 命中**) | 接收端按 `[ ]` / 地图 inspector / Vizzy 可切到带 pod 的远程幽灵 → 该类末尾 `craftNode.AllowPlayerControl = true`(`FlightSceneScript.cs:383`)→ 幽灵变本机船 → 双向污染。**EVA 上线后风险放大**(Drood 部件本身就是命令舱,`CommandPodScript.IsEva`)——见 [proposals/eva-sync-2026-09-18.md](proposals/eva-sync-2026-09-18.md) §七 P1 |
-| 12 | **TCP 路径 `OnPeerTimeout` 在读线程触发**:管理器 `HandlePeerTimeout` 随之在非主线程执行——`_hostCraftResend`/`_pendingXmlRequests`/`_remoteCrafts` 三个无锁 Dictionary 被并发读写,且经 `OnPlayerLeft`→`RemoveRemoteCraft`→`DestroyCraft()` 在后台线程调 Unity API | `TcpTransport.cs:343`(read loop 末尾直接 Invoke)vs `Session/MpPlayerRegistry.cs:70`(无锁字典删除,2026-09-22 重构后位置)/`Sync/RemoteCraftManager.cs:157`(DestroyCraft);Steam 路径无此问题(收包/超时均经主线程 `DrainIncoming`/`CheckTimeouts`);`MultiPlayerUI.cs:315` 注释("事件可能来自网络线程,仅置标志")说明 UI 侧已防、管理器侧未防(2026-09-22 核实,发现于重构分析) | 理论上仅在 TCP 断线/超时瞬间竞争(概率低、后果重:字典损坏 / Unity 崩溃);修复方向 = TcpTransport 把超时通知并入 `_incoming` 队列由主线程 Drain 分发,契约"传输层回调一律主线程"写进 `IMpTransport` 注释——已并入 [refactor-mpnetworkmanager-2026-09-22.md](archive/refactor-mpnetworkmanager-2026-09-22.md) §10.5 |
-| 13 | **`Stop()` 会话复位不完整**:`_nextPlayerId`/`TickRate`/`SendIntervalMs`/`ClientPingMs` 跨会话残留;manager 是 `DontDestroyOnLoad` 复用实例(`LobbyManager.EnsureMpManager` 仅 `Instance==null` 时新建) | `Session/MpNetworkManager.cs:231`(Stop 未清上述字段)vs `Session/MpPlayerRegistry.cs:58`(`_nextPlayerId`)/`Session/MpNetworkManager.cs:44,48`(SendIntervalMs/TickRate)与 `LobbyManager.cs:138–151`(复用实例);2026-09-22 核实(行号为重构后) | 同进程"开房→停止→再开房"后 PlayerId 从旧值继续递增(无功能破坏但与"房主=0、后续从 1"的语义漂移);TickRate 沿用上一局设置(与 #5 叠加更混乱);修复方向 = 复位清单集中到会话状态对象统一 Reset——已并入 [refactor-mpnetworkmanager-2026-09-22.md](archive/refactor-mpnetworkmanager-2026-09-22.md) §10.5 |
+| 12 | **TCP 路径 `OnPeerTimeout` 在读线程触发**:管理器 `HandlePeerTimeout` 随之在非主线程执行——`_hostCraftResend`/`_pendingXmlRequests`/`_remoteCrafts` 三个无锁 Dictionary 被并发读写,且经 `OnPlayerLeft`→`RemoveRemoteCraft`→`DestroyCraft()` 在后台线程调 Unity API | `MultiPlayerTransport/TcpTransport.cs:343`(read loop 末尾直接 Invoke)vs `Session/MultiPlayerRegistry.cs:70`(无锁字典删除,2026-09-22 重构后位置)/`Sync/RemoteCraftManager.cs:157`(DestroyCraft);Steam 路径无此问题(收包/超时均经主线程 `DrainIncoming`/`CheckTimeouts`);`MultiPlayerUI.cs:315` 注释("事件可能来自网络线程,仅置标志")说明 UI 侧已防、管理器侧未防(2026-09-22 核实,发现于重构分析) | 理论上仅在 TCP 断线/超时瞬间竞争(概率低、后果重:字典损坏 / Unity 崩溃);修复方向 = TcpTransport 把超时通知并入 `_incoming` 队列由主线程 Drain 分发,契约"传输层回调一律主线程"写进 `IMultiPlayerTransport` 注释——已并入 [refactor-mpnetworkmanager-2026-09-22.md](archive/refactor-mpnetworkmanager-2026-09-22.md) §10.5 |
+| 13 | **`Stop()` 会话复位不完整**:`_nextPlayerId`/`TickRate`/`SendIntervalMs`/`ClientPingMs` 跨会话残留;manager 是 `DontDestroyOnLoad` 复用实例(`LobbyManager.EnsureMultiPlayerManager` 仅 `Instance==null` 时新建) | `Session/NetworkManager.cs:231`(Stop 未清上述字段)vs `Session/MultiPlayerRegistry.cs:58`(`_nextPlayerId`)/`Session/NetworkManager.cs:44,48`(SendIntervalMs/TickRate)与 `LobbyManager.cs:138–151`(复用实例);2026-09-22 核实(行号为重构后) | 同进程"开房→停止→再开房"后 PlayerId 从旧值继续递增(无功能破坏但与"房主=0、后续从 1"的语义漂移);TickRate 沿用上一局设置(与 #5 叠加更混乱);修复方向 = 复位清单集中到会话状态对象统一 Reset——已并入 [refactor-mpnetworkmanager-2026-09-22.md](archive/refactor-mpnetworkmanager-2026-09-22.md) §10.5 |
 
 ## 九、开发流程约定
 

@@ -18,14 +18,14 @@ using Assets.Scripts.Net.Session;
 namespace Assets.Scripts.Net.Sync
 {
 	/// <summary>
-	/// 幽灵(远程)飞船生命周期(2026-09-22 重构:自 MpNetworkManager 逐字搬来):登记表、异步预加载生成协程、
+	/// 幽灵(远程)飞船生命周期(2026-09-22 重构:自 MultiPlayerNetworkManager 逐字搬来):登记表、异步预加载生成协程、
 	/// 加载进度框、懒初始化幻影模式、移除/可见性强制、场景加载清理。
 	/// </summary>
 	internal class RemoteCraftManager
 	{
-		private readonly MpNetworkManager _mp;
+		private readonly NetworkManager _multiPlayer;
 
-		internal RemoteCraftManager(MpNetworkManager mp) { _mp = mp; }
+		internal RemoteCraftManager(NetworkManager multiPlayer) { _multiPlayer = multiPlayer; }
 
 		internal readonly Dictionary<int, RemoteCraft> _remoteCrafts = new Dictionary<int, RemoteCraft>();
 		private readonly HashSet<int> _spawnMissLogged = new HashSet<int>();
@@ -38,7 +38,7 @@ namespace Assets.Scripts.Net.Sync
 		/// <summary>预加载期间收到的最新状态包（生成时用最新位置，减少长时间预加载后的跳变）。</summary>
 		private readonly Dictionary<int, Mod.RemoteDataPack> _pendingSpawnLatest = new Dictionary<int, Mod.RemoteDataPack>();
 		/// <summary>玩家 -> 加载进度框（玩家离开/场景切换/停止时销毁，防残留）。</summary>
-		private readonly Dictionary<int, MpCraftLoadingIndicator> _loadingIndicators = new Dictionary<int, MpCraftLoadingIndicator>();
+		private readonly Dictionary<int, MultiPlayerCraftLoadingIndicator> _loadingIndicators = new Dictionary<int, MultiPlayerCraftLoadingIndicator>();
 		/// <summary>玩家 -> 预加载进度（0..1；供 MultiPlayerUI 玩家列表显示 "⏳ N%"）。</summary>
 		private readonly Dictionary<int, float> _playerLoadProgress = new Dictionary<int, float>();
 
@@ -57,7 +57,7 @@ namespace Assets.Scripts.Net.Sync
 			return false;
 		}
 
-		internal void HandlePlayerLeft(MpPeer peer)
+		internal void HandlePlayerLeft(MultiPlayerPeer peer)
 		{
 			RemoveRemoteCraft(peer.PlayerId);
 		}
@@ -67,11 +67,11 @@ namespace Assets.Scripts.Net.Sync
 		/// 飞船一出现就在远程玩家的真实位置，而不是先出现在本机玩家身上。
 		/// CraftData / LaunchLocation / XML 由 SpawnRemoteCraftCoroutine 预加载前构建好（主 prefab 已热缓存）。
 		/// </summary>
-		internal void SpawnRemoteCraftAtPosition(MpPeer peer, Mod.RemoteDataPack data, CraftData craftData, LaunchLocation location, XElement xml)
+		internal void SpawnRemoteCraftAtPosition(MultiPlayerPeer peer, Mod.RemoteDataPack data, CraftData craftData, LaunchLocation location, XElement xml)
 		{
 			try
 			{
-				if (peer.PlayerId == _mp.PlayerId) return;                 // 自己
+				if (peer.PlayerId == _multiPlayer.PlayerId) return;                 // 自己
 				if (_remoteCrafts.ContainsKey(peer.PlayerId)) return;  // 已生成
 				if (FlightSceneScript.Instance == null) return;        // 不在飞行场景
 				if (craftData == null || location == null || xml == null) return;
@@ -115,14 +115,14 @@ namespace Assets.Scripts.Net.Sync
 				//if (remote.CraftScript != null)
 				//{
 				//	Quaternion spawnRot = remote.CraftScript.Transform.rotation;
-				//	Mod.Log("MP headingDiag spawn p" + peer.PlayerId + ": dataHeading=(" +
+				//	Mod.Log("MultiPlayer headingDiag spawn p" + peer.PlayerId + ": dataHeading=(" +
 				//		data.Heading.x.ToString("F3") + "," + data.Heading.y.ToString("F3") + "," + data.Heading.z.ToString("F3") + "," + data.Heading.w.ToString("F3") + ")" +
 				//		", spawnHeading=(" + remote.Heading.x.ToString("F3") + "," + remote.Heading.y.ToString("F3") + "," + remote.Heading.z.ToString("F3") + "," + remote.Heading.w.ToString("F3") + ")" +
 				//		", spawnRot=(" + spawnRot.x.ToString("F3") + "," + spawnRot.y.ToString("F3") + "," + spawnRot.z.ToString("F3") + "," + spawnRot.w.ToString("F3") + ")");
 				//}
 
 				// 幻影模式 + 初始朝向：CraftScript 可能延迟构建，在 UpdateRemoteCrafts 里懒初始化（见 InitializeRemoteCraft）
-				Mod.LogLobby("MP: spawned remote craft for player " + peer.PlayerId + " at remote position (nodeId=" + peer.NodeId + ", localNode=" + remote.NodeId + ")" +
+				Mod.LogLobby("MultiPlayer: spawned remote craft for player " + peer.PlayerId + " at remote position (nodeId=" + peer.NodeId + ", localNode=" + remote.NodeId + ")" +
 					", surfacePos=(" + data.Position.x.ToString("F1") + "," + data.Position.y.ToString("F1") + "," + data.Position.z.ToString("F1") + ")" +
 					", heading=(" + data.Heading.x.ToString("F3") + "," + data.Heading.y.ToString("F3") + "," + data.Heading.z.ToString("F3") + "," + data.Heading.w.ToString("F3") + ")");
 
@@ -139,14 +139,14 @@ namespace Assets.Scripts.Net.Sync
 						CraftUtils.GetComponentsInCraft(remote, renderers, true);
 						foreach (Renderer r in renderers) { rendererCount++; if (r.enabled) enabledCount++; }
 					}
-					Mod.LogLobby("MP spawnDiag p" + peer.PlayerId + ": goActive=" + (rgo != null ? rgo.activeSelf.ToString() : "null") +
+					Mod.LogLobby("MultiPlayer spawnDiag p" + peer.PlayerId + ": goActive=" + (rgo != null ? rgo.activeSelf.ToString() : "null") +
 						", craftScript=" + (remote.CraftScript != null ? "built" : "notBuilt") +
 						", renderers=" + rendererCount + "/enabled=" + enabledCount +
 						", inFlightState=" + IsNodeInFlightState(remote) +
 						", isPlayer=" + remote.IsPlayer +
 						", isLoadedInGameView=" + remote.IsLoadedInGameView);
 				}
-				catch (Exception e) { Mod.LogError("MP spawnDiag error: " + e.Message); }
+				catch (Exception e) { Mod.LogError("MultiPlayer spawnDiag error: " + e.Message); }
 			}
 			catch (Exception e)
 			{
@@ -164,7 +164,7 @@ namespace Assets.Scripts.Net.Sync
 			RemoteCraft rc;
 			if (!_remoteCrafts.TryGetValue(playerId, out rc))
 			{
-				Mod.LogLobby("MP.RemoveRemoteCraft: player " + playerId + " not in _remoteCrafts (nothing to remove)");
+				Mod.LogLobby("MultiPlayer.RemoveRemoteCraft: player " + playerId + " not in _remoteCrafts (nothing to remove)");
 				return;
 			}
 			_remoteCrafts.Remove(playerId);
@@ -185,7 +185,7 @@ namespace Assets.Scripts.Net.Sync
 					if (rc.Node.GameObject != null) goActive = rc.Node.GameObject.activeSelf.ToString();
 				}
 				catch (Exception e) { Mod.LogError("RemoveRemoteCraft: check FlightState error: " + e.Message); }
-				Mod.LogLobby("MP: destroyed remote craft for player " + playerId +
+				Mod.LogLobby("MultiPlayer: destroyed remote craft for player " + playerId +
 					", nodeId=" + rc.Node.NodeId +
 					", inFlightState=" + inFlightState +
 					", goActive=" + goActive +
@@ -206,7 +206,7 @@ namespace Assets.Scripts.Net.Sync
 			}
 			else
 			{
-				Mod.LogLobby("MP.RemoveRemoteCraft: player " + playerId + " rc.Node=null");
+				Mod.LogLobby("MultiPlayer.RemoveRemoteCraft: player " + playerId + " rc.Node=null");
 			}
 		}
 
@@ -229,7 +229,7 @@ namespace Assets.Scripts.Net.Sync
 					if (!go.activeSelf)
 					{
 						go.SetActive(true);
-						Mod.LogLobby("MP: re-activated remote craft GameObject for player " + rc.PlayerId);
+						Mod.LogLobby("MultiPlayer: re-activated remote craft GameObject for player " + rc.PlayerId);
 					}
 					// 1.4.2:body 脱离 craft 层级后 GetComponentsInChildren 遍历不到 body 上的渲染器,
 					// 改用逐 body 遍历(GetComponentsInCraft,等价游戏新 API)。复用缓冲防每帧 GC。
@@ -259,13 +259,13 @@ namespace Assets.Scripts.Net.Sync
 			if (!_remoteCrafts.TryGetValue(playerId, out rc) || rc.Node == null)
 			{
 				// 尚未生成：用首个状态包的位置生成远程飞船
-				MpPeer peer = null;
-				lock (_mp.Registry._playersByPlayerId) { _mp.Registry._playersByPlayerId.TryGetValue(playerId, out peer); }
+				MultiPlayerPeer peer = null;
+				lock (_multiPlayer.Registry._playersByPlayerId) { _multiPlayer.Registry._playersByPlayerId.TryGetValue(playerId, out peer); }
 				if (peer == null || string.IsNullOrEmpty(peer.CraftXml))
 				{
 					if (_spawnMissLogged.Add(playerId))
 					{
-						Mod.Log("MP: state for player " + playerId + " but no craft info to spawn");
+						Mod.Log("MultiPlayer: state for player " + playerId + " but no craft info to spawn");
 					}
 					return;
 				}
@@ -288,7 +288,7 @@ namespace Assets.Scripts.Net.Sync
 				// 改为协程：先让本帧网络处理完（回 Ack/收状态包）→ 解析 XML/构建 CraftData（纯数据）→
 				// 异步预加载部件 prefab（真实百分比加载框）→ 主 prefab 已热缓存后 SpawnCraft（只剩纯 Instantiate，快）。
 				_pendingSpawns.Add(playerId);
-				_mp.StartCoroutine(SpawnRemoteCraftCoroutine(peer, data));
+				_multiPlayer.StartCoroutine(SpawnRemoteCraftCoroutine(peer, data));
 				return;
 			}
 
@@ -303,7 +303,7 @@ namespace Assets.Scripts.Net.Sync
 		/// 创建加载进度框（对方位置上方，真实百分比）→ 异步预加载部件 prefab（逐帧）→
 		/// 主 prefab 已热缓存后 SpawnCraft（快，无秒级白屏）→ 走现有登记/表面锁定/幻影模式逻辑。
 		/// </summary>
-		internal IEnumerator SpawnRemoteCraftCoroutine(MpPeer peer, Mod.RemoteDataPack data)
+		internal IEnumerator SpawnRemoteCraftCoroutine(MultiPlayerPeer peer, Mod.RemoteDataPack data)
 		{
 			// 先跑完当前帧网络处理，再等 2 帧，让握手/回 Ack/状态包有充足时间流动
 			yield return null;
@@ -347,20 +347,20 @@ namespace Assets.Scripts.Net.Sync
 			// 再被 SpawnCraft 乘回 planet.Rotation → 最终 Heading=入参(行星空间)，故直接传入即可。
 			Quaterniond spawnHeading = data.Heading;
 			LaunchLocation location = LaunchLocation.CreateLaunchLocation(
-				"MP_Remote_" + peer.PlayerId,
+				"MultiPlayer_Remote_" + peer.PlayerId,
 				planet, planetPos, planetVel, spawnHeading,
 				localNode.ReferenceFrame,
 				LaunchLocationType.SurfaceLockedGround);
 
 			// 创建加载进度框：挂到对方位置上方（旋转白框 + 真实百分比）
-			MpCraftLoadingIndicator indicator = CreateLoadingIndicator(peer.PlayerId, localNode.ReferenceFrame, planetPos);
+			MultiPlayerCraftLoadingIndicator indicator = CreateLoadingIndicator(peer.PlayerId, localNode.ReferenceFrame, planetPos);
 			if (indicator == null) { EndSpawnAttempt(peer.PlayerId); yield break; }
 
 			// 异步预加载部件 prefab（逐帧、真实 %）→ 进度框显示 N%；可随时取消（玩家离开/场景切换）
 			int partCount = craftData.Assembly.Parts != null ? craftData.Assembly.Parts.Count : 0;
-			Mod.LogLobby("MP: async preloading craft prefabs for player " + peer.PlayerId +
+			Mod.LogLobby("MultiPlayer: async preloading craft prefabs for player " + peer.PlayerId +
 				" ('" + peer.PlayerName + "', craft='" + craftData.Name + "', parts=" + partCount + ")");
-			yield return MpCraftPreloader.PreloadCraftPrefabs(craftData,
+			yield return MultiPlayerCraftPreloader.PreloadCraftPrefabs(craftData,
 				progress => SetPlayerLoadProgress(peer.PlayerId, progress),
 				() => !IsSpawnAttemptStillValid(peer));
 
@@ -388,12 +388,12 @@ namespace Assets.Scripts.Net.Sync
 		/// 校验生成协程当前是否仍有效：仍在飞行场景、玩家未离开、飞船信息仍在、且尚未被生成。
 		/// （预加载期间每帧调用；玩家离开/场景切换/已生成 → false，协程提前停止。）
 		/// </summary>
-		internal bool IsSpawnAttemptStillValid(MpPeer peer)
+		internal bool IsSpawnAttemptStillValid(MultiPlayerPeer peer)
 		{
 			if (peer == null || FlightSceneScript.Instance == null) return false;
-			if (peer.PlayerId == _mp.PlayerId) return false;
+			if (peer.PlayerId == _multiPlayer.PlayerId) return false;
 			bool stillThere;
-			lock (_mp.Registry._playersByPlayerId) { stillThere = _mp.Registry._playersByPlayerId.ContainsKey(peer.PlayerId); }
+			lock (_multiPlayer.Registry._playersByPlayerId) { stillThere = _multiPlayer.Registry._playersByPlayerId.ContainsKey(peer.PlayerId); }
 			if (!stillThere) return false;
 			if (_remoteCrafts.ContainsKey(peer.PlayerId)) return false;
 			return !string.IsNullOrEmpty(peer.CraftXml);
@@ -410,7 +410,7 @@ namespace Assets.Scripts.Net.Sync
 		/// <summary>取消并清理所有挂起的生成（停止联机 / 场景切换时调用）：销毁进度框 + 清空挂起状态。</summary>
 		internal void CancelPendingSpawns()
 		{
-			foreach (KeyValuePair<int, MpCraftLoadingIndicator> kv in _loadingIndicators)
+			foreach (KeyValuePair<int, MultiPlayerCraftLoadingIndicator> kv in _loadingIndicators)
 			{
 				if (kv.Value != null) kv.Value.DestroyIndicator();
 			}
@@ -421,14 +421,14 @@ namespace Assets.Scripts.Net.Sync
 		}
 
 		/// <summary>在指定玩家位置上方创建加载进度框并登记（离开/场景切换时可销毁）。</summary>
-		internal MpCraftLoadingIndicator CreateLoadingIndicator(int playerId, IReferenceFrame frame, Vector3d planetPos)
+		internal MultiPlayerCraftLoadingIndicator CreateLoadingIndicator(int playerId, IReferenceFrame frame, Vector3d planetPos)
 		{
 			try
 			{
 				Vector3 worldPos = frame != null
 					? frame.PlanetToFramePosition(planetPos) + Vector3.up * 4f
 					: Vector3.zero;
-				MpCraftLoadingIndicator ind = MpCraftLoadingIndicator.Create(worldPos);
+				MultiPlayerCraftLoadingIndicator ind = MultiPlayerCraftLoadingIndicator.Create(worldPos);
 				_loadingIndicators[playerId] = ind;
 				return ind;
 			}
@@ -442,7 +442,7 @@ namespace Assets.Scripts.Net.Sync
 		/// <summary>销毁并移除指定玩家的加载进度框。</summary>
 		internal void DestroyLoadingIndicator(int playerId)
 		{
-			MpCraftLoadingIndicator ind;
+			MultiPlayerCraftLoadingIndicator ind;
 			if (_loadingIndicators.TryGetValue(playerId, out ind))
 			{
 				if (ind != null) ind.DestroyIndicator();
@@ -520,7 +520,7 @@ namespace Assets.Scripts.Net.Sync
 				EngineVisualSync.SetupGhostEngineVisuals(rc);
 				EngineVisualSync.DriveGhostEngineVisuals(rc);
 				rc.IsInitialized = true;
-				Mod.LogLobby("MP: remote craft initialized (ghost mode) for player " + rc.PlayerId);
+				Mod.LogLobby("MultiPlayer: remote craft initialized (ghost mode) for player " + rc.PlayerId);
 			}
 			catch (Exception e)
 			{
@@ -554,7 +554,7 @@ namespace Assets.Scripts.Net.Sync
 			// Vizzy 隔离的幽灵 NodeId 记忆同样按飞行场景生命周期重置：NodeId 只在本次飞行内唯一，
 			// 跨场景复用会把新场景里的本地船误判为幽灵（Vizzy 被误杀）。见 VizzyIsolationPatch。
 			VizzyIsolationPatch.ClearGhostNodeCache();
-			Mod.LogLobby("MP.OnFlightSceneLoaded: cleared stale remote crafts (count=" + _remoteCrafts.Count + ")");
+			Mod.LogLobby("MultiPlayer.OnFlightSceneLoaded: cleared stale remote crafts (count=" + _remoteCrafts.Count + ")");
 		}
 
 		/// <summary>停止联机时清空生成节流/未命中登记(与旧 Stop() 中两行等价)。</summary>
@@ -570,7 +570,7 @@ namespace Assets.Scripts.Net.Sync
 				if (rc != null && rc.Node != null && !rc.Node.IsDestroyed)
 				{
 					try { rc.Node.DestroyCraft(); }
-					catch (Exception e) { Mod.LogError("MP.Stop: DestroyCraft error: " + e.Message); }
+					catch (Exception e) { Mod.LogError("MultiPlayer.Stop: DestroyCraft error: " + e.Message); }
 				}
 			}
 			_remoteCrafts.Clear();

@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 using Steamworks;
 using UnityEngine;
 
-namespace Assets.Scripts.Net
+namespace Assets.Scripts.Net.MultiPlayerTransport
 {
 	/// <summary>
 	/// Steam 传输封装（Steam Networking Sockets P2P），接口与 TcpTransport / LiteNetLibTransport 完全兼容：
@@ -18,10 +18,10 @@ namespace Assets.Scripts.Net
 	/// 依赖：com.rlabrecque.steamworks.net.dll（游戏 Managed 自带，已复制到 ModTools/Assemblies）。
 	/// 注意：游戏启动时已 SteamAPI.Init()，本类不重复初始化，直接用 SteamNetworkingSockets。
 	/// </summary>
-	public class SteamTransport : IMpTransport
+	public class SteamTransport : IMultiPlayerTransport
 	{
-		public event Action<MpPeer, byte[]> OnDataReceived;
-		public event Action<MpPeer> OnPeerTimeout;
+		public event Action<MultiPlayerPeer, byte[]> OnDataReceived;
+		public event Action<MultiPlayerPeer> OnPeerTimeout;
 
 		// Steam P2P 虚拟端口（两台机器协商一致即可，无需真实端口/端口转发）
 		private const int VirtualPort = 0;
@@ -30,11 +30,11 @@ namespace Assets.Scripts.Net
 		private bool _isServer;
 		private volatile bool _running;
 
-		// 房主：对端 SteamId(ulong) -> MpPeer / HSteamNetConnection 映射
-		private readonly Dictionary<ulong, MpPeer> _serverPeers = new Dictionary<ulong, MpPeer>();
+		// 房主：对端 SteamId(ulong) -> MultiPlayerPeer / HSteamNetConnection 映射
+		private readonly Dictionary<ulong, MultiPlayerPeer> _serverPeers = new Dictionary<ulong, MultiPlayerPeer>();
 		private readonly Dictionary<ulong, HSteamNetConnection> _serverConnections = new Dictionary<ulong, HSteamNetConnection>();
 		// 客户端：到房主的连接
-		private MpPeer _serverPeer;
+		private MultiPlayerPeer _serverPeer;
 		private HSteamNetConnection _clientConnection;
 		private ulong _pendingConnectSteamId; // 客户端：要连接的房主 SteamId
 
@@ -228,7 +228,7 @@ namespace Assets.Scripts.Net
 				}
 				foreach (var kv in snapshot)
 				{
-					MpPeer peer;
+					MultiPlayerPeer peer;
 					lock (_serverPeers) { _serverPeers.TryGetValue(kv.Key, out peer); }
 					PollConnection(kv.Value, peer);
 				}
@@ -236,7 +236,7 @@ namespace Assets.Scripts.Net
 		}
 
 		/// <summary>收取单个连接的消息。</summary>
-		private void PollConnection(HSteamNetConnection conn, MpPeer peer)
+		private void PollConnection(HSteamNetConnection conn, MultiPlayerPeer peer)
 		{
 			IntPtr[] msgs = new IntPtr[16];
 			while (true)
@@ -275,7 +275,7 @@ namespace Assets.Scripts.Net
 
 		// ---------------- 发送 ----------------
 
-		public void SendTo(MpPeer peer, byte[] data)
+		public void SendTo(MultiPlayerPeer peer, byte[] data)
 		{
 			if (data == null || data.Length == 0 || !_running) return;
 			try
@@ -326,7 +326,7 @@ namespace Assets.Scripts.Net
 
 		/// <summary>房主：踢人用——关闭与指定对端的 Steam 连接。先移除映射再 CloseConnection，
 		/// 避免 OnConnectionStatusChanged 回调再次移除/触发 OnPeerTimeout（重复清理）。</summary>
-		public void DisconnectPeer(MpPeer peer)
+		public void DisconnectPeer(MultiPlayerPeer peer)
 		{
 			if (peer == null || peer.SteamId == 0) return;
 			HSteamNetConnection conn = default;
@@ -365,12 +365,12 @@ namespace Assets.Scripts.Net
 
 		// ---------------- 连接管理 ----------------
 
-		public IReadOnlyCollection<MpPeer> GetPeers()
+		public IReadOnlyCollection<MultiPlayerPeer> GetPeers()
 		{
 			lock (_serverPeers)
 			{
-				if (_isServer) return new List<MpPeer>(_serverPeers.Values);
-				return _serverPeer == null ? new List<MpPeer>() : new List<MpPeer> { _serverPeer };
+				if (_isServer) return new List<MultiPlayerPeer>(_serverPeers.Values);
+				return _serverPeer == null ? new List<MultiPlayerPeer>() : new List<MultiPlayerPeer> { _serverPeer };
 			}
 		}
 
@@ -418,7 +418,7 @@ namespace Assets.Scripts.Net
 							break;
 						case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connected:
 							// 登记对端
-							MpPeer peer = new MpPeer
+							MultiPlayerPeer peer = new MultiPlayerPeer
 							{
 								SteamId = remoteSteamId,
 								IsServer = false,
@@ -432,7 +432,7 @@ namespace Assets.Scripts.Net
 						case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ClosedByPeer:
 						case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ProblemDetectedLocally:
 						case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Dead:
-							MpPeer removed = null;
+							MultiPlayerPeer removed = null;
 							lock (_serverPeers)
 							{
 								if (_serverPeers.TryGetValue(remoteSteamId, out removed))
@@ -452,7 +452,7 @@ namespace Assets.Scripts.Net
 					switch (newState)
 					{
 						case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connected:
-							_serverPeer = new MpPeer
+							_serverPeer = new MultiPlayerPeer
 							{
 								SteamId = remoteSteamId,
 								IsServer = true,
@@ -470,7 +470,7 @@ namespace Assets.Scripts.Net
 						case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ClosedByPeer:
 						case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ProblemDetectedLocally:
 						case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Dead:
-							MpPeer p = _serverPeer;
+							MultiPlayerPeer p = _serverPeer;
 							_serverPeer = null;
 							_running = false;
 							Mod.LogLobby("SteamTransport (client): disconnected from host (state=" + newState +

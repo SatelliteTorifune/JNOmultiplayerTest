@@ -12,7 +12,7 @@ using ModApi.Ui;
 using ModApi.Ui.Inspector;
 using Steamworks;
 using UnityEngine;
-using UnityEngine.SceneManagement;
+using Assets.Scripts.Net.MultiPlayerTransport;
 using Assets.Scripts.Net.Session;
 
 namespace Assets.Scripts
@@ -22,7 +22,7 @@ namespace Assets.Scripts
         #region 字段
 
         public static MultiPlayerUI Instance;
-        public const string MpUiBottomId = "toggle-multiplayer-ui-bottom";
+        public const string MultiPlayerUiBottomId = "toggle-multiplayer-ui-bottom";
         /// <summary>TCP debug 默认端口（与 LobbyManager.HostLobby 默认一致）。</summary>
         private const int DefaultTcpPort = 25555;
         private IInspectorPanel inspectorPanel;
@@ -33,8 +33,8 @@ namespace Assets.Scripts
         private string playersKey = "";
         /// <summary>兜底轮询定时器（覆盖本机开房/连接/断开等无事件变化）。</summary>
         private float playersRebuildTimer;
-        /// <summary>当前已订阅事件的 MpNetworkManager（惰性订阅，manager 创建后首次 Update 才绑定）。</summary>
-        private MpNetworkManager trackedManager;
+        /// <summary>当前已订阅事件的 MultiPlayerNetworkManager（惰性订阅，manager 创建后首次 Update 才绑定）。</summary>
+        private NetworkManager trackedManager;
         /// <summary>事件驱动的脏标记：OnPlayerJoined/OnPlayerLeft 置位，主线程 Update 立即重建。</summary>
         private volatile bool playersDirty;
         private bool playersWasVisible;
@@ -73,10 +73,10 @@ namespace Assets.Scripts
                         inspectButton.Parent.Add(
                             new XElement(
                                 ns + "ContentButton",
-                                new XAttribute("id", MpUiBottomId),
+                                new XAttribute("id", MultiPlayerUiBottomId),
                                 new XAttribute("class", "panel-button audio-btn-click"),
-                                new XAttribute("tooltip", Locale.GetString("MultiPlayer.MultiPlayerUI.MpButtonTooltip")),
-                                new XAttribute("name", "NavPanel.OnToggleMPInspectorPanelState"),
+                                new XAttribute("tooltip", Locale.GetString("MultiPlayer.MultiPlayerUI.MultiPlayerButtonTooltip")),
+                                new XAttribute("name", "NavPanel.OnToggleMultiPlayerInspectorPanelState"),
                                 new XElement(
                                     ns + "Image",
                                     new XAttribute("class", "panel-button-icon"),
@@ -116,8 +116,8 @@ namespace Assets.Scripts
         public void CreateInspectorPanel()
         {
             // 大家好啊,我是从隔壁Droodism偷来的分割线
-            inspectorModel = new InspectorModel("MPUI",
-                "<color=yellow>" + Locale.GetString("MultiPlayer.MultiPlayerUI.MPinspector"));
+            inspectorModel = new InspectorModel("MultiPlayerUI",
+                "<color=yellow>" + Locale.GetString("MultiPlayer.MultiPlayerUI.MultiPlayerInspector"));
 
             // --- 联机状态（TextModel 的 valueGetter 每帧轮询，实时刷新）---
             // 连接状态：未连接 / 开房中 / 已连接房主
@@ -148,22 +148,22 @@ namespace Assets.Scripts
             GroupModel hostGroup = new GroupModel(Locale.GetString("MultiPlayer.MultiPlayerUI.HostSettings"), null);
             // 仅房主可见（client/未连接时隐藏）。注意 ItemElement.Collapsed 跟随 Group.Visible，
             // 分组隐藏时其内子项必然一起隐藏；这里给子项再加一层 DetermineVisibility 双重保险。
-            bool hostOnly() => MpNetworkManager.Instance != null && MpNetworkManager.Instance.IsServer;
+            bool hostOnly() => NetworkManager.Instance != null && NetworkManager.Instance.IsServer;
             hostGroup.DetermineVisibility = hostOnly;
             // 滑条（参考游戏 jnoCode 检查器 SliderModel 用法：wholeNumbers 整数步进 + ValueFormatter 显示 Hz）
             SliderModel tickRateSlider = new SliderModel(
                 Locale.GetString("MultiPlayer.MultiPlayerUI.TickRateSlider"),
-                () => MpNetworkManager.Instance != null ? (float)MpNetworkManager.Instance.TickRate : 20f,
+                () => NetworkManager.Instance != null ? (float)NetworkManager.Instance.TickRate : 20f,
                 v =>
                 {
                     // 滑块为整数步进，取整后交给管理器（内部 Clamp 1~120；房主会广播给所有客户端）
-                    if (MpNetworkManager.Instance != null) MpNetworkManager.Instance.SetTickRate(Mathf.RoundToInt(v));
+                    if (NetworkManager.Instance != null) NetworkManager.Instance.SetTickRate(Mathf.RoundToInt(v));
                 },
                 20f, 120f, true, true);
             tickRateSlider.DetermineVisibility = hostOnly;
             tickRateSlider.ValueFormatter = (float x) => Mathf.RoundToInt(x) + " Hz";
             tickRateSlider.Tooltip = Locale.GetString("MultiPlayer.MultiPlayerUI.TickRateHint");
-            tickRateSlider.ElementName = "Mp.TickRateSlider";
+            tickRateSlider.ElementName = "MultiPlayer.TickRateSlider";
             hostGroup.Add(tickRateSlider);
             inspectorModel.AddGroup(hostGroup);
 
@@ -192,52 +192,52 @@ namespace Assets.Scripts
             // 总开关：关闭=直通（不延迟不丢包）；开启后才实际生效（已启用的会话实时生效，未启用的下次开房生效）
             ToggleModel netSimToggle = new ToggleModel(
                 Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimToggle"),
-                () => Net.LagSimTransport.ToggleOn,
+                () => LagSimTransport.ToggleOn,
                 v =>
                 {
-                    Net.LagSimTransport.SetToggle(v);
+                    LagSimTransport.SetToggle(v);
                     Mod.LogLobby("NetSim UI toggle -> " + (v ? "ON" : "OFF") +
-                        (v ? " (" + Net.LagSimTransport.DescribeConfig() + ")" : " (直通,不影响其它 TCP 场景)"));
+                        (v ? " (" + LagSimTransport.DescribeConfig() + ")" : " (直通,不影响其它 TCP 场景)"));
                 },
                 Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimToggleHint"));
             debugGroup.Add(netSimToggle);
             // 延迟(ms)
             debugGroup.Add(new TextInputModel(
                 Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimDelay"),
-                () => Net.LagSimTransport.DelayMs.ToString(),
+                () => LagSimTransport.DelayMs.ToString(),
                 s =>
                 {
                     int ms;
                     if (int.TryParse(s.Trim(), out ms) && ms >= 0)
                     {
-                        Net.LagSimTransport.SetDelay(ms);
-                        Mod.LogLobby("NetSim UI delay -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + ")");
+                        LagSimTransport.SetDelay(ms);
+                        Mod.LogLobby("NetSim UI delay -> " + ms + "ms (" + LagSimTransport.DescribeConfig() + ")");
                     }
                 }));
             // 抖动(ms)
             debugGroup.Add(new TextInputModel(
                 Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimJitter"),
-                () => Net.LagSimTransport.JitterMs.ToString(),
+                () => LagSimTransport.JitterMs.ToString(),
                 s =>
                 {
                     int ms;
                     if (int.TryParse(s.Trim(), out ms) && ms >= 0)
                     {
-                        Net.LagSimTransport.SetJitter(ms);
-                        Mod.LogLobby("NetSim UI jitter -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + ")");
+                        LagSimTransport.SetJitter(ms);
+                        Mod.LogLobby("NetSim UI jitter -> " + ms + "ms (" + LagSimTransport.DescribeConfig() + ")");
                     }
                 }));
             // 丢包(%)
             debugGroup.Add(new TextInputModel(
                 Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimLoss"),
-                () => Net.LagSimTransport.LossPercent.ToString("F0"),
+                () => LagSimTransport.LossPercent.ToString("F0"),
                 s =>
                 {
                     float pct;
                     if (float.TryParse(s.Trim(), out pct) && pct >= 0f)
                     {
-                        Net.LagSimTransport.SetLoss(pct);
-                        Mod.LogLobby("NetSim UI loss -> " + pct + "% (" + Net.LagSimTransport.DescribeConfig() + ")");
+                        LagSimTransport.SetLoss(pct);
+                        Mod.LogLobby("NetSim UI loss -> " + pct + "% (" + LagSimTransport.DescribeConfig() + ")");
                     }
                 }));
             inspectorModel.AddGroup(debugGroup);
@@ -260,7 +260,7 @@ namespace Assets.Scripts
         /// <summary>连接状态文本（实时）：未连接 / 开房中 / 已连接房主。</summary>
         private static string GetConnectionStatusText()
         {
-            MpNetworkManager m = MpNetworkManager.Instance;
+            NetworkManager m = NetworkManager.Instance;
             if (m == null || !m.IsConnected)
                 return Locale.GetString("MultiPlayer.MultiPlayerUI.NotConnected");
             string name = string.IsNullOrEmpty(m.PlayerName) ? ("Player " + m.PlayerId) : m.PlayerName;
@@ -272,7 +272,7 @@ namespace Assets.Scripts
         /// <summary>在线玩家人数（实时）：远端玩家数 + 自己。</summary>
         private static string GetPlayerCountText()
         {
-            MpNetworkManager m = MpNetworkManager.Instance;
+            NetworkManager m = NetworkManager.Instance;
             if (m == null || !m.IsConnected) return "0";
             return (m.GetPlayers().Count + 1).ToString();
         }
@@ -286,12 +286,12 @@ namespace Assets.Scripts
         /// </summary>
         private static string GetNetSimStateText()
         {
-            MpNetworkManager m = MpNetworkManager.Instance;
-            Net.LagSimTransport lag = m != null ? m.Transport as Net.LagSimTransport : null;
+            NetworkManager m = NetworkManager.Instance;
+            LagSimTransport lag = m != null ? m.Transport as LagSimTransport : null;
             if (lag != null) return "ON·已生效（实时）";
-            if (Net.LagSimTransport.ToggleOn)
+            if (LagSimTransport.ToggleOn)
             {
-                return Net.LagSimTransport.Enabled
+                return LagSimTransport.Enabled
                     ? "ON·待生效（需重新开房/加入）"
                     : "ON·数值未设（直通）";
             }
@@ -301,8 +301,8 @@ namespace Assets.Scripts
         /// <summary>NetSim 投递统计行（实时刷新，分段显示之二）；未启用时显示 "—"。</summary>
         private static string GetNetSimStatsText()
         {
-            MpNetworkManager m = MpNetworkManager.Instance;
-            Net.LagSimTransport lag = m != null ? m.Transport as Net.LagSimTransport : null;
+            NetworkManager m = NetworkManager.Instance;
+            LagSimTransport lag = m != null ? m.Transport as LagSimTransport : null;
             if (lag == null) return "—（未启用）";
             return "投递=" + lag.Delivered + " 丢弃=" + lag.Dropped + " 队列=" + lag.InFlight;
         }
@@ -371,7 +371,7 @@ namespace Assets.Scripts
         /// <summary>订阅/换绑玩家加入、离开事件。manager 是惰性创建的（开房/加入时才存在），首次用到时才绑定。</summary>
         private void EnsurePlayersSubscribed()
         {
-            MpNetworkManager m = MpNetworkManager.Instance;
+            NetworkManager m = NetworkManager.Instance;
             if (m == null || m == trackedManager) return;
             if (trackedManager != null)
             {
@@ -385,7 +385,7 @@ namespace Assets.Scripts
         }
 
         /// <summary>玩家加入/离开事件回调。可能来自网络线程，只置标志，重建在 Update 主线程执行。</summary>
-        private void OnPlayersChanged(MpPeer peer)
+        private void OnPlayersChanged(MultiPlayerPeer peer)
         {
             playersDirty = true;
         }
@@ -422,7 +422,7 @@ namespace Assets.Scripts
         /// <summary>当前玩家集合签名（连接状态 + 是否房主 + 排序后的 PlayerId 列表），用于判断集合是否变化。</summary>
         private static string GetPlayersKey()
         {
-            MpNetworkManager m = MpNetworkManager.Instance;
+            NetworkManager m = NetworkManager.Instance;
             if (m == null || !m.IsConnected) return "off";
             List<string> ids = m.GetPlayers().Select(p => p.PlayerId.ToString()).OrderBy(x => x).ToList();
             ids.Insert(0, m.PlayerId.ToString());
@@ -474,7 +474,7 @@ namespace Assets.Scripts
         /// <summary>构建玩家列表分组：每玩家一行（名字 + 延迟），房主额外每行一个踢人按钮。</summary>
         private static GroupModel BuildPlayersGroup()
         {
-            MpNetworkManager m = MpNetworkManager.Instance;
+            NetworkManager m = NetworkManager.Instance;
             GroupModel g = new GroupModel(Locale.GetString("MultiPlayer.MultiPlayerUI.PlayerList"), null);
             if (m == null || !m.IsConnected)
             {
@@ -495,7 +495,7 @@ namespace Assets.Scripts
             }
 
             // 远端玩家（房主：GetPlayers = 客户端们；客户端：GetPlayers = 房主 + 其他客户端）
-            foreach (MpPeer p in m.GetPlayers().OrderBy(x => x.PlayerId))
+            foreach (MultiPlayerPeer p in m.GetPlayers().OrderBy(x => x.PlayerId))
             {
                 string name = string.IsNullOrEmpty(p.PlayerName) ? ("Player " + p.PlayerId) : p.PlayerName;
                 bool isHostPeer = p.PlayerId == 0;
@@ -503,10 +503,10 @@ namespace Assets.Scripts
                 if (m.IsServer)
                 {
                     // 房主：每行显示该客户端的实时延迟（预加载期间显示 "⏳ N%"）
-                    MpPeer peer = p;
+                    MultiPlayerPeer peer = p;
                     g.Add(new TextModel(label, () =>
                     {
-                        MpNetworkManager mm = MpNetworkManager.Instance;
+                        NetworkManager mm = NetworkManager.Instance;
                         if (mm != null)
                         {
                             float? lp = mm.GetPlayerLoadProgress(p.PlayerId);
@@ -523,7 +523,7 @@ namespace Assets.Scripts
                     // 客户端：中继拓扑下只能测自己到房主的延迟，其他人的延迟未知（预加载期间显示 "⏳ N%"）
                     g.Add(new TextModel(label, () =>
                     {
-                        MpNetworkManager mm = MpNetworkManager.Instance;
+                        NetworkManager mm = NetworkManager.Instance;
                         if (mm != null)
                         {
                             float? lp = mm.GetPlayerLoadProgress(p.PlayerId);
@@ -539,10 +539,10 @@ namespace Assets.Scripts
         /// <summary>房主踢人按钮：弹出确认框后调用 KickPlayer。</summary>
         private static void OnKickPlayerClick(int playerId)
         {
-            MpNetworkManager m = MpNetworkManager.Instance;
+            NetworkManager m = NetworkManager.Instance;
             if (m == null) return;
             string name = "Player " + playerId;
-            foreach (MpPeer p in m.GetPlayers())
+            foreach (MultiPlayerPeer p in m.GetPlayers())
             {
                 if (p.PlayerId == playerId)
                 {
@@ -558,13 +558,13 @@ namespace Assets.Scripts
             dlg.OkayClicked += delegate(global::ModApi.Ui.MessageDialogScript d)
             {
                 d.Close();
-                MpNetworkManager mm = MpNetworkManager.Instance;
+                NetworkManager mm = NetworkManager.Instance;
                 if (mm != null) mm.KickPlayer(playerId);
             };
             dlg.CancelClicked += delegate(global::ModApi.Ui.MessageDialogScript d) { d.Close(); };
         }
 
-        public void OnToggleMPInspectorPanelState()
+        public void OnToggleMultiPlayerInspectorPanelState()
         {
            
             try
@@ -638,8 +638,8 @@ namespace Assets.Scripts
                     msg.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.InvalidTcpPort", input);
                     return;
                 }
-                MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-                if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
+                NetworkManager mgr = LobbyManager.Instance.EnsureMultiPlayerManager();
+                if (mgr != null) mgr.SetTransport(LagSimTransport.MaybeWrap(new TcpTransport()));
                 bool ok = LobbyManager.Instance.HostLobby(port);
                 if (ok)
                 {
@@ -674,8 +674,8 @@ namespace Assets.Scripts
                     msg.MessageText = Locale.GetString("MultiPlayer.MultiPlayerUI.InvalidTcpHost", input);
                     return;
                 }
-                MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-                if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
+                NetworkManager mgr = LobbyManager.Instance.EnsureMultiPlayerManager();
+                if (mgr != null) mgr.SetTransport(LagSimTransport.MaybeWrap(new TcpTransport()));
                 LobbyManager.Instance.JoinLobby(host, port);
             };
         }

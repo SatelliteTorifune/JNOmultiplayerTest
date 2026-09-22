@@ -16,8 +16,8 @@ namespace Assets.Scripts
         {
             try
             {
-                __instance.xmlLayout.GetElementById(MultiPlayerUI.MpUiBottomId)
-                    .AddOnClickEvent(MultiPlayerUI.Instance.OnToggleMPInspectorPanelState, true);
+                __instance.xmlLayout.GetElementById(MultiPlayerUI.MultiPlayerUiBottomId)
+                    .AddOnClickEvent(MultiPlayerUI.Instance.OnToggleMultiPlayerInspectorPanelState, true);
             }
             catch (Exception e)
             {

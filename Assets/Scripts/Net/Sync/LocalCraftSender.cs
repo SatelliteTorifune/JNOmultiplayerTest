@@ -9,14 +9,14 @@ using ModApi.Craft.Parts;
 using ModApi.Flight.GameView;
 using ModApi.Flight.Sim;
 using UnityEngine;
-using static Assets.Scripts.Net.Sync.MpSyncUtil;
+using static Assets.Scripts.Net.Sync.MultiPlayerSyncUtil;
 using Assets.Scripts.Net.CraftVisual;
 using Assets.Scripts.Net.Session;
 
 namespace Assets.Scripts.Net.Sync
 {
 	/// <summary>
-	/// 发送端状态包管线(2026-09-22 重构:自 MpNetworkManager 逐字搬来;同日二次整理:采样 + 发包节拍合并为一个类)。
+	/// 发送端状态包管线(2026-09-22 重构:自 MultiPlayerNetworkManager 逐字搬来;同日二次整理:采样 + 发包节拍合并为一个类)。
 	/// 采样:坐标系换算、body 位姿/角速度/线速度差分、加速度 EMA 与钳制、控制输入采集、发送端诊断缓冲。
 	/// 节拍:状态包节流(F4/F5/F6b)、暂停降频、保活心跳、sendDiag 诊断行。
 	/// </summary>
@@ -31,15 +31,15 @@ namespace Assets.Scripts.Net.Sync
  float _sendTimer;
  float _keepAliveTimer;
 		// --- 发送节奏诊断(2026-09-14,顿挫定位):实际发包间隔 EMA(sendGap,ms)。 ---
-		// 与接收端 MP gap(到达间隔)对账:sendGap 稳定≈50ms 而接收端 gap 大 → 网络突发(relay);
+		// 与接收端 MultiPlayer gap(到达间隔)对账:sendGap 稳定≈50ms 而接收端 gap 大 → 网络突发(relay);
 		// sendGap 本身大幅摆动 → 发送端自身突发(帧率不足/掉帧),先修发送端。
  float _lastSendTime = -1f;
  float _sendGapEmaMs = 0f;
  float _fpsEma = 0f;                 // 发送端渲染帧率 EMA(与对端 fps/gapEMA 对账:帧率-发包率耦合)
 
-		private readonly MpNetworkManager _mp;
+		private readonly NetworkManager _multiPlayer;
 
-		internal LocalCraftSender(MpNetworkManager mp) { _mp = mp; }
+		internal LocalCraftSender(NetworkManager multiPlayer) { _multiPlayer = multiPlayer; }
 
 		// --- 抽搐诊断(发送端):每包 body[0] 相对 comRot 采样位置抖动(静止时>0.01m → 发送端数据本身在抖) ---
 		internal Vector3? _diagBody0Rel;
@@ -326,7 +326,7 @@ namespace Assets.Scripts.Net.Sync
 							if (bi > 0) names += ", ";
 							names += bi + "(id=" + bodyList[bi].Id + ")=" + nm;
 						}
-						Mod.LogLobby("MP bodyNames P" + _mp.PlayerId + ": " + names);
+						Mod.LogLobby("MultiPlayer bodyNames P" + _multiPlayer.PlayerId + ": " + names);
 					}
 				}
 
@@ -394,7 +394,7 @@ namespace Assets.Scripts.Net.Sync
 			bool localPaused = FlightSceneScript.Instance != null &&
 				FlightSceneScript.Instance.TimeManager != null &&
 				FlightSceneScript.Instance.TimeManager.Paused;
-			float sendIntervalMs = localPaused ? Mathf.Max(_mp.SendIntervalMs, PausedSendIntervalMs) : _mp.SendIntervalMs;
+			float sendIntervalMs = localPaused ? Mathf.Max(_multiPlayer.SendIntervalMs, PausedSendIntervalMs) : _multiPlayer.SendIntervalMs;
 			if (_sendTimer < sendIntervalMs) return;
 			// F5(2026-09-15):帧率解耦 —— 每帧最多补发 2 包,≥10fps 也发满 20Hz。
 			// (原实现每帧最多 1 包 → 10fps 的机器只发 10Hz → 对端 gapEMA≈95ms、每包位置跳变翻倍。
@@ -424,15 +424,15 @@ namespace Assets.Scripts.Net.Sync
 				data.Position.y == loopSentPos.Value.y &&
 				data.Position.z == loopSentPos.Value.z) break;
 			loopSentPos = data.Position;
-			// 客户端在收到 Welcome（拿到 _mp.PlayerId）前不发状态包：
+			// 客户端在收到 Welcome（拿到 _multiPlayer.PlayerId）前不发状态包：
 			// 否则会以 PlayerId=-1 发包，房主无法关联到已登记玩家（"state for player -1"）。
-			if (_mp.PlayerId < 0) break;
+			if (_multiPlayer.PlayerId < 0) break;
 
 			
 			// 周期性本机朝向/位置诊断日志已移除（原为 if(false) 禁用块；
 			// 其内曾被加入过早 return，导致 ProcessOutgoing 每帧提前返回、状态包完全停发）
 			double time = FlightSceneScript.Instance.FlightState.Time;
-			byte[] packet = MpMessages.EncodeState(_mp.PlayerId, _mp.LocalNodeId, time, data);
+			byte[] packet = MultiPlayerMessages.EncodeState(_multiPlayer.PlayerId, _multiPlayer.LocalNodeId, time, data);
 			// 抽搐诊断(发送端):每 1s 输出本机采样数据抖动。若静止时 body0RelΔ 持续>0.01m,
 			// 说明发送端数据本身在抖(comRot/body 微动),接收端平滑只能衰减无法消除。
 			if (Time.unscaledTime - _diagBody0RelLogTime > 1f)
@@ -567,7 +567,7 @@ namespace Assets.Scripts.Net.Sync
 					}
 				}
 				catch { }
-				Mod.LogLobby("MP sendDiag P" + _mp.PlayerId +
+				Mod.LogLobby("MultiPlayer sendDiag P" + _multiPlayer.PlayerId +
 					": vel=" + data.Velocity.magnitude.ToString("F3") + "m/s" +
 					" paused=" + (data.Paused ? 1 : 0) +
 					" accRaw=" + _accelRawDiag.magnitude.ToString("F2") + "m/s²" +
@@ -587,14 +587,14 @@ namespace Assets.Scripts.Net.Sync
 					" " + wSignDiag + " " + bodyWSignDiag);
 			}
 			// 发送节奏诊断(2026-09-14):实际发包间隔 EMA。记录在真正发包处,过滤采样失败未发帧;
-			// 与接收端 MP gap(到达间隔)对账定位突发来源(发送端自身 vs 网络 relay)。
+			// 与接收端 MultiPlayer gap(到达间隔)对账定位突发来源(发送端自身 vs 网络 relay)。
 			if (_lastSendTime >= 0f)
 			{
 				float gap = (Time.unscaledTime - _lastSendTime) * 1000f;
 				_sendGapEmaMs = _sendGapEmaMs <= 0f ? gap : _sendGapEmaMs * 0.9f + gap * 0.1f;
 			}
 			_lastSendTime = Time.unscaledTime;
-			_mp.SendOrBroadcastToNet(packet);
+			_multiPlayer.SendOrBroadcastToNet(packet);
 			}
 			while (_sendTimer >= sendIntervalMs && --sendBudget > 0); // F5:同帧余量仍够则补发(共 ≤2 包/帧)
 		}
@@ -609,8 +609,8 @@ namespace Assets.Scripts.Net.Sync
 			if (_keepAliveTimer > 0f) return;
 			_keepAliveTimer = 1f;
 
-			byte[] ping = MpMessages.EncodePing(DateTime.UtcNow.Ticks);
-			_mp.SendOrBroadcastToNet(ping);
+			byte[] ping = MultiPlayerMessages.EncodePing(DateTime.UtcNow.Ticks);
+			_multiPlayer.SendOrBroadcastToNet(ping);
 		}
 	}
 }

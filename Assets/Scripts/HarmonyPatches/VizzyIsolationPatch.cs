@@ -57,7 +57,7 @@ namespace Assets.Scripts
 			if (scope != BroadcastScope.AllCrafts) return true;
 			if (!VizzyIsolationPatch.Enabled) return true;
 
-			MpNetworkManager mgr = MpNetworkManager.Instance;
+			NetworkManager mgr = NetworkManager.Instance;
 			if (mgr == null || !mgr.IsConnected) return true;
 
 			// 幽灵船自己的 Vizzy 不应向外广播(正常已被 patch 2 拦在执行前;此处兜住
@@ -128,7 +128,7 @@ namespace Assets.Scripts
 
 		/// <summary>
 		/// 幽灵(远程)船判定。三层:
-		///   ① 权威:`MpNetworkManager.IsRemoteCraftNode(node)`(查 _remoteCrafts 登记表);
+		///   ① 权威:`MultiPlayerNetworkManager.IsRemoteCraftNode(node)`(查 _remoteCrafts 登记表);
 		///   ② 记忆:`_ghostNodeIds` 里出现过的 NodeId —— 封「断线/移除窗口」:
 		///      `RemoveRemoteCraft` 先 `_remoteCrafts.Remove()` 再 `DestroyCraft()`,而节点要到
 		///      下一帧 `ProcessDestroyedCraftNodes` 才真正消失;这中间 ① 已返回 false,
@@ -154,11 +154,11 @@ namespace Assets.Scripts
 		{
 			if (node == null) return false;
 
-			MpNetworkManager mgr = MpNetworkManager.Instance;
+			NetworkManager mgr = NetworkManager.Instance;
 			if (mgr == null) return false;
 
 			// ① 权威:仍在登记表中 —— 顺便把 NodeId 记进记忆(此刻它确定是幽灵)
-			if (MpNetworkManager.IsRemoteCraftNode(node))
+			if (NetworkManager.IsRemoteCraftNode(node))
 			{
 				if (node.NodeId != 0) _ghostNodeIds.Add(node.NodeId);
 				return true;
@@ -182,7 +182,7 @@ namespace Assets.Scripts
 		private static readonly HashSet<int> _ghostCacheLogged = new HashSet<int>();
 
 		/// <summary>
-		/// 飞行场景加载/卸载时清空幽灵 NodeId 记忆(由 `MpNetworkManager.OnFlightSceneLoaded` 调用):
+		/// 飞行场景加载/卸载时清空幽灵 NodeId 记忆(由 `MultiPlayerNetworkManager.OnFlightSceneLoaded` 调用):
 		/// 否则下一次飞行里复用的 NodeId 会被误判成幽灵,导致本地船的 Vizzy 被误杀。
 		/// </summary>
 		public static void ClearGhostNodeCache()
@@ -204,7 +204,7 @@ namespace Assets.Scripts
 		{
 			try
 			{
-				MpNetworkManager mgr = MpNetworkManager.Instance;
+				NetworkManager mgr = NetworkManager.Instance;
 				if (mgr == null || !mgr.IsConnected) return; // 单人会话不打扰
 
 				string craftName = "<unknown>";
@@ -222,7 +222,7 @@ namespace Assets.Scripts
 					if (cn != null)
 					{
 						nodeIdText = cn.NodeId.ToString();
-						isRemoteNode = MpNetworkManager.IsRemoteCraftNode(cn);
+						isRemoteNode = NetworkManager.IsRemoteCraftNode(cn);
 						inRegistry = _ghostNodeIds.Contains(cn.NodeId);
 					}
 				}
@@ -257,10 +257,10 @@ namespace Assets.Scripts
 			string name = node.Name;
 			if (string.IsNullOrEmpty(name)) return false;
 
-			MpNetworkManager mgr = MpNetworkManager.Instance;
+			NetworkManager mgr = NetworkManager.Instance;
 			if (mgr == null || mgr.Transport == null) return false;
 
-			foreach (MpPeer peer in mgr.Transport.GetPeers())
+			foreach (MultiPlayerPeer peer in mgr.Transport.GetPeers())
 			{
 				if (peer == null || string.IsNullOrEmpty(peer.PlayerName)) continue;
 				if (name.Length <= peer.PlayerName.Length) continue;
@@ -279,7 +279,7 @@ namespace Assets.Scripts
 			if (fps == null) return;
 			try
 			{
-				MpNetworkManager mgr = MpNetworkManager.Instance;
+				NetworkManager mgr = NetworkManager.Instance;
 				if (mgr != null && !mgr.IsConnected)
 					_loggedDroppedBroadcasts.Clear(); // 新会话:让诊断日志重新可用
 

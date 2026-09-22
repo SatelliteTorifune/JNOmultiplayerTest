@@ -1,5 +1,6 @@
 using System;
 using Assets.Scripts.Net;
+using Assets.Scripts.Net.MultiPlayerTransport;
 using ModApi;
 using ModApi.Scenes.Events;
 using UnityEngine;
@@ -15,7 +16,7 @@ namespace Assets.Scripts
 	{
 		public static LobbyManager Instance { get; private set; }
 
-		private GameObject _mpGameObject;
+		private GameObject _multiPlayerGameObject;
 
 		public LobbyManager()
 		{
@@ -26,10 +27,10 @@ namespace Assets.Scripts
 		public bool HostLobby(int port = 25555)
 		{
 			Mod.LogLobby("HostLobby() called: port=" + port);
-			MpNetworkManager mgr = EnsureMpManager();
+			NetworkManager mgr = EnsureMultiPlayerManager();
 			if (mgr == null)
 			{
-				Mod.LogLobby("HostLobby FAILED: MpNetworkManager.Instance is null (EnsureMpManager returned null)");
+				Mod.LogLobby("HostLobby FAILED: MultiPlayerNetworkManager.Instance is null (EnsureMultiPlayerManager returned null)");
 				return false;
 			}
 
@@ -80,10 +81,10 @@ namespace Assets.Scripts
 				if (string.IsNullOrWhiteSpace(playerName)) playerName = "Player";
 			}
 			Mod.LogLobby("JoinLobby() called: host=" + host + ":" + port + ", playerName='" + playerName + "'");
-			MpNetworkManager mgr = EnsureMpManager();
+			NetworkManager mgr = EnsureMultiPlayerManager();
 			if (mgr == null)
 			{
-				Mod.LogLobby("JoinLobby FAILED: MpNetworkManager.Instance is null (EnsureMpManager returned null)");
+				Mod.LogLobby("JoinLobby FAILED: MultiPlayerNetworkManager.Instance is null (EnsureMultiPlayerManager returned null)");
 				return false;
 			}
 
@@ -100,7 +101,7 @@ namespace Assets.Scripts
 		/// <summary>停止联机（同时退出 Steam 大厅，房间从列表消失）。</summary>
 		public void StopLobby()
 		{
-			Mod.LogLobby("StopLobby() called" + (MpNetworkManager.Instance != null ? " (manager exists)" : " (manager is null, nothing to stop)"));
+			Mod.LogLobby("StopLobby() called" + (NetworkManager.Instance != null ? " (manager exists)" : " (manager is null, nothing to stop)"));
 			// Steam 大厅浏览器：断开/停房时退出所在大厅（开房/加入时创建的）
 			try
 			{
@@ -110,9 +111,9 @@ namespace Assets.Scripts
 			{
 				Mod.LogLobby("StopLobby: SteamLobbyBrowser.LeaveLobby error: " + e.Message);
 			}
-			if (MpNetworkManager.Instance != null)
+			if (NetworkManager.Instance != null)
 			{
-				MpNetworkManager.Instance.Stop();
+				NetworkManager.Instance.Stop();
 			}
 		}
 
@@ -122,10 +123,10 @@ namespace Assets.Scripts
 		/// </summary>
 		public void SetTickRate(int hz)
 		{
-			MpNetworkManager mgr = EnsureMpManager();
+			NetworkManager mgr = EnsureMultiPlayerManager();
 			if (mgr == null)
 			{
-				Mod.LogLobby("SetTickRate FAILED: MpNetworkManager.Instance is null (EnsureMpManager returned null)");
+				Mod.LogLobby("SetTickRate FAILED: MultiPlayerNetworkManager.Instance is null (EnsureMultiPlayerManager returned null)");
 				return;
 			}
 			if (!mgr.IsServer)
@@ -136,19 +137,19 @@ namespace Assets.Scripts
 		}
 
 		/// <summary>确保联机网络管理器已创建并返回实例。</summary>
-		public MpNetworkManager EnsureMpManager()
+		public NetworkManager EnsureMultiPlayerManager()
 		{
-			if (MpNetworkManager.Instance == null)
+			if (NetworkManager.Instance == null)
 			{
-				if (_mpGameObject == null) _mpGameObject = new GameObject("MPNetwork");
+				if (_multiPlayerGameObject == null) _multiPlayerGameObject = new GameObject("MultiPlayerNetwork");
 				// 关键：让管理器跨场景存活。切换全屏/退出菜单等触发场景重载时，
 				// 普通场景 GameObject 会被销毁 → OnDestroy → Transport.Stop() 断线 → 远程飞船被移除。
 				// DontDestroyOnLoad 保证联机会话在场景切换期间保持连接。
-				GameObject.DontDestroyOnLoad(_mpGameObject);
-				_mpGameObject.AddComponent<MpNetworkManager>();
-				_mpGameObject.SetActive(true);
+				GameObject.DontDestroyOnLoad(_multiPlayerGameObject);
+				_multiPlayerGameObject.AddComponent<NetworkManager>();
+				_multiPlayerGameObject.SetActive(true);
 			}
-			return MpNetworkManager.Instance;
+			return NetworkManager.Instance;
 		}
 
 		/// <summary>场景加载事件：飞行场景下重建/刷新联机管理器。</summary>
@@ -157,16 +158,16 @@ namespace Assets.Scripts
 			if (Game.Instance.SceneManager.InFlightScene)
 			{
 				// 兜底：若管理器因场景重载被销毁（理论上 DontDestroyOnLoad 后不应发生），在此重建
-				if (MpNetworkManager.Instance == null)
+				if (NetworkManager.Instance == null)
 				{
-					EnsureMpManager();
+					EnsureMultiPlayerManager();
 				}
-				if (MpNetworkManager.Instance != null)
+				if (NetworkManager.Instance != null)
 				{
 					// 清理上一场景遗留的远程飞船引用（旧 CraftNode 已被场景卸载销毁），
 					// 再上报/刷新本机飞船 NodeId
-					MpNetworkManager.Instance.OnFlightSceneLoaded();
-					MpNetworkManager.Instance.RefreshLocalCraft();
+					NetworkManager.Instance.OnFlightSceneLoaded();
+					NetworkManager.Instance.RefreshLocalCraft();
 				}
 			}
 		}

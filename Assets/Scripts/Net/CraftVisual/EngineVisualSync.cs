@@ -65,10 +65,10 @@ namespace Assets.Scripts.Net.CraftVisual
 			/// <summary>液体火箭的尾焰 ExhaustSystemScript(写 ExpansionRatio 用;仅 IsRocket,航发走 RocketExhaust)。</summary>
 			public ExhaustSystemScript RocketExhaustSystem;
 			/// <summary>
-			/// 是否由 MP 层每帧直接调 EngineCommon.FlightUpdate(1f,1f) 驱动:
-			/// - EngineScript:false —— 游戏自身 IFlightUpdate 每帧无条件调,走 Route A,MP 层不重复调(避免纹理滚动 2x);
+			/// 是否由 MultiPlayer 层每帧直接调 EngineCommon.FlightUpdate(1f,1f) 驱动:
+			/// - EngineScript:false —— 游戏自身 IFlightUpdate 每帧无条件调,走 Route A,MultiPlayer 层不重复调(避免纹理滚动 2x);
 			/// - RocketEngineScript:true —— 其 IFlightUpdate 被 (Activated&&throttle>0)||_hasBeenActivated 门控,
-			///   幽灵上 throttle=0 游戏不调,必须由 MP 层驱动;
+			///   幽灵上 throttle=0 游戏不调,必须由 MultiPlayer 层驱动;
 			/// - JetEngineScript:true —— 其 IFlightUpdate 已被 Harmony patch 跳过。
 			/// </summary>
 			public bool DriveDirectly;
@@ -284,7 +284,7 @@ namespace Assets.Scripts.Net.CraftVisual
 								int capturedIdx = idx;
 								captured.ExhaustThrottleOverride = () => GetSyncedThrottle(capturedRc, capturedIdx);
 							}
-							// RocketEngine:游戏 IFlightUpdate 被 throttle>0 门控,幽灵上不调 → 由 MP 层直接驱动
+							// RocketEngine:游戏 IFlightUpdate 被 throttle>0 门控,幽灵上不调 → 由 MultiPlayer 层直接驱动
 							RocketEngineScript res = (RocketEngineScript)mod;
 							RocketEngineData rd = res.Data;
 							ExhaustSystemScript resEx = part.PartScript.GameObject.GetComponentInChildren<ExhaustSystemScript>(true);
@@ -367,7 +367,7 @@ namespace Assets.Scripts.Net.CraftVisual
 					}
 					if (d.DriveDirectly)
 					{
-						// RocketEngine(游戏门控不调)/航发(已 patch 跳过):由 MP 层每帧调 FlightUpdate 驱动主喷嘴火焰。
+						// RocketEngine(游戏门控不调)/航发(已 patch 跳过):由 MultiPlayer 层每帧调 FlightUpdate 驱动主喷嘴火焰。
 						// 航发时 override=推导的加力节流阀 ab(ComputeAfterburnerThrottle)→ 主喷嘴 exhaust 走加力值;烟雾门控仍由 ApplyJetSmokeVisuals 按同步 EngineThrottle 重写。
 						d.EngineCommon.FlightUpdate(1f, 1f);
 					}
@@ -384,7 +384,7 @@ namespace Assets.Scripts.Net.CraftVisual
 						// 有自定义烟色时 RGB 取自定义值。EmissionEnabled/Throttle 也按发送端口径重写(含 HasSmoke 门控)。
 						ApplyJetSmokeVisuals(d, t);
 					}
-					// EngineScript:Route A —— 游戏自身 FlightUpdate 每帧经 override 驱动,MP 层不重复调
+					// EngineScript:Route A —— 游戏自身 FlightUpdate 每帧经 override 驱动,MultiPlayer 层不重复调
 				}
 				catch (Exception e)
 				{

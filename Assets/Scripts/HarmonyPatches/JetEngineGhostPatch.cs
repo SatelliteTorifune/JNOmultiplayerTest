@@ -20,7 +20,7 @@ namespace Assets.Scripts
 	/// 应用方式:不用 [HarmonyPatch] 自动发现,而是由 Mod.OnModInitialized 显式调用 Apply() 手动打补丁
 	/// —— 目标方法找不到时静默跳过(液体尾焰仍可用),不会像 [HarmonyPatch]+TargetMethod 那样
 	/// 返回 null 直接抛 HarmonyException 打断整个 mod 初始化(实测报错,见 plans §9.2 第 6 条)。
-	/// Prefix 只对"幽灵飞船"返回 false(见 MpNetworkManager.IsRemoteCraftNode),本机/他人真船不受影响。
+	/// Prefix 只对"幽灵飞船"返回 false(见 MultiPlayerNetworkManager.IsRemoteCraftNode),本机/他人真船不受影响。
 	/// </summary>
 	public static class JetEngineGhostPatch
 	{
@@ -57,7 +57,7 @@ namespace Assets.Scripts
 			{
 				CraftScript cs = jet != null && jet.PartScript != null ? jet.PartScript.CraftScript as CraftScript : null;
 				if (cs == null) return false;
-				return MpNetworkManager.IsRemoteCraftNode(cs.CraftNode as CraftNode);
+				return NetworkManager.IsRemoteCraftNode(cs.CraftNode as CraftNode);
 			}
 			catch
 			{

@@ -3,11 +3,11 @@ using UnityEngine;
 namespace Assets.Scripts.Net.Sync
 {
 	/// <summary>
-	/// 联机同步的共享调参常量 + 数学工具(2026-09-22 重构:自 MpNetworkManager 集中而来;同日二次整理:MpMath 并入)。
+	/// 联机同步的共享调参常量 + 数学工具(2026-09-22 重构:自 MultiPlayerNetworkManager 集中而来;同日二次整理:MultiPlayerMath 并入)。
 	/// 供发送端(LocalCraftSender)与接收端外推/平滑(RemoteCraftDriver / RemoteCraftSmoothing)共用,
-	/// 各文件用 `using static Assets.Scripts.Net.Sync.MpSyncUtil;` 以原名引用(保持与旧代码逐字一致)。
+	/// 各文件用 `using static Assets.Scripts.Net.Sync.MultiPlayerSyncUtil;` 以原名引用(保持与旧代码逐字一致)。
 	/// </summary>
-	internal static class MpSyncUtil
+	internal static class MultiPlayerSyncUtil
 	{
 		/// <summary>
 		/// 远程船"冻结/解冻"时外推量过渡时长(秒)。冻结瞬间把外推量收敛到固定单向延迟(0.15s 内),

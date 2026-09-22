@@ -1,13 +1,12 @@
 using System;
 using System.Collections.Generic;
 using Assets.Packages.DevConsole;
-using Assets.Scripts.Net;
 using ModApi.Mods;
-using ModApi.Scenes.Events;
 using UnityEngine;
 
 using HarmonyLib;
 using Jundroo.ModTools;
+using Assets.Scripts.Net.MultiPlayerTransport;
 using Assets.Scripts.Net.Session;
 
 namespace Assets.Scripts
@@ -41,7 +40,7 @@ namespace Assets.Scripts
 
 				// 联机房间管理器（独立类，负责网络管理器创建与场景事件）
 				new LobbyManager();
-				LobbyManager.Instance.EnsureMpManager();
+				LobbyManager.Instance.EnsureMultiPlayerManager();
 				Game.Instance.SceneManager.SceneLoaded += LobbyManager.Instance.OnSceneLoaded;
 
 				RegisterMpCommands();
@@ -60,7 +59,7 @@ namespace Assets.Scripts
 
 		private void DeployHarmony()
 		{
-			Harmony harmony = new Harmony("MPTest");
+			Harmony harmony = new Harmony("MultiPlayer");
 			harmony.PatchAll();
 			JetEngineGhostPatch.Apply(harmony);
 		}
@@ -75,7 +74,7 @@ namespace Assets.Scripts
 
 			// Steam 大厅浏览器（房间列表）：独立对象跨场景常驻，任何场景都泵回调（SteamAPI.RunCallbacks 保险），
 			// 并处理好友"加入游戏"邀请（GameLobbyJoinRequested_t）。见 plans/steam-lobby-2026-09-12.md。
-			GameObject lobbyObject = new GameObject("MPSteamLobbyBrowser");
+			GameObject lobbyObject = new GameObject("MultiPlayerSteamLobbyBrowser");
 			lobbyObject.AddComponent<Net.SteamLobbyBrowser>();
 			GameObject.DontDestroyOnLoad(lobbyObject);
 		}
@@ -129,14 +128,14 @@ namespace Assets.Scripts
 			// 若已启用 NetSim 延迟模拟（NetSimDelay 等），自动包一层 LagSimTransport 模拟公网延迟。
 			DevConsoleApi.RegisterCommand<int>("TcpHostLobby", new Action<int>(port =>
 			{
-				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-				if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
+				NetworkManager mgr = LobbyManager.Instance.EnsureMultiPlayerManager();
+				if (mgr != null) mgr.SetTransport(LagSimTransport.MaybeWrap(new TcpTransport()));
 				LobbyManager.Instance.HostLobby(port);
 			}));
 			DevConsoleApi.RegisterCommand<string, int>("TcpJoinLobby", new Action<string, int>((host, port) =>
 			{
-				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-				if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
+				NetworkManager mgr = LobbyManager.Instance.EnsureMultiPlayerManager();
+				if (mgr != null) mgr.SetTransport(LagSimTransport.MaybeWrap(new TcpTransport()));
 				LobbyManager.Instance.JoinLobby(host, port);
 			}));
 			// 网络延迟模拟（NetSim）：无需 Steam 好友，在 TCP+本地 VM 上模拟公网延迟/抖动/丢包。
@@ -145,48 +144,48 @@ namespace Assets.Scripts
 			// 会话中改值实时生效；已启用实例改总开关也实时直通/恢复。
 			DevConsoleApi.RegisterCommand<int>("NetSimDelay", new Action<int>(ms =>
 			{
-				Net.LagSimTransport.SetDelay(Mathf.Max(0, ms));
-				LogLobby("NetSimDelay -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + "; 需 NetSimOn 或 UI 开关开启后生效)");
+				LagSimTransport.SetDelay(Mathf.Max(0, ms));
+				LogLobby("NetSimDelay -> " + ms + "ms (" + LagSimTransport.DescribeConfig() + "; 需 NetSimOn 或 UI 开关开启后生效)");
 			}));
 			DevConsoleApi.RegisterCommand<int>("NetSimJitter", new Action<int>(ms =>
 			{
-				Net.LagSimTransport.SetJitter(Mathf.Max(0, ms));
-				LogLobby("NetSimJitter -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + ")");
+				LagSimTransport.SetJitter(Mathf.Max(0, ms));
+				LogLobby("NetSimJitter -> " + ms + "ms (" + LagSimTransport.DescribeConfig() + ")");
 			}));
 			DevConsoleApi.RegisterCommand<float>("NetSimLoss", new Action<float>(pct =>
 			{
-				Net.LagSimTransport.SetLoss(Mathf.Clamp(pct, 0f, 100f));
-				LogLobby("NetSimLoss -> " + pct + "% (" + Net.LagSimTransport.DescribeConfig() + ")");
+				LagSimTransport.SetLoss(Mathf.Clamp(pct, 0f, 100f));
+				LogLobby("NetSimLoss -> " + pct + "% (" + LagSimTransport.DescribeConfig() + ")");
 			}));
 			DevConsoleApi.RegisterCommand<float>("NetSimDuplicate", new Action<float>(pct =>
 			{
-				Net.LagSimTransport.SetDuplicate(Mathf.Clamp(pct, 0f, 100f));
-				LogLobby("NetSimDuplicate -> " + pct + "% (" + Net.LagSimTransport.DescribeConfig() + ")");
+				LagSimTransport.SetDuplicate(Mathf.Clamp(pct, 0f, 100f));
+				LogLobby("NetSimDuplicate -> " + pct + "% (" + LagSimTransport.DescribeConfig() + ")");
 			}));
 			DevConsoleApi.RegisterCommand("NetSimOn", new Action(() =>
 			{
-				Net.LagSimTransport.SetToggle(true);
-				LogLobby("NetSimOn: " + Net.LagSimTransport.DescribeConfig() +
-					(Net.LagSimTransport.Enabled ? "（已生效；开房自动包装，活跃实例实时生效）" : "（数值未设,实为直通）"));
+				LagSimTransport.SetToggle(true);
+				LogLobby("NetSimOn: " + LagSimTransport.DescribeConfig() +
+					(LagSimTransport.Enabled ? "（已生效；开房自动包装，活跃实例实时生效）" : "（数值未设,实为直通）"));
 			}));
 			DevConsoleApi.RegisterCommand("NetSimOff", new Action(() =>
 			{
-				Net.LagSimTransport.SetToggle(false);
+				LagSimTransport.SetToggle(false);
 				LogLobby("NetSimOff: 延迟模拟已关闭（直通；后续 TcpHostLobby/TcpJoinLobby 不包装，活跃实例立即直通）");
 			}));
 			DevConsoleApi.RegisterCommand("NetSimReset", new Action(() =>
 			{
-				Net.LagSimTransport.ResetConfig();
+				LagSimTransport.ResetConfig();
 				LogLobby("NetSimReset: 数值与总开关已清空（后续 TcpHostLobby/TcpJoinLobby 不再包装；当前会话若已包装则立即直通）");
 			}));
 			DevConsoleApi.RegisterCommand("NetSim", new Action(() =>
 			{
-				MpNetworkManager mgr = MpNetworkManager.Instance;
-				Net.LagSimTransport lag = mgr != null ? mgr.Transport as Net.LagSimTransport : null;
-				LogLobby("NetSim 配置: " + Net.LagSimTransport.DescribeConfig() +
+				NetworkManager mgr = NetworkManager.Instance;
+				LagSimTransport lag = mgr != null ? mgr.Transport as LagSimTransport : null;
+				LogLobby("NetSim 配置: " + LagSimTransport.DescribeConfig() +
 					(lag != null ? " | 活跃实例统计: " + lag.DescribeStats() : " | 当前传输未启用延迟模拟(需开房前配置或重启会话)"));
 			}));
-			// 接收端平滑/网络诊断仅通过 Mod.LogLobby 写 Player.log（3s 周期行 "MP smoothing P#"），不设悬浮窗。
+			// 接收端平滑/网络诊断仅通过 Mod.LogLobby 写 Player.log（3s 周期行 "MultiPlayer smoothing P#"），不设悬浮窗。
 			// 房主调整状态包发送频率（Hz）：SetTickRate 20 → 50ms（默认）；5 → 200ms；60 → ~16.7ms。
 			// 房主设置后广播给所有客户端（SP2 ServerTickRate 同款思路）。
 			DevConsoleApi.RegisterCommand<int>("SetTickRate", new Action<int>(hz => LobbyManager.Instance.SetTickRate(hz)));
@@ -246,7 +245,7 @@ namespace Assets.Scripts
 			/// 每个 body 的稳定标识(BodyData.Id,craft XML 的 id 属性,与 BodyPositions 平行同索引)。
 			/// 2026-09-19:发送端装配顺序/列表可能与本机幽灵不一致(实测 bodyMaxRelΔ 4~6m/1s、
 			/// 接收端 bodyTgt≈5m 恒定 → 索引错位把不同部件位姿互写 → 部件持续追赶抖动)。
-			/// 接收端按 id 重排到幽灵装配顺序(见 MpNetworkManager.ReorderRemoteBodiesByGhost);
+			/// 接收端按 id 重排到幽灵装配顺序(见 MultiPlayerNetworkManager.ReorderRemoteBodiesByGhost);
 			/// 旧对端无此字段时回退索引直用。仅在包尾传输,双向兼容。
 			/// </summary>
 			public List<int> BodyIds;
@@ -274,7 +273,7 @@ namespace Assets.Scripts
 			/// <summary>
 			/// 每台引擎的"视觉 throttle"(0..1)，按确定顺序(Data.Assembly.Parts 顺序→每部件 modifiers 顺序)
 			/// 与接收端一一对应：液体引擎=EngineThrottle，航发=EngineThrottle(接收端据此推导加力尾焰驱动值 ab)。
-			/// 接收端据此驱动幽灵船尾焰(液体走 ExhaustThrottleOverride;航发加力由 MP 层直接驱动)。
+			/// 接收端据此驱动幽灵船尾焰(液体走 ExhaustThrottleOverride;航发加力由 MultiPlayer 层直接驱动)。
 			/// </summary>
 			public List<float> EngineThrottles;
 
