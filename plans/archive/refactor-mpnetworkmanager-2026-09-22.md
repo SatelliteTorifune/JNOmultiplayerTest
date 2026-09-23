@@ -2,7 +2,7 @@
 
 > **状态:✅ 已完成归档(2026-09-22)**:上帝类已消失——`MpNetworkManager.cs` 3717 行 → **391 行瘦门面**;首轮拆出 15 个职责类,同日二次整理**合并到 11 个类 + 按 4 层目录分类**(`Net/` 传输协议 / `Net/Session/` 会话房间 / `Net/Sync/` 同步管线 / `Net/CraftVisual/` 远程船呈现,共 25 个文件)。`dotnet build MultiPlayer.csproj -c Debug` **0 错误 0 警告**(Unity 侧重编译亦通过);字符串字面量 / `Mod.Log*` 调用点逐项对账通过(见 §十「实施记录」)。**P3 诊断收拢、§八 #5/#12/#13 缺陷修复、双端实测回归未做**(前者属可选优化,中者属行为变更,后者需用户环境)。
 > **日期:2026-09-22**(分析 + 实施 + 二次整理同日完成)
-> **关联**:[README.md](../README.md) §二(架构表,已按最终目录重写)/§三(Vizzy 契约)/§八(已知问题);[latency-smoothing-2026-08-22.md](latency-smoothing-2026-08-22.md)(现行平滑实现事实);[acceleration-smoothing-2026-09-14.md](../acceleration-smoothing-2026-09-14.md)(r10 基线 + 回滚教训)
+> **关联**:[README.md](../README.md) §二(架构表,已按最终目录重写)/§三(Vizzy 契约)/§八(已知问题);[latency-smoothing-2026-08-22.md](latency-smoothing-2026-08-22.md)(现行平滑实现事实);[acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md)(r10 基线 + 回滚教训,已归档)
 > **一句话定位**:`Assets/Scripts/Net/MpNetworkManager.cs` 原为 3717 行、74 方法、12 项职责的上帝类——已按"**瘦门面(MonoBehaviour)+ 职责组件(普通类)**"拆解并分目录归类;协议、平滑算法、日志口径、热路径零分配、注释全部保持不变(纯搬移)。
 
 ---

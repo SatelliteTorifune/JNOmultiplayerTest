@@ -2,7 +2,7 @@
 
 > 状态:✅ **已归档(2026-09-13 收工,用户确认;2026-09-21 随 acceleration-smoothing 回滚后仍为当前基线的实现事实)**。
 > 目标:延迟 >100ms(RTT)时,对面 craft 同步位置**平滑**(不"一卡一卡"),含整船平移、朝向、每 body 相对位姿。
-> 关联:[`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)(BodyPoses 数据源,本方案在**接收端平滑层**上做文章);[`acceleration-smoothing-2026-09-14.md`](../acceleration-smoothing-2026-09-14.md)(2 阶外推扩展 + 回滚复盘,活跃文档)。
+> 关联:[`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)(BodyPoses 数据源,本方案在**接收端平滑层**上做文章);[`acceleration-smoothing-2026-09-14.md`](acceleration-smoothing-2026-09-14.md)(2 阶外推扩展 + 回滚复盘,已归档)。
 >
 > **阅读提示**:本文档 **§9 为现行事实**。§0~§7(插值缓冲 + 自适应 lookback 时代)已整体被 §9 取代,内容已删除;只保留 §8(调试工具,代码仍在)与 §9(现行管线/参数/修复链)。残余死代码(`TryGetInterpolatedState`/`RenderDelayMs`/`UnderrunFrames`/`SnapFrames`)在代码里但**已不被使用**,待清理。
 

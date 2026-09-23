@@ -2,7 +2,7 @@
 
 > 状态:📋 **研究完成,未实施**(2026-09-14 通读 SP2 反编译 + JNO 现状后成文;两问「开销多大 / 多复杂多久」已在 §四、§五作答,实施路径见 §六)
 > 日期:2026-09-14
-> 关联:[`acceleration-smoothing-2026-09-14.md`](../acceleration-smoothing-2026-09-14.md)(旋转 1 阶外推与 2 阶外推的姊妹篇;本方案 P1 即其中期 1);[`remote-craft-velocity-2026-09-13.md`](remote-craft-velocity-2026-09-13.md)(游戏侧速度缺自转项根因,本方案 P0 直接覆盖其修复);[`body-sync-2026-08-18.md`](../archive/body-sync-2026-08-18.md)(每 body 位姿域,本方案 P0 的协议基础);SP2 参考:`<SP2_MP>\Multiplayer\`(只读)
+> 关联:[`archive/acceleration-smoothing-2026-09-14.md`](../archive/acceleration-smoothing-2026-09-14.md)(旋转 1 阶外推与 2 阶外推的姊妹篇,已归档;本方案 P1 即其中期 1);[`remote-craft-velocity-2026-09-13.md`](remote-craft-velocity-2026-09-13.md)(游戏侧速度缺自转项根因,本方案 P0 直接覆盖其修复);[`body-sync-2026-08-18.md`](../archive/body-sync-2026-08-18.md)(每 body 位姿域,本方案 P0 的协议基础);SP2 参考:`<SP2_MP>\Multiplayer\`(只读)
 > 主题:把 SP2(SimplePlanes 2 官方联机)的「每 body 速度注入真实刚体」式物理同步机制解析清楚,对照 JNO 现状给出差距表,回答开销与工期,并给出**低风险移植路径(不照搬真实刚体架构)**
 
 ---
@@ -166,6 +166,6 @@ JNO 平滑管线(采样→序列化→外推→平滑→应用)已存在且稳�
 
 - 决策建议(待用户拍板):**【建议:2026-09-14】先做 P0+P1(3~5 天),不做 P3 真实刚体**;拍板后回填本文件状态并同步 `plans/README.md`。
 - [`remote-craft-velocity-2026-09-13.md`](remote-craft-velocity-2026-09-13.md):P0 直接执行其 §五修复方案(字段补自转项 + FlightData 速度刷新);
-- [`acceleration-smoothing-2026-09-14.md`](../acceleration-smoothing-2026-09-14.md):P1 执行其期 1(旋转 `ω·ext` + 平移 2 阶可选);其 §二 已核实 `FlightData.Acceleration/AngularVelocity` 可直接采样;
+- [`archive/acceleration-smoothing-2026-09-14.md`](../archive/acceleration-smoothing-2026-09-14.md):P1 执行其期 1(旋转 `ω·ext` + 平移 2 阶可选);其 §二 已核实 `FlightData.Acceleration/AngularVelocity` 可直接采样;
 - [`archive/latency-smoothing-2026-08-22.md`](../archive/latency-smoothing-2026-08-22.md) §9:现行接收端管线,本方案全部改动挂在其上;
 - SP2 参考(只读):`<SP2_MP>\Multiplayer\CraftStateSerializer.cs` / `NetworkBodyScript.cs` / `RigidBodyRemote.cs`。

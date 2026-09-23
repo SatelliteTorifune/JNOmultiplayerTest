@@ -1,7 +1,7 @@
 # JNOMultiPlayer —— 会话上下文 + 设计文档索引(plans/README.md)
 
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod `MultiPlayer`;Steam AppID **870200**;Unity **2022.3.62f3**;C# 命名空间 `Assets.Scripts.*`)。思路:**反编译游戏源码导航内部 API** + 参考 KSP LunaMultiplayer 与 SP2(SimplePlanes 2)的联机实现。
-> **当前进度**:单船"幽灵船"原型已通过 **Steam 双账号公网实测**;**架构重构已完成归档(2026-09-22)**:`MpNetworkManager` 上帝类(3717 行)拆为 **391 行瘦门面 + 11 个职责类**,并按 5 层目录分类(`Net/` 协议基础 / `Net/MultiPlayerTransport/` 传输实现 / `Net/Session/` 会话房间 / `Net/Sync/` 同步管线 / `Net/CraftVisual/` 远程船呈现,共 25 文件;行为保持,构建 0/0,见 `archive/refactor-mpnetworkmanager-2026-09-22.md`);**2026-09-22 再整理:残留 `Mp*`/`MP`/`_mp` 命名统一为 `MultiPlayer`**(`MpNetworkManager`→`NetworkManager`、`MpMessageRouter`→`MultiPlayerMessageRouter`、`MpCraftCatalog`→`MultiPlayerCraftCatalog`、`MpPlayerRegistry`→`MultiPlayerRegistry`、`MpSyncUtil`→`MultiPlayerSyncUtil`、`MpCraftPreloader`→`MultiPlayerCraftPreloader`、`MpMessage.cs`→`MultiPlayerMessages.cs`、`_mp`→`_multiPlayer`、`EnsureMpManager`→`EnsureMultiPlayerManager`、`MPTest`→`MultiPlayer`、`mp_name`→`multiPlayer_name`、日志前缀 `MP.`→`MultiPlayer.`;重命名脚本 `plans/archive/rename-mp-to-multiplayer.ps1`);§六 现有 **0 个待办活跃主题**(平滑主题 = 已回滚收工的稳定基线参考)+ **5 个待拍板**(含 1 份参考资料)+ **16 个已归档**;1.4.2 适配 / 部件开关回归 / 高延迟平滑 / Vizzy 隔离 / 旋翼 body 同步均已结案。
+> **当前进度**:单船"幽灵船"原型已通过 **Steam 双账号公网实测**;**架构重构已完成归档(2026-09-22)**:`MpNetworkManager` 上帝类(3717 行)拆为 **391 行瘦门面 + 11 个职责类**,并按 5 层目录分类(`Net/` 协议基础 / `Net/MultiPlayerTransport/` 传输实现 / `Net/Session/` 会话房间 / `Net/Sync/` 同步管线 / `Net/CraftVisual/` 远程船呈现,共 25 文件;行为保持,构建 0/0,见 `archive/refactor-mpnetworkmanager-2026-09-22.md`);**2026-09-22 再整理:残留 `Mp*`/`MP`/`_mp` 命名统一为 `MultiPlayer`**(`MpNetworkManager`→`NetworkManager`、`MpMessageRouter`→`MultiPlayerMessageRouter`、`MpCraftCatalog`→`MultiPlayerCraftCatalog`、`MpPlayerRegistry`→`MultiPlayerRegistry`、`MpSyncUtil`→`MultiPlayerSyncUtil`、`MpCraftPreloader`→`MultiPlayerCraftPreloader`、`MpMessage.cs`→`MultiPlayerMessages.cs`、`_mp`→`_multiPlayer`、`EnsureMpManager`→`EnsureMultiPlayerManager`、`MPTest`→`MultiPlayer`、`mp_name`→`multiPlayer_name`、日志前缀 `MP.`→`MultiPlayer.`;重命名脚本 `plans/archive/rename-mp-to-multiplayer.ps1`);§六 现有 **0 个待办活跃主题**(smoothing-reset **⛔ 失败已归档(2026-09-23)**:SP2 全量对齐 + 5 轮追加修改全部实测无效,代码回滚 `d09be5c`,见 `archive/smoothing-reset-2026-09-23.md`;前身 `archive/acceleration-smoothing-2026-09-14.md` 亦 ⛔ 已归档)+ **5 个待拍板**(含 1 份参考资料)+ **18 个已归档**;1.4.2 适配 / 部件开关回归 / 高延迟平滑 / Vizzy 隔离 / 旋翼 body 同步均已结案。
 > 用法:新会话第一条上下文直接投喂本文档(§一~§五 即提示词核心)。本文档是**原 `AGENT_CONTEXT.md`(会话上下文)+ 原 `README.md`(索引/决策/规则)的合并版**,只读参考;**方案 / 决策类内容一律写进对应主题 plan**,再同步本文档索引与决策速查。
 > **职责边界(重要)**:mod 的**打包 / 部署 / DLL 更新 / 发布链条**(装进游戏的 DLL、AssetBundle、版本号、GitHub Releases)**全部由用户负责**——agent 不执行、不代劳、不为此改版本号或构建产物;agent 只负责**源码改动 + 文档同步 + `dotnet build MultiPlayer.csproj -c Debug` 验证(0 错误 0 警告)**。
 > 调试日志(联机双端,真实路径见 `LOCAL_PATHS.md`):本机 `<USERPROFILE>\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log`(Unity 运行时日志;`Mod.LogLobby` / `MultiPlayer smoothing` / `MultiPlayer twitch` / `MultiPlayer sendDiag` 等输出在这里);对面(VM 客户端)`<SHARED>\Player.log`。⚠️ 双开同机时两个实例写同一本机日志会互相覆盖,双端取证必须用 VM。
@@ -90,12 +90,12 @@
 - **朝向同步 = `recdata.SrfRel`(相对地表朝向)**:解决①游戏每帧用 pod 座椅朝向覆盖根朝向、②跨机行星自转角差。`LateUpdate`(`[DefaultExecutionOrder(1000)]`)重写朝向以抗游戏覆盖。
 - **速度必须是"地表相对速度"**:`PlanetVectorToSurfaceVector` 是**纯旋转,不减行星自转项**。发送端 = `PlanetVectorToSurfaceVector(craft.Velocity) − CalculateSurfaceVelocity(pos)`;接收端 = `SurfaceVectorToPlanetVector(data.Velocity) + SurfaceVectorToPlanetVector(CalculateSurfaceVelocity(data.Position))`。**漏掉自转项会让静止船上报 ≈ 158.85 m/s**(测试行星),被外推放大成数十米瞬移。
 
-**接收端平滑(现行实现,详见 `archive/latency-smoothing-2026-08-22.md` §9)**
+**接收端平滑(2026-09-23 起为"被移除基线":归零重建/SP2 移植已 ⛔ 失败归档,见 [`archive/smoothing-reset-2026-09-23.md`](archive/smoothing-reset-2026-09-23.md);下文是移除前的实现事实,仅作 P4 决策参考,不要再按它"重复调研")**
 - **不做插值缓冲**:始终取最新包(`TryGetNewest`)+ **连续外推(dead-reckoning)**:`ext = 单向延迟 + 包龄`,封顶 1.0s;包龄用**有界自走时钟 `VirtualAge`**(每帧 +dt、每包 −内容增量、钳到 2×发包间隔),判定用自重置 `RealAgeSec`(长静默冻结为 `ext = 单向延迟`)。
 - **旁路机制(代码注释 F1~F4,均已落地)**:F1 虚拟 age 时钟(`VirtualAge`);F2' 到达间隔慢 EMA(`MArrivalEma`,α=0.01)作 mRate 分母抗突发;F3 单向延迟 EMA(`LatencyEmaMs`,α=0.05)= R2;F4 发送端 `sendTimer` 余量钳制(`> 2×SendIntervalMs` 截断,防帧卡顿后泄洪)。
 - **平滑层** `ApplyRemoteSmoothing`:`k = Lerp(0.1, 0.6, min(1, |v|×0.02))`(高速上限 0.6,吸收突发不 1:1 透出)、`alpha = 1 − (1−k)^(dt×50)`、单帧位移上限 `maxStep = 1.5×v×dt`、静止锁定 `|v|<0.5 && 误差<0.05m`、瞬移阈值 `>100m`、旋转 `2.5·dt`、每 body `10·dt` + `0.01` 快照。
 - **死代码(待清理,不影响渲染)**:原插值缓冲的 `TryGetInterpolatedState` / `ApplyRemoteTransformDirect` / `ClearBuffer` / `ReuseInterpBody*` / `UnderrunFrames` / `SnapFrames` / `RenderDelayMs` 仍存在但**已不被调用**;`snap=`/`interpPct=`/`posErr=` 为结构性常量。
-- **2 阶外推(2026-09-14;旋转项 2026-09-19 开启,详见 `acceleration-smoothing-2026-09-14.md` §一)**:协议尾部追加 `Acceleration`(地表系)/`AngularVelocity`(craft 局部系,发送端 EMA 0.2 + 钳制 60 m/s² / 3 rad/s + NaN 防御);接收端平移加 `½·a·ext²`(ext 已×mRate → 自动 mRate²,暂停 / 慢放兼容)与朝向外推 `SrfRel *= Euler(Flip(ω)·ext·sign)` **均已生效**(ω 符号 2026-09-19 Steam sendDiag 实测定案:F+ = 翻转(-x,y,-z) 正号,`errF+` 最小)。
+- **2 阶外推(2026-09-14;旋转项 2026-09-19 开启,详见 `archive/acceleration-smoothing-2026-09-14.md` §一)**:协议尾部追加 `Acceleration`(地表系)/`AngularVelocity`(craft 局部系,发送端 EMA 0.2 + 钳制 60 m/s² / 3 rad/s + NaN 防御);接收端平移加 `½·a·ext²`(ext 已×mRate → 自动 mRate²,暂停 / 慢放兼容)与朝向外推 `SrfRel *= Euler(Flip(ω)·ext·sign)` **均已生效**(ω 符号 2026-09-19 Steam sendDiag 实测定案:F+ = 翻转(-x,y,-z) 正号,`errF+` 最小)。
 
 **约定约束**
 - 所有玩家**同一行星系统**(房主指定),暂不做跨行星 / 生涯;MVP 锁定 **1x 实时**(无 warp 同步);不做燃料 / 资源 / Vizzy 同步。
@@ -114,7 +114,7 @@
 
 ## 五、调试与验证
 
-- **日志**:`Mod.LogLobby`(联机流程)、`Mod.LogUpdate`(更新检查,不受 `DebugMode` 限制)、`Mod.Log`(通用)。接收端平滑诊断 3 秒一条 `MultiPlayer smoothing P<id>`;1 秒一条的有接收端 `MultiPlayer twitch`(整船/部件位移)与发送端 `MultiPlayer sendDiag`;事件式有 `MultiPlayer gap`/`MultiPlayer gapfreeze`/`MultiPlayer freeze`/`MultiPlayer slowmo`/`MultiPlayer bodyMap`(只进 `Player.log`,无悬浮窗)。逐字段口径见 [archive/latency-smoothing-2026-08-22.md](archive/latency-smoothing-2026-08-22.md) §9.6 与 [acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md) §一。
+- **日志**:`Mod.LogLobby`(联机流程)、`Mod.LogUpdate`(更新检查,不受 `DebugMode` 限制)、`Mod.Log`(通用)。接收端平滑诊断 3 秒一条 `MultiPlayer smoothing P<id>`;1 秒一条的有接收端 `MultiPlayer twitch`(整船/部件位移)与发送端 `MultiPlayer sendDiag`;事件式有 `MultiPlayer gap`/`MultiPlayer gapfreeze`/`MultiPlayer freeze`/`MultiPlayer slowmo`/`MultiPlayer bodyMap`(只进 `Player.log`,无悬浮窗)。逐字段口径见 [archive/latency-smoothing-2026-08-22.md](archive/latency-smoothing-2026-08-22.md) §9.6 与 [archive/acceleration-smoothing-2026-09-14.md](archive/acceleration-smoothing-2026-09-14.md) §一。
 - **DevConsole 命令**:
   - 房间:`HostLobbyPort <port>` / `JoinLobbyPort <ip> <port>` / `StopLobby` / `SteamHostLobby <port>` / `SteamJoinLobby <hostSteamId>` / `TcpHostLobby <port>` / `TcpJoinLobby <ip> <port>` / `SetTickRate <hz>`(1~120,房主广播);房间列表:`SteamLobbyList` / `SteamLobbyListWorld` / `SteamLobbyCreate <名>` / `SteamLobbyJoin <id>` / `SteamLobbyLeave`;延迟模拟(NetSim,需 TCP):`NetSimDelay/Jitter/Loss/Duplicate/On/Off/Reset/NetSim`(**数值与总开关分离**);历史 spike:`FishNetSpike` / `SteamSpike`。
 - **本地 VM debug**:本机 `TcpHostLobby 25555`(防火墙放行入站);VM `TcpJoinLobby <宿主IP> 25555` —— **✅ 已实测可行**。
@@ -133,9 +133,7 @@
 
 | 文档 | 主题 | 状态 | 一句话摘要 |
 |---|---|---|---|
-| [`acceleration-smoothing-2026-09-14.md`](acceleration-smoothing-2026-09-14.md) | **远程船 2 阶外推 + 平滑回滚复盘**(SP2/LMP 对照 + R1~R8 清单) | ⛔ **已回滚收工(2026-09-21)**:代码 = r10 稳定基线,2 阶外推平移/旋转项仍开启 | **结论:原"一卡一卡"不在 mod 位置管线**(六项排除:参考帧/网络/写入/游戏侧/部件层/量化;残余来自接收端帧显示节拍 16~174ms 极不均)。文档含:当前代码状态(§一)、排除表(§三)、**4 个已确认真 bug + 6 条方法论教训 + 下次重做顺序(§四)**、SP2/LMP 对照与 R1~R8 状态(§五)。逐轮排错历史(r4~r30)已删除 |
-
-> 目前**无活跃主题**:架构重构已于 2026-09-22 完成并归档(见 §6.3);平滑主题为"已回滚收工"的稳定基线参考,无待办。
+| *(无)* | smoothing-reset(原唯一活跃主题)**⛔ 失败已归档(2026-09-23)**,见 §6.3 | | |
 
 ### 6.2 已论证可行 · 待拍板(`proposals/`,尚未动手)
 
@@ -151,6 +149,8 @@
 
 | 文档 | 主题 | 状态 | 一句话摘要 |
 |---|---|---|---|
+| [`archive/acceleration-smoothing-2026-09-14.md`](archive/acceleration-smoothing-2026-09-14.md) | **远程船平滑**(2 阶外推 + 回滚复盘 + SP2/LMP 对照 + 高速并排卡顿定位史) | ✅ **已归档(2026-09-23)**:realAge 尝试部分改善未治愈 → 整体裁定失败,转彻底重构(见 §6.3 smoothing-reset) | 完整排查史与决策记录:VA 时钟锯齿根因、realAge 修复实测(clamp 55~71f→0~5f、残留 jerk 5~16%、包率<帧率"停-走"帧)、排除表、4 真 bug、方法论教训、R1~R8 对照 |
+| [`archive/smoothing-reset-2026-09-23.md`](archive/smoothing-reset-2026-09-23.md) | **平滑管线归零重建 / SP2 架构移植**(阶段 A 物理时钟轴 + 阶段 B PhysX 接管) | ⛔ **失败已归档(2026-09-23)**:SP2 全量对齐 + 5 轮追加(逐帧写/ageNow 钳制/插值 None/刚体 kinematic/GhostCraftNodeUpdatePatch kill-switch)全部实测无效 → **代码已回滚 `d09be5c`,任务终止** | moveMax 恒 ≈v×50ms(VM)/v×100ms(HOST)、与发包率 17~86Hz 无关;台阶由**游戏自身渲染管线固定节拍驱动**,mod 侧已达极限;完整证据链见文档 §七/§九 |
 | [`archive/refactor-mpnetworkmanager-2026-09-22.md`](archive/refactor-mpnetworkmanager-2026-09-22.md) | **MpNetworkManager 上帝类重构**(3717 行 → 391 行瘦门面;15 类 → 合并 11 类 + 4 层目录;后改名 `NetworkManager`) | ✅ **已完成归档**(2026-09-22:构建 0/0、文本级行为对账通过;双端实测回归待用户复跑) | 分析 + 实施 + 目录二次整理同日完成。**目录**:`Net/`(传输协议)/`Net/Session/`(会话房间)/`Net/Sync/`(同步管线)/`Net/CraftVisual/`(远程船呈现),25 文件;**验证**(可复用):字符串字面量多重集对账(新增 0、缺失 18 处全是死代码 `Q()`)+ `Mod.Log*` 84→84 + 4 个大方法逐字节重建比对;**含 8 条经验教训**;未做:P3 诊断收拢、§八 #5/#12/#13 修复 |
 | [`archive/rotating-body-sync-2026-09-22.md`](archive/rotating-body-sync-2026-09-22.md) | **旋转 body(旋翼)位置快照同步修理**(每 body 角速度+线速度进协议 + 接收端逐帧积分外推) | ✅ **已实现归档**(2026-09-22 双端实测通过,用户确认) | 2026-09-22 实测:旋翼叶片 `bodyTgt` 恒 ≈5.9m(采样混叠 + 对称叶片相位歧义 + 10·dt 追不上);修复 = 协议加 `BodyAngularVelocities`+`BodyVelocities`(+24B/body)+ 接收端逐帧积分(位置 sp+=v·dt、朝向绕 ω 轴转,模拟 SP2 写回刚体积分);**含** 5 条经验教训;**不含** physics-sync P0(游戏侧速度)与低速悬停误判冻结(另案) |
 | [`archive/body-sync-2026-08-18.md`](archive/body-sync-2026-08-18.md) | Body 级姿态同步(转轴 / 关节连接部件"整体移动") | ✅ 已实现归档(BodyPoses) | `BodyRotations`→`BodyPoses`(相对 comRot 位置 + 旋转),含残骸小碎片位置缺口;P1~P3 可选优化未排期 |
@@ -188,8 +188,9 @@
 | body 级姿态同步 | **✅ 方案定稿 BodyPoses**;不做 SP2 的 ParentBody 树 / 物理平滑 | [archive/body-sync-2026-08-18.md](archive/body-sync-2026-08-18.md) |
 | 旋转 body(旋翼)同步 | **✅ 已实现并双端实测通过**(协议加每 body ω+v,接收端逐帧积分;桨毂不在 comRot 上,位置外推必须用 v 差分而非绕 comRot 转) | [archive/rotating-body-sync-2026-09-22.md](archive/rotating-body-sync-2026-09-22.md) |
 | 远程船高延迟平滑 | **✅ 已实现,架构已换代**:速度帧修正 + 弃用插值缓冲改连续外推(封顶 1s、长静默冻结)+ 每帧指数平滑 | [archive/latency-smoothing-2026-08-22.md](archive/latency-smoothing-2026-08-22.md) §9 |
-| 远程船 2 阶外推 | ⛔ **已回滚收工(2026-09-21,双端割裂)**;2 阶外推平移/旋转项仍开启(r10 在),但原"一卡一卡"**不在 mod 位置管线**(六项排除,残余来自接收端帧显示节拍)。复盘 + 4 个真 bug + 重做顺序见 §四 | [acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md) §二/§三/§四 |
-| 平滑改进 R1~R8(SP2 / LMP 对照) | R1(旋转外推)/R2(延迟 EMA)已落地;R8 曾落地(build r14)随本主题 ⛔ 一并回滚;R5 时钟同步放弃、R6 物理路径暂搁 | [acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md) §五 |
+| 远程船 2 阶外推 | ⛔ **已回滚收工(2026-09-21,双端割裂)**;2 阶外推平移/旋转项仍开启(r10 在),但原"一卡一卡"**不在 mod 位置管线**(六项排除,残余来自接收端帧显示节拍)。复盘 + 4 个真 bug + 重做顺序见 §四 | [archive/acceleration-smoothing-2026-09-14.md](archive/acceleration-smoothing-2026-09-14.md) §二/§三/§四 |
+| 平滑改进 R1~R8(SP2 / LMP 对照) | R1(旋转外推)/R2(延迟 EMA)已落地;R8 曾落地(build r14)随本主题 ⛔ 一并回滚;R5 时钟同步放弃、R6 物理路径暂搁 | [archive/acceleration-smoothing-2026-09-14.md](archive/acceleration-smoothing-2026-09-14.md) §五 |
+| **平滑管线归零重建 / SP2 架构移植** | **⛔ 2026-09-23 失败终止**:SP2 全量对齐 + 阶段 A/B 实施 + 5 轮追加修改全部实测无效(接收端渲染台阶由游戏自身管线驱动,与发包率/mod 侧写入无关)→ 代码回滚 d09be5c | [archive/smoothing-reset-2026-09-23.md](archive/smoothing-reset-2026-09-23.md) §〇/§九 |
 | 游戏 1.4.2 Experimental 兼容(P0) | ✅ **已归档**(用户确认修复并双端实测完成);P1-1~P1-4 与「双飞静止一方抽搐」已实测结案 | [archive/update-1.4.2-experimental-2026-09-03.md](archive/update-1.4.2-experimental-2026-09-03.md) |
 | 更新检查(ModUpdater) | **✅ 已实现并接线**(`Mod.OnModInitialized` 末尾调用) | [archive/update-reminder-port-2026-09-10.md](archive/update-reminder-port-2026-09-10.md) |
 | Volken 冲突(`SceneLoaded` 链 NRE) | **✅ 根因已定位并修复**(`OnSceneLoaded` 空值护栏) | [archive/volken-sceneloaded-nre-2026-08-27.md](archive/volken-sceneloaded-nre-2026-08-27.md) |
@@ -202,7 +203,7 @@
 - **EVA 同步**:E1 乘组处理选型(C1 影子成员 / C2 名字占位,建议先 C2)、E2 里程碑是否按 M0→M1→M2→M3 顺序推进(**M1 换节点即时性可独立先做**)、E3 `EvaGhostPatch` 是否与 `JetEngineGhostPatch` 合并为一个"幽灵飞行循环总闸"、E4 是否补 `CraftSituation`(轨道出舱,与 MC2 合并)、E5 舱内可见乘员是否需要在母船包里带"舱内乘组"——见 [proposals/eva-sync-2026-09-18.md](proposals/eva-sync-2026-09-18.md) §五、§六、§八、§九。
 - **SP2 式物理同步**:研究完成待拍板,建议 P0(每 body 速度进协议 + 修 §八 #10)+ P1(旋转 1 阶外推)约 3~5 天——见 [proposals/physics-sync-2026-09-14.md](proposals/physics-sync-2026-09-14.md)。
 - **速度修复项**:远程船游戏侧速度缺自转项,分析完成待实施,修复已并入 physics-sync P0——见 [proposals/remote-craft-velocity-2026-09-13.md](proposals/remote-craft-velocity-2026-09-13.md)。
-- **平滑剩余项**:⛔ **已回滚收工(2026-09-21)**——双端割裂,代码回滚到 r10 稳定基线。**结论:原"一卡一卡"不在 mod 位置管线**(六项排除;残余来自接收端帧显示节拍 16~174ms 极不均、游戏不设 vsync/不限帧)。教训 + 4 个真 bug + 重做顺序见 [acceleration-smoothing-2026-09-14.md](acceleration-smoothing-2026-09-14.md) §四。
+- **平滑剩余项**:⛔ **2026-09-23 失败终止**——三轮重试(含 VA→realAge)+ 阶段 A 物理时钟轴 + 阶段 B PhysX 接管(SP2 全量对齐)后,接收端渲染台阶 moveMax 恒 ≈v×50ms(VM)/v×100ms(HOST)、与发包率 17~86Hz 无关,5 轮追加修改(逐帧写/钳制/插值/kinematic/kill-switch patch)全部无效 → 判定 mod 侧已达极限,任务失败,代码回滚 `d09be5c`。阶段 A/B 全程证据链见 [archive/smoothing-reset-2026-09-23.md](archive/smoothing-reset-2026-09-23.md) §六/§七/§九。前身教训 + 4 个真 bug 见 [archive/acceleration-smoothing-2026-09-14.md](archive/acceleration-smoothing-2026-09-14.md) §四。
 - **部件同步剩余项**(已归档 [archive/part-switch-sync-2026-08-18.md](archive/part-switch-sync-2026-08-18.md)):降落伞专用视觉驱动(P2)、`ExtensionPercent` 相位对齐(P1)、`Stage` 应用(目前只采样不应用)。
 
 ## 八、当前代码里的已知问题(2026-09-14 复核)

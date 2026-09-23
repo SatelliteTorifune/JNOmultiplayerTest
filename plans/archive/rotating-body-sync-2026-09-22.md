@@ -2,7 +2,7 @@
 
 > 状态:✅ **已实现归档**(2026-09-22 拍板,同日编码完成 + 双端实测通过,用户确认"修好了"收工)
 > 日期:2026-09-22
-> 关联:[`../proposals/physics-sync-2026-09-14.md`](../proposals/physics-sync-2026-09-14.md)(SP2 式每 body 速度注入的全局评估;本提案 = 其 **P1「旋转 1 阶外推」在旋翼场景的聚焦论证**,P0 游戏侧速度修复仍归 physics-sync,不在本案);[`../acceleration-smoothing-2026-09-14.md`](../acceleration-smoothing-2026-09-14.md)(朝向外推 ω·ext 已落地,本提案把同一手法扩展到每 body);[`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)(BodyPoses 每 body 位姿域,本提案的协议基础);SP2 参考:`<SP2_MP>\Multiplayer\NetworkBodyScript.cs`(只读)
+> 关联:[`../proposals/physics-sync-2026-09-14.md`](../proposals/physics-sync-2026-09-14.md)(SP2 式每 body 速度注入的全局评估;本提案 = 其 **P1「旋转 1 阶外推」在旋翼场景的聚焦论证**,P0 游戏侧速度修复仍归 physics-sync,不在本案);[`acceleration-smoothing-2026-09-14.md`](acceleration-smoothing-2026-09-14.md)(朝向外推 ω·ext 已落地,本提案把同一手法扩展到每 body;已归档);[`body-sync-2026-08-18.md`](body-sync-2026-08-18.md)(BodyPoses 每 body 位姿域,本提案的协议基础);SP2 参考:`<SP2_MP>\Multiplayer\NetworkBodyScript.cs`(只读)
 > 主题:旋翼叶片等**高速旋转 body** 在现行"每包绝对位置快照 + 10·dt 指数平滑"下的固有缺陷——20Hz 采样追不上叶片转速 → 接收端叶片"跳着转"。最小修理 = 协议补每 body 角速度 + 接收端包间旋转外推,复用已落地的朝向外推手法。
 > 一句话结论:**改 2 个平行 List + 1 段外推,≈1~2 天;不做 physics-sync 的 P0(游戏侧速度修复),不做真实刚体。**
 
