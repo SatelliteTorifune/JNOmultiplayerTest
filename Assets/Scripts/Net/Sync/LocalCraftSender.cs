@@ -28,6 +28,12 @@ namespace Assets.Scripts.Net.Sync
 		/// </summary>
  const float PausedSendIntervalMs = 125f;
 
+		/// <summary>
+		/// P1(2026-09-23)暂停标志去抖阈值:连续这么多次采样为"已暂停"才对外上报 Paused / 降频。
+		/// 20Hz 采样下 ≈100ms 延迟,不影响"暂停即冻结"的原语义(仅去掉瞬时抖动)。
+		/// </summary>
+		private const int PausedConfirmSamples = 2;
+
  float _sendTimer;
  float _keepAliveTimer;
 		// --- 发送节奏诊断(2026-09-14,顿挫定位):实际发包间隔 EMA(sendGap,ms)。 ---
@@ -36,6 +42,11 @@ namespace Assets.Scripts.Net.Sync
  float _lastSendTime = -1f;
  float _sendGapEmaMs = 0f;
  float _fpsEma = 0f;                 // 发送端渲染帧率 EMA(与对端 fps/gapEMA 对账:帧率-发包率耦合)
+
+		// --- P1(2026-09-23)暂停标志去抖状态(每帧最多求值一次) ---
+		private int _pauseStreak;               // 连续采样到"游戏暂停"的次数
+		private int _pauseStreakFrame = -1;     // 上次求值的帧号(防同帧重复计数)
+		private bool _pausedDebounced;          // 去抖后的暂停状态
 
 		private readonly NetworkManager _multiPlayer;
 
@@ -67,6 +78,26 @@ namespace Assets.Scripts.Net.Sync
 		internal Vector3[] _diagPrevBodyPosRel;
 		internal Vector3[] _diagPrevBodyRotRel;
 		internal float _diagPrevBodyTime;
+
+		/// <summary>
+		/// P1(2026-09-23)暂停标志去抖:游戏暂停须**连续 <see cref="PausedConfirmSamples"/> 次采样**为真才上报/降频。
+		/// 背景:`TimeManager.Paused` 会瞬时抖动(实测 HOST 40/198 条 sendDiag 报 paused=1,含 10.5~16m/s 飞行中),
+		/// 而接收端"单包 Paused=1 即冻结"→ 每次 pause↔unpause 都让幽灵按 V×VA 后退/前冲(高速时数米)。
+		/// 每帧最多求值一次(帧号守卫),避免同帧多次调用把计数加倍。
+		/// </summary>
+		private bool LocalPausedDebounced()
+		{
+			if (_pauseStreakFrame != Time.frameCount)
+			{
+				_pauseStreakFrame = Time.frameCount;
+				bool raw = FlightSceneScript.Instance != null &&
+					FlightSceneScript.Instance.TimeManager != null &&
+					FlightSceneScript.Instance.TimeManager.Paused;
+				_pauseStreak = raw ? Mathf.Min(_pauseStreak + 1, 999) : 0;
+				_pausedDebounced = _pauseStreak >= PausedConfirmSamples;
+			}
+			return _pausedDebounced;
+		}
 
 		internal static int GetLocalCraftNodeId()
 		{
@@ -158,8 +189,10 @@ namespace Assets.Scripts.Net.Sync
 				// 通知接收端"本机游戏已暂停":暂停时位置/速度整体冻结,但 Velocity 仍是暂停前最后一刻的值。
 				// 接收端若继续按速度外推(dead-reckoning),目标会在每个包到达时被拉回、包间又按速度前进
 				// → 观察方看到"位置抽搐"(有速度时暂停尤其明显)。见 plans/latency-smoothing §9.7。
-				data.Paused = FlightSceneScript.Instance.TimeManager != null &&
-					FlightSceneScript.Instance.TimeManager.Paused;
+				// P1(2026-09-23)去抖:实测 HOST 40/198 条 sendDiag 报 paused=1(含 10.5~16m/s 飞行中),
+				// TimeManager.Paused 会瞬时抖动;接收端单包即冻结 → 每次 pause↔unpause 让幽灵按 V×VA 后退/前冲。
+				// 改为"连续 N 次采样为真才上报"(见 LocalPausedDebounced)。
+				data.Paused = LocalPausedDebounced();
 
 				// 每引擎视觉 throttle(尾焰同步):按确定枚举顺序,与接收端一一对应
 				data.EngineThrottles = EngineVisualSync.SampleEngineThrottles(craft);
@@ -326,7 +359,7 @@ namespace Assets.Scripts.Net.Sync
 							if (bi > 0) names += ", ";
 							names += bi + "(id=" + bodyList[bi].Id + ")=" + nm;
 						}
-						Mod.LogLobby("MultiPlayer bodyNames P" + _multiPlayer.PlayerId + ": " + names);
+						MultiPlayerDiag.Log("MultiPlayer bodyNames P" + _multiPlayer.PlayerId + ": " + names);
 					}
 				}
 
@@ -391,9 +424,7 @@ namespace Assets.Scripts.Net.Sync
 			_sendTimer += Time.unscaledDeltaTime * 1000f;
 			// 暂停时位置/速度都不再变化,无需按全速上报;降到 ~8Hz 仍足以让对端确认"已暂停"
 			// 并维持平滑层(带宽/CPU 都省),恢复后立即回到正常速率。
-			bool localPaused = FlightSceneScript.Instance != null &&
-				FlightSceneScript.Instance.TimeManager != null &&
-				FlightSceneScript.Instance.TimeManager.Paused;
+			bool localPaused = LocalPausedDebounced();
 			float sendIntervalMs = localPaused ? Mathf.Max(_multiPlayer.SendIntervalMs, PausedSendIntervalMs) : _multiPlayer.SendIntervalMs;
 			if (_sendTimer < sendIntervalMs) return;
 			// F5(2026-09-15):帧率解耦 —— 每帧最多补发 2 包,≥10fps 也发满 20Hz。
@@ -567,7 +598,7 @@ namespace Assets.Scripts.Net.Sync
 					}
 				}
 				catch { }
-				Mod.LogLobby("MultiPlayer sendDiag P" + _multiPlayer.PlayerId +
+				MultiPlayerDiag.Log("MultiPlayer sendDiag P" + _multiPlayer.PlayerId +
 					": vel=" + data.Velocity.magnitude.ToString("F3") + "m/s" +
 					" paused=" + (data.Paused ? 1 : 0) +
 					" accRaw=" + _accelRawDiag.magnitude.ToString("F2") + "m/s²" +

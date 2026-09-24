@@ -240,7 +240,94 @@ namespace Assets.Scripts
                         Mod.LogLobby("NetSim UI loss -> " + pct + "% (" + LagSimTransport.DescribeConfig() + ")");
                     }
                 }));
+            // 重复包(%)：与丢包分离的独立故障注入（原为控制台命令 NetSimDuplicate）
+            debugGroup.Add(new TextInputModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimDuplicate"),
+                () => LagSimTransport.DuplicatePercent.ToString("F0"),
+                s =>
+                {
+                    float pct;
+                    if (float.TryParse(s.Trim(), out pct) && pct >= 0f)
+                    {
+                        LagSimTransport.SetDuplicate(pct);
+                        Mod.LogLobby("NetSim UI duplicate -> " + pct + "% (" + LagSimTransport.DescribeConfig() + ")");
+                    }
+                }));
+            // 一键复位延迟模拟（原为控制台命令 NetSimReset）
+            debugGroup.Add(new TextButtonModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.NetSimResetButton"),
+                (b) =>
+                {
+                    LagSimTransport.ResetConfig();
+                    Mod.LogLobby("NetSim UI reset -> " + LagSimTransport.DescribeConfig());
+                }));
+            // 跨区刷新房间列表（原为控制台命令 SteamLobbyListWorld；默认 Regional 距离过滤之外用）
+            debugGroup.Add(new TextButtonModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.LobbyWorldListButton"),
+                (b) =>
+                {
+                    if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.RefreshLobbyList(true);
+                    Mod.LogLobby("SteamLobbyListWorld (UI): 已请求跨区房间列表");
+                }));
+            // Steam 身份自检 spike（原为控制台命令 SteamSpike）：反射 SocialExt 验证能否拿到 Steam 身份
+            debugGroup.Add(new TextButtonModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.SteamSpikeButton"),
+                (b) =>
+                {
+                    Mod.LogLobby("SteamSpike (UI): creating spike object");
+                    new GameObject("SteamSpike").AddComponent<Net.SteamSpike>();
+                }));
             inspectorModel.AddGroup(debugGroup);
+
+            // --- 同步修复开关（2026-09-24）：把控制台命令搬进 UI，Steam/公网真实测试时一键 A/B ---
+            // 三个开关都是**本机侧**的局部开关（不随网络同步）：P2 位置积分器管"本机怎么渲染对方幽灵"，
+            // P0 本机船插值管"本机自己的船/相机怎么渲染"，诊断开关管日志开销。每台机器各管自己。
+            GroupModel fixGroup = new GroupModel(Locale.GetString("MultiPlayer.MultiPlayerUI.FixSwitches"), null);
+            fixGroup.DetermineVisibility = debugOnly;
+            // P2：位置积分器（幽灵位置"自由运行积分 V×dt + 有界误差回收"开关）
+            fixGroup.Add(new ToggleModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.PosIntegratorToggle"),
+                () => Assets.Scripts.Net.Sync.MultiPlayerSyncUtil.EnablePositionIntegrator,
+                v =>
+                {
+                    Assets.Scripts.Net.Sync.MultiPlayerSyncUtil.EnablePositionIntegrator = v;
+                    Mod.LogLobby("MpPosIntegrator (UI) -> " + (v ? "ON" : "OFF") +
+                        (v ? " (幽灵位置 V×dt 自由积分 + 有界误差回收)" : " (旧外推 + 平滑路径)"));
+                },
+                Locale.GetString("MultiPlayer.MultiPlayerUI.PosIntegratorHint")));
+            // P0：本机（观察者）船渲染插值
+            fixGroup.Add(new ToggleModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.LocalInterpToggle"),
+                () => Assets.Scripts.Net.Sync.LocalCraftInterpolation.Enabled,
+                v =>
+                {
+                    Assets.Scripts.Net.Sync.LocalCraftInterpolation.Enabled = v;
+                    Mod.LogLobby("MpLocalInterp (UI) -> " + (v ? "ON" : "OFF") +
+                        (v ? " (本机船 body 强制 Interpolate)" : " (已回滚为游戏默认 None,供 A/B 对照)"));
+                },
+                Locale.GetString("MultiPlayer.MultiPlayerUI.LocalInterpHint")));
+            // 诊断总开关（同步诊断唯一出口 MultiPlayerDiag）
+            fixGroup.Add(new ToggleModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.DiagToggle"),
+                () => Assets.Scripts.Net.Sync.MultiPlayerDiag.Enabled,
+                v =>
+                {
+                    Assets.Scripts.Net.Sync.MultiPlayerDiag.SetEnabled(v);
+                    Mod.LogLobby("MpDiag (UI) -> " + Assets.Scripts.Net.Sync.MultiPlayerDiag.Describe());
+                },
+                Locale.GetString("MultiPlayer.MultiPlayerUI.DiagHint")));
+            // 渲染前探针（最重的诊断，可单独关）
+            fixGroup.Add(new ToggleModel(
+                Locale.GetString("MultiPlayer.MultiPlayerUI.ProbeToggle"),
+                () => Assets.Scripts.Net.Sync.MultiPlayerDiag.ProbeEnabled,
+                v =>
+                {
+                    Assets.Scripts.Net.Sync.MultiPlayerDiag.ProbeEnabled = v;
+                    Mod.LogLobby("MpDiagProbe (UI) -> " + (v ? "ON" : "OFF") + " [" +
+                        Assets.Scripts.Net.Sync.MultiPlayerDiag.Describe() + "]");
+                },
+                Locale.GetString("MultiPlayer.MultiPlayerUI.ProbeHint")));
+            inspectorModel.AddGroup(fixGroup);
 
             // --- 调试工具：强制重建面板（独立于调试分组，仅 Debug 模式显示；排查 UI 刷新问题用）---
             inspectorModel.Add(new TextButtonModel(

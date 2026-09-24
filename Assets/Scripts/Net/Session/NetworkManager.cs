@@ -83,6 +83,10 @@ namespace Assets.Scripts.Net.Session
 			Crafts = new RemoteCraftManager(this);
 			Driver = new RemoteCraftDriver(this);
 			Router = new MultiPlayerMessageRouter(this);
+			// 渲染前可见位姿探针(纯观测,零行为改动):挂同一 GameObject,自带
+			// [DefaultExecutionOrder(30000)] 的 LateUpdate → 在所有写者(mod 1000 / 游戏默认 0)之后、渲染之前采样。
+			// 只在 RemoteCraft.ExtraDiagEnabled 为 true 时输出;不读写任何游戏状态。
+			gameObject.AddComponent<RemoteCraftPoseProbe>();
 			Transport.OnDataReceived += Router.HandlePacket;
 			Transport.OnPeerTimeout += Registry.HandlePeerTimeout;
 			Mod.LogLobby("MultiPlayer build r10 2026-09-19 (= r6 baseline: r4 id-remap + r5 stable-anchor + bodyNames/rbΔ diag; r7 orbit / r8 freeze / r9 SP2 dead-reckon all removed)");
@@ -301,6 +305,10 @@ namespace Assets.Scripts.Net.Session
 			// 本机飞船未上报/未确认的重发节流(客户端 CraftData / 房主 host craft)
 			Catalog.UpdateResendTimers();
 			Sender.ProcessOutgoing();
+			// P0(2026-09-23):保障本机(观察者)船开启渲染插值 —— 消除"本机船/相机按物理固定步跳步、
+			// 幽灵按渲染帧连续写入"造成的并排飞行前后抖动(见 plans/observer-tick-quantization-2026-09-23.md)。
+			// 内部自带 1s 节流;只动本机船 body,不碰幽灵。
+			LocalCraftInterpolation.Tick();
 			Driver.UpdateRemoteCrafts();
 			Crafts.EnforceRemoteCraftVisuals();
 			Sender.SendKeepAlive();

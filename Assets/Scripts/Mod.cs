@@ -43,7 +43,8 @@ namespace Assets.Scripts
 				LobbyManager.Instance.EnsureMultiPlayerManager();
 				Game.Instance.SceneManager.SceneLoaded += LobbyManager.Instance.OnSceneLoaded;
 
-				RegisterMpCommands();
+				// 常驻 UI（跨场景存活）：MultiPlayer 检查器面板；所有调试开关都在该面板里
+				// （2026-09-24：原 DevConsole 注册的调试命令已全部迁移到 UI 并删除注册）。
 				InitializeUserInterface();
 
 				// 更新检查（移植自 Volken2 ModUpdater，含防卡死机制）：
@@ -77,118 +78,6 @@ namespace Assets.Scripts
 			GameObject lobbyObject = new GameObject("MultiPlayerSteamLobbyBrowser");
 			lobbyObject.AddComponent<Net.SteamLobbyBrowser>();
 			GameObject.DontDestroyOnLoad(lobbyObject);
-		}
-
-		/// <summary>注册联机控制台命令（HostLobby / JoinLobby / StopLobby）。</summary>
-		private void RegisterMpCommands()
-		{
-			DevConsoleApi.RegisterCommand<int>("HostLobbyPort", new Action<int>(port => LobbyManager.Instance.HostLobby(port)));
-			DevConsoleApi.RegisterCommand<string, int>("JoinLobbyPort", new Action<string, int>((host, port) => LobbyManager.Instance.JoinLobby(host, port)));
-			DevConsoleApi.RegisterCommand("StopLobby", new Action(() => LobbyManager.Instance.StopLobby()));
-			// FishNet spike 临时验证命令：起本地 server+client 验证连接
-			DevConsoleApi.RegisterCommand("FishNetSpike", new Action(() =>
-			{
-				Log("FishNetSpike: creating spike object");
-				new GameObject("FishNetSpike").AddComponent<Net.FishNetSpike>();
-			}));
-			// Steam API 可行性 spike：反射 SocialExt 验证 mod 能否拿到 Steam 身份
-			DevConsoleApi.RegisterCommand("SteamSpike", new Action(() =>
-			{
-				LogLobby("SteamSpike: creating spike object");
-				new GameObject("SteamSpike").AddComponent<Net.SteamSpike>();
-			}));
-			// Steam P2P：房主开房（port 忽略，Steam 无端口）
-			DevConsoleApi.RegisterCommand<int>("SteamHostLobby", new Action<int>(port => LobbyManager.Instance.HostLobby(port)));
-			// Steam P2P：客户端按房主 SteamId 加入
-			DevConsoleApi.RegisterCommand<string>("SteamJoinLobby", new Action<string>(hostSteamId => LobbyManager.Instance.JoinLobby(hostSteamId, 0)));
-			// Steam 房间列表（大厅浏览器，见 plans/steam-lobby-2026-09-12.md）：开房可见、点列表加入
-			DevConsoleApi.RegisterCommand("SteamLobbyList", new Action(() =>
-			{
-				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.RefreshLobbyList();
-			}));
-			// 世界范围列表（默认 Regional 距离过滤；跨区找房用）
-			DevConsoleApi.RegisterCommand("SteamLobbyListWorld", new Action(() =>
-			{
-				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.RefreshLobbyList(true);
-			}));
-			DevConsoleApi.RegisterCommand<string>("SteamLobbyCreate", new Action<string>(name =>
-			{
-				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.CreateLobby(name, Net.SteamLobbyBrowser.DefaultMaxPlayers);
-			}));
-			DevConsoleApi.RegisterCommand<ulong>("SteamLobbyJoin", new Action<ulong>(lobbyId =>
-			{
-				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.JoinLobby(lobbyId);
-			}));
-			DevConsoleApi.RegisterCommand("SteamLobbyLeave", new Action(() =>
-			{
-				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.LeaveLobby();
-			}));
-			// TCP debug（本地虚拟机联机调试）：先切到 TcpTransport 再开房 / 加入。
-			// 房主监听 IPAddress.Any:port；客户端按宿主局域网 IP:port 连接（如 192.168.x.x:25555）。
-			// 若已启用 NetSim 延迟模拟（NetSimDelay 等），自动包一层 LagSimTransport 模拟公网延迟。
-			DevConsoleApi.RegisterCommand<int>("TcpHostLobby", new Action<int>(port =>
-			{
-				NetworkManager mgr = LobbyManager.Instance.EnsureMultiPlayerManager();
-				if (mgr != null) mgr.SetTransport(LagSimTransport.MaybeWrap(new TcpTransport()));
-				LobbyManager.Instance.HostLobby(port);
-			}));
-			DevConsoleApi.RegisterCommand<string, int>("TcpJoinLobby", new Action<string, int>((host, port) =>
-			{
-				NetworkManager mgr = LobbyManager.Instance.EnsureMultiPlayerManager();
-				if (mgr != null) mgr.SetTransport(LagSimTransport.MaybeWrap(new TcpTransport()));
-				LobbyManager.Instance.JoinLobby(host, port);
-			}));
-			// 网络延迟模拟（NetSim）：无需 Steam 好友，在 TCP+本地 VM 上模拟公网延迟/抖动/丢包。
-			// 语义：数值命令(NetSimDelay/Jitter/Loss/Duplicate)只设数值、不开总开关；
-			//      总开关 NetSimOn/NetSimOff（或 UI Toggle）控制是否实际生效——避免其它场景残留延迟。
-			// 会话中改值实时生效；已启用实例改总开关也实时直通/恢复。
-			DevConsoleApi.RegisterCommand<int>("NetSimDelay", new Action<int>(ms =>
-			{
-				LagSimTransport.SetDelay(Mathf.Max(0, ms));
-				LogLobby("NetSimDelay -> " + ms + "ms (" + LagSimTransport.DescribeConfig() + "; 需 NetSimOn 或 UI 开关开启后生效)");
-			}));
-			DevConsoleApi.RegisterCommand<int>("NetSimJitter", new Action<int>(ms =>
-			{
-				LagSimTransport.SetJitter(Mathf.Max(0, ms));
-				LogLobby("NetSimJitter -> " + ms + "ms (" + LagSimTransport.DescribeConfig() + ")");
-			}));
-			DevConsoleApi.RegisterCommand<float>("NetSimLoss", new Action<float>(pct =>
-			{
-				LagSimTransport.SetLoss(Mathf.Clamp(pct, 0f, 100f));
-				LogLobby("NetSimLoss -> " + pct + "% (" + LagSimTransport.DescribeConfig() + ")");
-			}));
-			DevConsoleApi.RegisterCommand<float>("NetSimDuplicate", new Action<float>(pct =>
-			{
-				LagSimTransport.SetDuplicate(Mathf.Clamp(pct, 0f, 100f));
-				LogLobby("NetSimDuplicate -> " + pct + "% (" + LagSimTransport.DescribeConfig() + ")");
-			}));
-			DevConsoleApi.RegisterCommand("NetSimOn", new Action(() =>
-			{
-				LagSimTransport.SetToggle(true);
-				LogLobby("NetSimOn: " + LagSimTransport.DescribeConfig() +
-					(LagSimTransport.Enabled ? "（已生效；开房自动包装，活跃实例实时生效）" : "（数值未设,实为直通）"));
-			}));
-			DevConsoleApi.RegisterCommand("NetSimOff", new Action(() =>
-			{
-				LagSimTransport.SetToggle(false);
-				LogLobby("NetSimOff: 延迟模拟已关闭（直通；后续 TcpHostLobby/TcpJoinLobby 不包装，活跃实例立即直通）");
-			}));
-			DevConsoleApi.RegisterCommand("NetSimReset", new Action(() =>
-			{
-				LagSimTransport.ResetConfig();
-				LogLobby("NetSimReset: 数值与总开关已清空（后续 TcpHostLobby/TcpJoinLobby 不再包装；当前会话若已包装则立即直通）");
-			}));
-			DevConsoleApi.RegisterCommand("NetSim", new Action(() =>
-			{
-				NetworkManager mgr = NetworkManager.Instance;
-				LagSimTransport lag = mgr != null ? mgr.Transport as LagSimTransport : null;
-				LogLobby("NetSim 配置: " + LagSimTransport.DescribeConfig() +
-					(lag != null ? " | 活跃实例统计: " + lag.DescribeStats() : " | 当前传输未启用延迟模拟(需开房前配置或重启会话)"));
-			}));
-			// 接收端平滑/网络诊断仅通过 Mod.LogLobby 写 Player.log（3s 周期行 "MultiPlayer smoothing P#"），不设悬浮窗。
-			// 房主调整状态包发送频率（Hz）：SetTickRate 20 → 50ms（默认）；5 → 200ms；60 → ~16.7ms。
-			// 房主设置后广播给所有客户端（SP2 ServerTickRate 同款思路）。
-			DevConsoleApi.RegisterCommand<int>("SetTickRate", new Action<int>(hz => LobbyManager.Instance.SetTickRate(hz)));
 		}
 
 		/// <summary>联机状态包数据结构。</summary>

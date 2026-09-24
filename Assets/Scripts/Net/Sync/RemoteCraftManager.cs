@@ -139,7 +139,7 @@ namespace Assets.Scripts.Net.Sync
 						CraftUtils.GetComponentsInCraft(remote, renderers, true);
 						foreach (Renderer r in renderers) { rendererCount++; if (r.enabled) enabledCount++; }
 					}
-					Mod.LogLobby("MultiPlayer spawnDiag p" + peer.PlayerId + ": goActive=" + (rgo != null ? rgo.activeSelf.ToString() : "null") +
+					MultiPlayerDiag.Log("MultiPlayer spawnDiag p" + peer.PlayerId + ": goActive=" + (rgo != null ? rgo.activeSelf.ToString() : "null") +
 						", craftScript=" + (remote.CraftScript != null ? "built" : "notBuilt") +
 						", renderers=" + rendererCount + "/enabled=" + enabledCount +
 						", inFlightState=" + IsNodeInFlightState(remote) +

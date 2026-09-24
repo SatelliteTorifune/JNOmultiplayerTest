@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Assets.Scripts.Flight;
 using ModApi;
+using ModApi.Craft;
 using ModApi.Craft.Parts;
 using UnityEngine;
 using static Assets.Scripts.Net.Sync.GhostPoseWriter;
@@ -95,13 +96,14 @@ namespace Assets.Scripts.Net.Sync
 						// 修正:冻结期间把外推量按 RemotePausedRamp 收敛到固定单向延迟 latencySec(不带 age),
 						// 即"停在最新包位置 + 网络传输本身占用的那段位移",不再人工推进目标。
 						// 恢复运动(或对端解除暂停)时 ramp 在 0.15s 内回落到 0,重新把"包龄"加回外推量,避免瞬间跳变。
-						bool pausedNow = rc.PktStallCount >= rc.PktStallLimit || rc.LastPktPausedFlag; // F6b:时间制阈值
+						bool pausedNow = rc.PktStallCount >= rc.PktStallLimit || rc.PausedFlagStreak >= PausedFlagConfirmPackets; // F6b:时间制阈值;P1:暂停标志需连续 N 包
 						if (pausedNow != rc.RemotePaused)
 						{
 							// 一次性状态跃迁日志(便于实测确认"暂停=冻结"是否按预期生效):
 							// 进入冻结 → 速度外推被抑制,幽灵停在最新包位置;退出冻结 → 恢复正常 dead-reckoning。
-							Mod.LogLobby("MultiPlayer freeze P" + rc.PlayerId + ": " + (pausedNow ? "ENTER" : "EXIT") +
-								" (flag=" + (rc.LastPktPausedFlag ? 1 : 0) + " stall=" + rc.PktStallCount +
+							MultiPlayerDiag.Log("MultiPlayer freeze P" + rc.PlayerId + ": " + (pausedNow ? "ENTER" : "EXIT") +
+								" (flag=" + (rc.LastPktPausedFlag ? 1 : 0) + " streak=" + rc.PausedFlagStreak +
+								" stall=" + rc.PktStallCount +
 								" pkΔ=" + rc.PktFreezeDeltaM.ToString("F4") + "m vel=" + latest.Velocity.magnitude.ToString("F2") + "m/s)");
 						}
 						rc.RemotePaused = pausedNow;
@@ -131,7 +133,7 @@ namespace Assets.Scripts.Net.Sync
 							if (gapFreezeNow)
 							{
 								rc.WinGapFreezeHits++;
-								Mod.LogLobby("MultiPlayer gapfreeze P" + rc.PlayerId +
+								MultiPlayerDiag.Log("MultiPlayer gapfreeze P" + rc.PlayerId +
 									": ENTER age=" + age.ToString("F3") + "s thr=" + gapFreezeThr.ToString("F3") + "s" +
 									" gapEMA=" + rc.GapEmaMs.ToString("F0") + "ms" +
 									" mRate=" + rc.SenderMotionRate.ToString("F3") +
@@ -140,7 +142,7 @@ namespace Assets.Scripts.Net.Sync
 							}
 							else
 							{
-								Mod.LogLobby("MultiPlayer gapfreeze P" + rc.PlayerId +
+								MultiPlayerDiag.Log("MultiPlayer gapfreeze P" + rc.PlayerId +
 									": EXIT age=" + age.ToString("F3") + "s thr=" + gapFreezeThr.ToString("F3") + "s" +
 									" mRate=" + rc.SenderMotionRate.ToString("F3"));
 							}
@@ -157,14 +159,33 @@ namespace Assets.Scripts.Net.Sync
 						if (ext > rc.WinExtMax) rc.WinExtMax = ext;
 						if (rc.SenderMotionRate < rc.WinMRateMin) rc.WinMRateMin = rc.SenderMotionRate;
 						if (rc.SenderMotionRate > rc.WinMRateMax) rc.WinMRateMax = rc.SenderMotionRate;
-						latest.Position = latest.Position + latest.Velocity * ext;
+						// P2(2026-09-24)位置积分器:锚点 = 包位置 + 速度×(单向延迟 + **EMA 平滑后**的真实包龄)。
+						// 锚点必须平滑 —— 若直接用逐包重置的瞬时 age,其锯齿会经"误差回收"重新注入渲染位置。
+						// 位置本体的推进改由 ApplyRemoteSmoothing 内的积分器完成(Δpos ≡ V×dt,与包到达无关)。
+						if (EnablePositionIntegrator)
+						{
+							rc.IntegAgeEmaSec = rc.IntegAgeEmaSec <= 0f
+								? age
+								: rc.IntegAgeEmaSec + (age - rc.IntegAgeEmaSec) * (1f - Mathf.Exp(-Time.unscaledDeltaTime / IntegAgeEmaTauSec));
+							// 锚点前导项**必须与积分器同用"位置流推导速度"**:两者若不同源(一方上报速度、
+							// 一方位置流),前导项 V×延迟 的差异会变成常驻残差(实测 err 2~4m、clamp 打满),
+							// 让有界回收每帧饱和 → 渲染位移重新出现 ±25% 调制。
+							Vector3d anchorVel = rc.HasPosDerivedVel ? rc.PosDerivedVel : latest.Velocity;
+							rc.IntegAnchorPos = latest.Position + anchorVel * (double)(latencySec + rc.IntegAgeEmaSec);
+							rc.IntegAnchorValid = true;
+						}
+						else
+						{
+							latest.Position = latest.Position + latest.Velocity * ext;
+						}
 						// 2 阶外推(2026-09-14,acceleration-smoothing):加速度项 ½·a·ext²。
 						// ext 已 ×SenderMotionRate 换算到发送端时间基 → 加速度项 = ½·a·(ext·mRate)²,
 						// 慢放/暂停天然兼容(暂停 mRate→0 → 两项都→0,与冻结逻辑无冲突)。
 						// 发送端已 EMA+钳制,这里做二次防御(NaN/幅值),坏包不污染外推。
+						// P2:位置积分器开启时该位置项由积分器取代(加速度已含在速度 EMA 里),故跳过。
 						rc.LastAccelTermM = 0f;
 						rc.LastAngExtRad = 0f;
-						if (EnableSecondOrderExtrap && ext > 0f)
+						if (EnableSecondOrderExtrap && !EnablePositionIntegrator && ext > 0f)
 						{
 							Vector3 a = latest.Acceleration;
 							if (!IsFinite(a)) a = Vector3.zero;
@@ -256,7 +277,7 @@ namespace Assets.Scripts.Net.Sync
 						// 朝向:应用 SrfRel 的 Yaw 角(连续日志对比可发现慢旋转——同样会被感知为"滑动")
 						string headYaw = "?";
 						try { headYaw = rc.SmoothedSrfRel.ToQuaternion().eulerAngles.y.ToString("F1"); } catch { }
-						Mod.LogLobby("MultiPlayer smoothing P" + rc.PlayerId +
+						MultiPlayerDiag.Log("MultiPlayer smoothing P" + rc.PlayerId +
 							": buf=" + rc.BufferCount + "/" + RemoteCraft.BufferCapacity +
 							" fps=" + winFps.ToString("F0") +
 							" rtt/2=" + (rc.LatencyMs > 0f ? (rc.LatencyEmaMs > 0f ? rc.LatencyEmaMs : rc.LatencyMs).ToString("F0") : "?") + "ms" +
@@ -280,7 +301,18 @@ namespace Assets.Scripts.Net.Sync
 							" move3s=" + move3s.ToString("F3") + "m pktJump=" + pktJump.ToString("F3") + "m" +
 							" vel=" + vel + "m/s acc=" + accStr + "m/s² aExt=" + rc.LastAccelTermM.ToString("F2") + "m" +
 							" w=" + wStr + "rad/s headYaw=" + headYaw + "deg head3s=" + headDeg.ToString("F1") + "deg" +
+							// P2 位置积分器诊断:hard=锚点残差超 V×IntegMaxErrSec 被吞掉的帧数(应为 0~个位数,
+							// 持续增长说明锚点/速度估计发散);clamp=误差回收撞上限的帧数(持续满值说明锚点长期偏);
+							// err=最近一帧锚点残差;corr=最近一帧实际回收量;ageEma=锚点用的平滑包龄。
+							" integ=(hard=" + rc.IntegHardResync + ",clamp=" + rc.IntegClampFrames +
+							",err=" + rc.IntegLastErrM.ToString("F3") + "m,corr=" + rc.IntegLastCorrM.ToString("F4") +
+							"m,ageEma=" + rc.IntegAgeEmaSec.ToString("F3") + "s" +
+							",velSrcDiff=" + rc.IntegVelSrcDiffMs.ToString("F1") + "m/s" +
+							",posDerived=" + (rc.HasPosDerivedVel ? 1 : 0) +
+							",pos=(" + rc.IntegPos.x.ToString("F1") + "," + rc.IntegPos.y.ToString("F1") + "," + rc.IntegPos.z.ToString("F1") + "))" +
 							" newest=(" + newestPos + ") posErr=" + rc.LastPosErrorM.ToString("F2") + "m");
+						rc.IntegHardResync = 0;
+						rc.IntegClampFrames = 0;
 					}
 
 					// 慢放诊断(2026-09,0.5s 周期):接收端慢放(Time.timeScale<0.99)或发送端慢放(rate<0.99)时
@@ -331,7 +363,7 @@ namespace Assets.Scripts.Net.Sync
 								}
 							}
 							catch { }
-							Mod.LogLobby("MultiPlayer slowmo P" + rc.PlayerId +
+							MultiPlayerDiag.Log("MultiPlayer slowmo P" + rc.PlayerId +
 								": timeScale=" + Time.timeScale.ToString("F3") +
 								" rate=" + rc.SenderTimeRate.ToString("F3") +
 								" mRate=" + rc.SenderMotionRate.ToString("F3") +
@@ -357,7 +389,7 @@ namespace Assets.Scripts.Net.Sync
 					if (Time.unscaledTime - rc.LastTwitchLogTime > 1f)
 					{
 						rc.LastTwitchLogTime = Time.unscaledTime;
-						Mod.LogLobby("MultiPlayer twitch P" + rc.PlayerId +
+						MultiPlayerDiag.Log("MultiPlayer twitch P" + rc.PlayerId +
 							": comLink=" + rc.DiagComLinkM.ToString("F4") + "m" +
 							" comCross=" + rc.DiagComCrossFrameM.ToString("F4") + "m" +
 							" b0d=" + rc.DiagBody0DeltaM.ToString("F4") + "m" +
@@ -413,6 +445,30 @@ namespace Assets.Scripts.Net.Sync
 					// 用"最近一次实际应用"的插值状态写回朝向（而非最新包 Target），
 					// 避免"Update 插值 → LateUpdate 被最新包覆盖"导致的朝向跳变。
 					ForceRemoteHeading(rc, rc.LastApplied);
+					// 渲染前漂移基准(纯观测,零行为改动):记录 mod **最后一次写完**之后的 root/body[0]/comRot 位姿,
+					// 由 RemoteCraftPoseProbe([DefaultExecutionOrder(30000)] 的 LateUpdate,即所有写者之后、渲染之前)
+					// 读同一批 Transform 求差 → driftRoot/driftB0/driftCom 非 0 即证明"mod 写完后渲染前还有写者"。
+					// 既有 tfDrift 在下一帧 Update 采样、b0d 在写回路径内部采样,都覆盖不到这一段。
+					if (RemoteCraft.ExtraDiagEnabled)
+					{
+						try
+						{
+							rc.DiagLateRootPos = rc.Node.CraftScript.Transform.position;
+							rc.DiagHasLateRootPos = true;
+							if (rc.Node.CraftScript.CenterOfMass != null)
+							{
+								rc.DiagLateComPos = rc.Node.CraftScript.CenterOfMass.position;
+								rc.DiagHasLateComPos = true;
+							}
+							IReadOnlyList<BodyData> lb = rc.Node.CraftScript.Data.Assembly.Bodies;
+							if (lb != null && lb.Count > 0 && lb[0].BodyScript != null && lb[0].BodyScript.Transform != null)
+							{
+								rc.DiagLateBody0Pos = lb[0].BodyScript.Transform.position;
+								rc.DiagHasLateBody0Pos = true;
+							}
+						}
+						catch { }
+					}
 				}
 				catch (Exception e) { Mod.LogError("LateUpdate refresh error (P" + rc.PlayerId + "): " + e.Message); }
 			}

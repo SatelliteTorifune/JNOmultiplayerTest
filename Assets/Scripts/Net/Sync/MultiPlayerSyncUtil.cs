@@ -15,6 +15,37 @@ namespace Assets.Scripts.Net.Sync
 		/// </summary>
 		public const float RemoteFreezeBlendSec = 0.15f;
 
+		/// <summary>
+		/// P1(2026-09-23)接收端冻结判据去抖:包内 Paused=1 需**连续这么多包**才进入冻结。
+		/// 单包即冻结会被发送端 TimeManager.Paused 的瞬时抖动触发 → 冻结↔解冻反复 → 幽灵按 V×VA 后退/前冲
+		/// (实测 HOST 40/198 条 sendDiag 报 paused=1,含 10.5~16m/s 飞行中;VM 侧出现 24.9m/173m 级位置跳变)。
+		/// 20Hz 下 2 包 = 100ms,不影响"发送端暂停即冻结"的原语义。
+		/// </summary>
+		public const int PausedFlagConfirmPackets = 2;
+
+		// --- P2(2026-09-24)位置积分器:自由运行积分 + 有界误差回收(取代"锚点外推 + 指数平滑 + maxStep") ---
+		/// <summary>
+		/// 位置积分器总开关。开启后接收端位置不再"每帧向包推导目标收敛",而是:
+		/// ① 速度向包速度做 EMA;② 位置严格按速度积分(Δpos ≡ V×dt,与包到达/帧时长无关);
+		/// ③ 锚点(包位置 + 速度×(单向延迟 + EMA 包龄))只用于**有界误差回收**。
+		/// 依据(2026-09-24 双端实测):幽灵逐帧速度 max/avg = 2.3~2.7×(与发包率 20~120Hz 基本无关、
+		/// 与帧时长无关),同帧时长下本机船为 1.00× → 抖动源在 mod 自身的位置构造,不在游戏/渲染/网络节拍。
+		/// 验收指标(探针内建):gSpeed max/avg → ≤1.3×;并排窗口 relCoMMax → ≈|Δv|×dt。
+		/// ⚠️ 用 static(非 const):const 会让编译器把另一分支判成不可达代码(CS0162),本项目要求 0 警告。
+		/// 运行时可用控制台命令 `MpPosIntegrator on|off` 切换做 A/B 对照。
+		/// </summary>
+		public static bool EnablePositionIntegrator = true;
+		/// <summary>积分速度 EMA 时间常数(秒):包速度先低通,避免把包内速度噪声积分成位置抖动。</summary>
+		public const float IntegVelTauSec = 0.15f;
+		/// <summary>误差回收时间常数(秒):锚点残差按此收敛;越小越紧跟、越大越平滑。</summary>
+		public const float IntegErrTauSec = 0.30f;
+		/// <summary>包龄 EMA 时间常数(秒):锚点用的包龄必须平滑(禁止用逐包重置的瞬时 age,否则锯齿重新注入位置)。</summary>
+		public const float IntegAgeEmaTauSec = 0.5f;
+		/// <summary>单帧误差回收上限(×V×dt):0.25 ⇒ 单帧位移落在 [0.75,1.25]×V×dt,结构上不可能后退/停顿。</summary>
+		public const float IntegMaxCorrFrac = 0.25f;
+		/// <summary>锚点残差的"硬账"上限(秒×V):超出部分直接吞掉(视为瞬移/丢包积欠),不参与回收。</summary>
+		public const float IntegMaxErrSec = 0.08f;
+
 		// --- 2 阶外推(acceleration-smoothing-2026-09-14):发送端采样 EMA/钳制 + 接收端开关 ---
 		/// <summary>发送端加速度 EMA 系数(每包 20Hz;Acceleration 是刚体速度差分测量,一帧滞后+噪声,必须平滑)。</summary>
 		public const float SenderAccelEmaRate = 0.2f;

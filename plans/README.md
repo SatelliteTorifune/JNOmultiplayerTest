@@ -1,7 +1,7 @@
 # JNOMultiPlayer —— 会话上下文 + 设计文档索引(plans/README.md)
 
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod `MultiPlayer`;Steam AppID **870200**;Unity **2022.3.62f3**;C# 命名空间 `Assets.Scripts.*`)。思路:**反编译游戏源码导航内部 API** + 参考 KSP LunaMultiplayer 与 SP2(SimplePlanes 2)的联机实现。
-> **当前进度**:单船"幽灵船"原型已通过 **Steam 双账号公网实测**;**架构重构已完成归档(2026-09-22)**:`MpNetworkManager` 上帝类(3717 行)拆为 **391 行瘦门面 + 11 个职责类**,并按 5 层目录分类(`Net/` 协议基础 / `Net/MultiPlayerTransport/` 传输实现 / `Net/Session/` 会话房间 / `Net/Sync/` 同步管线 / `Net/CraftVisual/` 远程船呈现,共 25 文件;行为保持,构建 0/0,见 `archive/refactor-mpnetworkmanager-2026-09-22.md`);**2026-09-22 再整理:残留 `Mp*`/`MP`/`_mp` 命名统一为 `MultiPlayer`**(`MpNetworkManager`→`NetworkManager`、`MpMessageRouter`→`MultiPlayerMessageRouter`、`MpCraftCatalog`→`MultiPlayerCraftCatalog`、`MpPlayerRegistry`→`MultiPlayerRegistry`、`MpSyncUtil`→`MultiPlayerSyncUtil`、`MpCraftPreloader`→`MultiPlayerCraftPreloader`、`MpMessage.cs`→`MultiPlayerMessages.cs`、`_mp`→`_multiPlayer`、`EnsureMpManager`→`EnsureMultiPlayerManager`、`MPTest`→`MultiPlayer`、`mp_name`→`multiPlayer_name`、日志前缀 `MP.`→`MultiPlayer.`;重命名脚本 `plans/archive/rename-mp-to-multiplayer.ps1`);§六 现有 **0 个待办活跃主题**(smoothing-reset **⛔ 失败已归档(2026-09-23)**:SP2 全量对齐 + 5 轮追加修改全部实测无效,代码回滚 `d09be5c`,见 `archive/smoothing-reset-2026-09-23.md`;前身 `archive/acceleration-smoothing-2026-09-14.md` 亦 ⛔ 已归档)+ **5 个待拍板**(含 1 份参考资料)+ **18 个已归档**;1.4.2 适配 / 部件开关回归 / 高延迟平滑 / Vizzy 隔离 / 旋翼 body 同步均已结案。
+> **当前进度**:单船"幽灵船"原型已通过 **Steam 双账号公网实测**;**架构重构已完成归档(2026-09-22)**:`MpNetworkManager` 上帝类(3717 行)拆为 **391 行瘦门面 + 11 个职责类**,并按 5 层目录分类(`Net/` 协议基础 / `Net/MultiPlayerTransport/` 传输实现 / `Net/Session/` 会话房间 / `Net/Sync/` 同步管线 / `Net/CraftVisual/` 远程船呈现,共 25 文件;行为保持,构建 0/0,见 `archive/refactor-mpnetworkmanager-2026-09-22.md`);**2026-09-22 再整理:残留 `Mp*`/`MP`/`_mp` 命名统一为 `MultiPlayer`**(`MpNetworkManager`→`NetworkManager`、`MpMessageRouter`→`MultiPlayerMessageRouter`、`MpCraftCatalog`→`MultiPlayerCraftCatalog`、`MpPlayerRegistry`→`MultiPlayerRegistry`、`MpSyncUtil`→`MultiPlayerSyncUtil`、`MpCraftPreloader`→`MultiPlayerCraftPreloader`、`MpMessage.cs`→`MultiPlayerMessages.cs`、`_mp`→`_multiPlayer`、`EnsureMpManager`→`EnsureMultiPlayerManager`、`MPTest`→`MultiPlayer`、`mp_name`→`multiPlayer_name`、日志前缀 `MP.`→`MultiPlayer.`;重命名脚本 `plans/archive/rename-mp-to-multiplayer.ps1`);§六 现有 **1 个待办活跃主题**(`observer-tick-quantization` **🔧 阶段性收尾(2026-09-24,保持活跃)**:并排"前后抖动"= **两层**且都在本机侧——①本机船/相机只在物理固定步更新(`CraftBuilder.cs:223` 插值 `None`)而幽灵每渲染帧写入;②旧位置构造(`锚点外推+指数平滑+maxStep`)使渲染位移 0.5×~2.6× 摆动。**P0/P2/P2b/P1 已落地并经双机 A/B 客观验证**(构建 0/0;`bSpdAbs` 1.22× vs 旧路径 23.78×、`lSpeed` 1.006 vs 1.259),**待 Steam 实测观感**;诊断已抽象为 `MultiPlayerDiag` 唯一出口、全部开关进 UI(DevConsole 注册已清空),见 `observer-tick-quantization-2026-09-23.md`;smoothing-reset **⛔ 失败已归档(2026-09-23)**:SP2 全量对齐 + 5 轮追加修改全部实测无效,代码回滚 `d09be5c`,见 `archive/smoothing-reset-2026-09-23.md`;前身 `archive/acceleration-smoothing-2026-09-14.md` 亦 ⛔ 已归档)+ **5 个待拍板**(含 1 份参考资料)+ **18 个已归档**;1.4.2 适配 / 部件开关回归 / 高延迟平滑 / Vizzy 隔离 / 旋翼 body 同步均已结案。
 > 用法:新会话第一条上下文直接投喂本文档(§一~§五 即提示词核心)。本文档是**原 `AGENT_CONTEXT.md`(会话上下文)+ 原 `README.md`(索引/决策/规则)的合并版**,只读参考;**方案 / 决策类内容一律写进对应主题 plan**,再同步本文档索引与决策速查。
 > **职责边界(重要)**:mod 的**打包 / 部署 / DLL 更新 / 发布链条**(装进游戏的 DLL、AssetBundle、版本号、GitHub Releases)**全部由用户负责**——agent 不执行、不代劳、不为此改版本号或构建产物;agent 只负责**源码改动 + 文档同步 + `dotnet build MultiPlayer.csproj -c Debug` 验证(0 错误 0 警告)**。
 > 调试日志(联机双端,真实路径见 `LOCAL_PATHS.md`):本机 `<USERPROFILE>\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log`(Unity 运行时日志;`Mod.LogLobby` / `MultiPlayer smoothing` / `MultiPlayer twitch` / `MultiPlayer sendDiag` 等输出在这里);对面(VM 客户端)`<SHARED>\Player.log`。⚠️ 双开同机时两个实例写同一本机日志会互相覆盖,双端取证必须用 VM。
@@ -68,7 +68,7 @@
 ## 三、已确定的技术事实(不要再重复调研)
 
 **传输 / 房间**
-- **传输**:Steam P2P 默认(`SteamNetworkingSockets`;游戏启动已 `SteamAPI.Init()`,mod **不重复 Init**);TCP 仅 VM / 公网 debug(`TcpHostLobby`/`TcpJoinLobby`);LiteNetLib 备用未启用。
+- **传输**:Steam P2P 默认(`SteamNetworkingSockets`;游戏启动已 `SteamAPI.Init()`,mod **不重复 Init**);TCP 仅 VM / 公网 debug(UI Debug 分组 → TCP 开房/加入);LiteNetLib 备用未启用。
 - **房主 = 中继**:客户端之间的状态包经房主转发(`IsServer` 时 `Transport.Broadcast`)。
 - **FishNet 高层 API 被 codegen 否决**(运行时加载 mod DLL 无序列化器)→ 传输层自建、高层逻辑自持。
 - **加入方式**:Steam 房间列表——"开房可见、点列表加入";手动输入房主 SteamId 仍保留于控制台 `SteamJoinLobby <hostSteamId>`。
@@ -115,9 +115,10 @@
 ## 五、调试与验证
 
 - **日志**:`Mod.LogLobby`(联机流程)、`Mod.LogUpdate`(更新检查,不受 `DebugMode` 限制)、`Mod.Log`(通用)。接收端平滑诊断 3 秒一条 `MultiPlayer smoothing P<id>`;1 秒一条的有接收端 `MultiPlayer twitch`(整船/部件位移)与发送端 `MultiPlayer sendDiag`;事件式有 `MultiPlayer gap`/`MultiPlayer gapfreeze`/`MultiPlayer freeze`/`MultiPlayer slowmo`/`MultiPlayer bodyMap`(只进 `Player.log`,无悬浮窗)。逐字段口径见 [archive/latency-smoothing-2026-08-22.md](archive/latency-smoothing-2026-08-22.md) §9.6 与 [archive/acceleration-smoothing-2026-09-14.md](archive/acceleration-smoothing-2026-09-14.md) §一。
-- **DevConsole 命令**:
-  - 房间:`HostLobbyPort <port>` / `JoinLobbyPort <ip> <port>` / `StopLobby` / `SteamHostLobby <port>` / `SteamJoinLobby <hostSteamId>` / `TcpHostLobby <port>` / `TcpJoinLobby <ip> <port>` / `SetTickRate <hz>`(1~120,房主广播);房间列表:`SteamLobbyList` / `SteamLobbyListWorld` / `SteamLobbyCreate <名>` / `SteamLobbyJoin <id>` / `SteamLobbyLeave`;延迟模拟(NetSim,需 TCP):`NetSimDelay/Jitter/Loss/Duplicate/On/Off/Reset/NetSim`(**数值与总开关分离**);历史 spike:`FishNetSpike` / `SteamSpike`。
-- **本地 VM debug**:本机 `TcpHostLobby 25555`(防火墙放行入站);VM `TcpJoinLobby <宿主IP> 25555` —— **✅ 已实测可行**。
+- **DevConsole 命令**:**⛔ 已于 2026-09-24 全部移除**——调试/联机/延迟模拟/修复开关一律改为**游戏内 UI**(`MultiPlayer` 检查器面板;分组见下),理由是"带参数命令裸敲只查询、易被误当成已生效"(实测踩过两次)。**现工程内不再注册任何 `MultiPlayer` 控制台命令**;存档文档中出现的命令名(`TcpHostLobby`/`NetSim*`/`SetTickRate`/`SteamLobbyList*` 等)均为历史记录。
+  - **面板分组**:主面板 = Host / Join / Disconnect / 踢人 / 玩家列表 / 房间列表(刷新·跨区刷新·创建·加入·邀请·离开);**房主设置** = TickRate 滑条(1~120Hz,房主广播);**Debug**(需 `DebugMode`) = TCP 开房/加入、NetSim 状态·统计·总开关·延迟·抖动·丢包·**重复包**·**复位**、**跨区刷新房间列表**、**Steam 身份自检**;**同步修复开关**(需 `DebugMode`) = **位置积分器(P2)** / **本机船渲染插值(P0)** / **诊断日志** / **渲染前探针**。
+  - 三个修复开关均为**本机侧局部开关(不随网络同步)**,切换时会写一行日志(`MpPosIntegrator (UI) -> ON/OFF` 等)便于事后按时间对齐 A/B。
+- **本地 VM debug**:UI Debug 分组 → TCP 开房(25555,防火墙放行入站)= 本机;VM → TCP 加入(宿主 IP:25555)—— **✅ 已实测可行**(原 `TcpHostLobby`/`TcpJoinLobby` 命令已由这两个按钮取代)。
 - **Steam 双账号公网联机**:**✅ 已实测可行**,零 frp / 零端口转发(见 `archive/steam-integration-2026-08-13.md` Step 4)。
 - 反编译源码用 Rider/VS 打开 `.sln` 浏览;`<JNO_CODE>` / `<SP2_MP>` 均属**只读参考**。
 - **文本编码**:`.md` / `.cs` 一律 **UTF-8 无 BOM、LF**(历史事故:提交 `16eb58d` 整批文档被有损转码,已从父提交 `7d4925c` 恢复);完整规则与自检见 §十.8 / §十.9。
@@ -133,7 +134,8 @@
 
 | 文档 | 主题 | 状态 | 一句话摘要 |
 |---|---|---|---|
-| *(无)* | smoothing-reset(原唯一活跃主题)**⛔ 失败已归档(2026-09-23)**,见 §6.3 | | |
+| [`observer-tick-quantization-2026-09-23.md`](observer-tick-quantization-2026-09-23.md) | **观察者侧节拍量化 + 幽灵位置积分器**(并排飞行"前后抖动"真根因与修复) | 🔧 **活跃 · 阶段性收尾(2026-09-24)**:P0 / P2 / P2b 已落地并经**双机 A/B 客观验证**(构建 0/0);**待 Steam 实测观感** | 抖动是**两层**:①观察者侧——本机船/相机只在物理固定步推进(`CraftBuilder.cs:223` 插值 `None`),幽灵每渲染帧写入 ⇒ 相对参照系按 `v×fixedDt` 台阶跳;②mod 侧——"锚点外推+指数平滑+maxStep"使渲染位移在 0.5×~2.6× 摆动。**修复**:P0 本机船开 `Interpolate`(含 OFF 回滚)、P2 位置自由积分 `Δpos≡V×dt` + 有界误差回收、P2b 速度用 ≥80ms 位置流基线并与锚点同源、P1 暂停标志去抖。**证据**:`drift*=0`/`gameDelta=0`(110/110 窗)、相机位移恒为 `v×fixedDt` 整数倍、`bSpdAbs` 1.22× vs 旧路径 23.78×、`lSpeed` 1.006 vs 1.259。诊断已抽象为 `MultiPlayerDiag` 唯一出口;全部开关进 UI(DevConsole 注册已清空) |
+| *(历史)* | smoothing-reset(上一活跃主题)**⛔ 失败已归档(2026-09-23)**,见 §6.3 | | |
 
 ### 6.2 已论证可行 · 待拍板(`proposals/`,尚未动手)
 
@@ -191,6 +193,7 @@
 | 远程船 2 阶外推 | ⛔ **已回滚收工(2026-09-21,双端割裂)**;2 阶外推平移/旋转项仍开启(r10 在),但原"一卡一卡"**不在 mod 位置管线**(六项排除,残余来自接收端帧显示节拍)。复盘 + 4 个真 bug + 重做顺序见 §四 | [archive/acceleration-smoothing-2026-09-14.md](archive/acceleration-smoothing-2026-09-14.md) §二/§三/§四 |
 | 平滑改进 R1~R8(SP2 / LMP 对照) | R1(旋转外推)/R2(延迟 EMA)已落地;R8 曾落地(build r14)随本主题 ⛔ 一并回滚;R5 时钟同步放弃、R6 物理路径暂搁 | [archive/acceleration-smoothing-2026-09-14.md](archive/acceleration-smoothing-2026-09-14.md) §五 |
 | **平滑管线归零重建 / SP2 架构移植** | **⛔ 2026-09-23 失败终止**:SP2 全量对齐 + 阶段 A/B 实施 + 5 轮追加修改全部实测无效(接收端渲染台阶由游戏自身管线驱动,与发包率/mod 侧写入无关)→ 代码回滚 d09be5c | [archive/smoothing-reset-2026-09-23.md](archive/smoothing-reset-2026-09-23.md) §〇/§九 |
+| **观察者侧节拍量化 + 幽灵位置积分器(并排"前后抖动"真根因)** | 🔧 **2026-09-24 阶段性收尾(保持活跃)**:抖动**两层**——①本机船/相机只在物理固定步推进(`CraftBuilder.cs:223` 插值 `None`)而幽灵每渲染帧写入;②旧位置构造(`锚点外推+指数平滑+maxStep`)使渲染位移 0.5×~2.6× 摆动。**P0**(本机船开 `Interpolate`,含 OFF 回滚)/ **P2**(位置自由积分 `Δpos≡V×dt` + 有界误差回收)/ **P2b**(速度用 ≥80ms 位置流基线、与锚点同源)/ **P1**(暂停标志去抖)已落地构建 0/0;`drift*=0`/`gameDelta=0`(110/110 窗)证伪"游戏侧共写/对抗";**双机 A/B**:`bSpdAbs` 1.22× vs 23.78×、`lSpeed` 1.006 vs 1.259;**待 Steam 实测观感** | [observer-tick-quantization-2026-09-23.md](observer-tick-quantization-2026-09-23.md) §〇/§三/§四/§六 |
 | 游戏 1.4.2 Experimental 兼容(P0) | ✅ **已归档**(用户确认修复并双端实测完成);P1-1~P1-4 与「双飞静止一方抽搐」已实测结案 | [archive/update-1.4.2-experimental-2026-09-03.md](archive/update-1.4.2-experimental-2026-09-03.md) |
 | 更新检查(ModUpdater) | **✅ 已实现并接线**(`Mod.OnModInitialized` 末尾调用) | [archive/update-reminder-port-2026-09-10.md](archive/update-reminder-port-2026-09-10.md) |
 | Volken 冲突(`SceneLoaded` 链 NRE) | **✅ 根因已定位并修复**(`OnSceneLoaded` 空值护栏) | [archive/volken-sceneloaded-nre-2026-08-27.md](archive/volken-sceneloaded-nre-2026-08-27.md) |
@@ -203,7 +206,7 @@
 - **EVA 同步**:E1 乘组处理选型(C1 影子成员 / C2 名字占位,建议先 C2)、E2 里程碑是否按 M0→M1→M2→M3 顺序推进(**M1 换节点即时性可独立先做**)、E3 `EvaGhostPatch` 是否与 `JetEngineGhostPatch` 合并为一个"幽灵飞行循环总闸"、E4 是否补 `CraftSituation`(轨道出舱,与 MC2 合并)、E5 舱内可见乘员是否需要在母船包里带"舱内乘组"——见 [proposals/eva-sync-2026-09-18.md](proposals/eva-sync-2026-09-18.md) §五、§六、§八、§九。
 - **SP2 式物理同步**:研究完成待拍板,建议 P0(每 body 速度进协议 + 修 §八 #10)+ P1(旋转 1 阶外推)约 3~5 天——见 [proposals/physics-sync-2026-09-14.md](proposals/physics-sync-2026-09-14.md)。
 - **速度修复项**:远程船游戏侧速度缺自转项,分析完成待实施,修复已并入 physics-sync P0——见 [proposals/remote-craft-velocity-2026-09-13.md](proposals/remote-craft-velocity-2026-09-13.md)。
-- **平滑剩余项**:⛔ **2026-09-23 失败终止**——三轮重试(含 VA→realAge)+ 阶段 A 物理时钟轴 + 阶段 B PhysX 接管(SP2 全量对齐)后,接收端渲染台阶 moveMax 恒 ≈v×50ms(VM)/v×100ms(HOST)、与发包率 17~86Hz 无关,5 轮追加修改(逐帧写/钳制/插值/kinematic/kill-switch patch)全部无效 → 判定 mod 侧已达极限,任务失败,代码回滚 `d09be5c`。阶段 A/B 全程证据链见 [archive/smoothing-reset-2026-09-23.md](archive/smoothing-reset-2026-09-23.md) §六/§七/§九。前身教训 + 4 个真 bug 见 [archive/acceleration-smoothing-2026-09-14.md](archive/acceleration-smoothing-2026-09-14.md) §四。
+- **平滑剩余项**:⛔ **2026-09-23 失败终止**——三轮重试(含 VA→realAge)+ 阶段 A 物理时钟轴 + 阶段 B PhysX 接管(SP2 全量对齐)后,接收端渲染台阶 moveMax 恒 ≈v×50ms(VM)/v×100ms(HOST)、与发包率 17~86Hz 无关,5 轮追加修改(逐帧写/钳制/插值/kinematic/kill-switch patch)全部无效 → 判定 mod 侧已达极限,任务失败,代码回滚 `d09be5c`。阶段 A/B 全程证据链见 [archive/smoothing-reset-2026-09-23.md](archive/smoothing-reset-2026-09-23.md) §六/§七/§九。前身教训 + 4 个真 bug 见 [archive/acceleration-smoothing-2026-09-14.md](archive/acceleration-smoothing-2026-09-14.md) §四。**⚠️ 2026-09-23 深夜更正**:该"台阶"的**真源是观察者侧**(本机船/相机按物理固定步推进,而幽灵按渲染帧写入)——`drift*=0` 与 `gameDelta=0` 证明**没有任何第三方覆盖 mod 写入**,故"mod 侧已达极限"应更正为"**该路线无法触及该层**";修正与修复见 [observer-tick-quantization-2026-09-23.md](observer-tick-quantization-2026-09-23.md)。
 - **部件同步剩余项**(已归档 [archive/part-switch-sync-2026-08-18.md](archive/part-switch-sync-2026-08-18.md)):降落伞专用视觉驱动(P2)、`ExtensionPercent` 相位对齐(P1)、`Stage` 应用(目前只采样不应用)。
 
 ## 八、当前代码里的已知问题(2026-09-14 复核)

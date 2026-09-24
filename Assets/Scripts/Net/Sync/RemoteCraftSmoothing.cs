@@ -46,7 +46,14 @@ namespace Assets.Scripts.Net.Sync
 			// 判定放宽:speed<0.5 m/s(容忍发送端残余速度)且误差<0.05 m → 快照。
 			// (旧判定 speed<0.05 && 误差<0.01m 过严:发送端残余速度稍>0.05 即永不锁死 → 平滑层永远在蠕动,
 			//  且收敛时间常数≈1s,任何残差都被拖成肉眼可见的持续滑动,而 moveDelta<0.005m/帧 在 F2 日志里显示 0.00)
-			if (speed < 0.5f && (target.Position - rc.SmoothedPos).sqrMagnitude < 0.0025f)
+			if (EnablePositionIntegrator)
+			{
+				// P2(2026-09-24):自由运行积分 + 有界误差回收,取代下面整段"指数平滑 + maxStep 钳制"。
+				// 结构不变量:单帧位移 ∈ [1−IntegMaxCorrFrac, 1+IntegMaxCorrFrac]×V×dt
+				// ⇒ 不会停顿、不会后退、不会出现 2~3× 速度尖峰(此前 0.5×~2.6× 抖动的来源)。
+				smoothedPos = IntegrateGhostPosition(rc, target.Velocity, dt);
+			}
+			else if (speed < 0.5f && (target.Position - rc.SmoothedPos).sqrMagnitude < 0.0025f)
 			{
 				smoothedPos = target.Position;
 			}
@@ -210,6 +217,82 @@ namespace Assets.Scripts.Net.Sync
 			result.Position = smoothedPos;
 			result.SrfRel = Quaterniond.FromQuaternion(smoothedSrf);
 			return result;
+		}
+
+		/// <summary>
+		/// P2(2026-09-24)自由运行位置积分器 + 有界误差回收(取代"锚点外推 + 指数平滑 + maxStep")。
+		///
+		/// 每帧三步:
+		///   ① 速度向包速度做 EMA(时间常数 <see cref="IntegVelTauSec"/>)—— 低通,防止把包内速度噪声积分成位置抖动;
+		///   ② 位置严格按速度积分 → **Δpos ≡ V×dt**,与包到达节奏、帧时长完全无关;
+		///   ③ 用锚点(包位置 + 速度×(单向延迟 + EMA 包龄),由 RemoteCraftDriver 每帧写入 rc.IntegAnchorPos)
+		///      做**有界**误差回收:残差 > V×<see cref="IntegMaxErrSec"/> 的部分直接吞掉(瞬移/丢包积欠,不回收),
+		///      其余按 (1−exp(−dt/<see cref="IntegErrTauSec"/>)) 回收,且单帧上限 <see cref="IntegMaxCorrFrac"/>×V×dt。
+		///
+		/// 结构不变量:单帧位移 ∈ [1−IntegMaxCorrFrac, 1+IntegMaxCorrFrac]×V×dt
+		/// ⇒ 结构上不可能停顿、不可能后退、不可能出现 2~3× 速度尖峰。
+		/// (2026-09-24 实测旧管线:幽灵逐帧速度 max/avg = 2.3~2.7×,与发包率 20~120Hz 无关、
+		///  与帧时长无关,而同帧时长下本机船为 1.00× → 抖动源就是旧的位置构造本身。)
+		///
+		/// 验收指标(RemoteCraftPoseProbe 内建):gSpeed max/avg → ≤1.3×;并排窗口 relCoMMax → ≈|Δv|×dt。
+		/// 发送端暂停(RemotePausedRamp>0)时保持位置、速度衰减 → 沿用原"暂停即冻结"语义。
+		/// </summary>
+		internal static Vector3d IntegrateGhostPosition(RemoteCraft rc, Vector3d packetVel, float dt)
+		{
+			if (dt <= 0f) return rc.IntegHas ? rc.IntegPos : rc.IntegAnchorPos;
+			if (!rc.IntegHas)
+			{
+				rc.IntegPos = rc.IntegAnchorValid ? rc.IntegAnchorPos : Vector3d.zero;
+				rc.IntegVel = packetVel;
+				rc.IntegHas = true;
+			}
+			// ① 速度 EMA(包速度低通)。P2b:优先用"位置流推导速度"(与锚点同源)——实测上报速度与
+			// 位置推进速率不自洽会让积分器与锚点持续拉开(残差 2~7m、回收打满),改用同源速度后残差趋零。
+			Vector3d velSrc = rc.HasPosDerivedVel ? rc.PosDerivedVel : packetVel;
+			// P2b 诊断:两种速度源之差(m/s)。若该值远大于 0(尤其接近行星自转线速度 158.85 m/s 量级),
+			// 即坐实"包内上报速度与位置推进不自洽"(历史问题 #10:游戏侧速度缺自转项)。
+			if (rc.HasPosDerivedVel) rc.IntegVelSrcDiffMs = (float)(rc.PosDerivedVel - packetVel).magnitude;
+			double kv = 1.0 - Math.Exp(-dt / IntegVelTauSec);
+			rc.IntegVel = rc.IntegVel + (velSrc - rc.IntegVel) * kv;
+			// 暂停/冻结:保持位置,速度向 0 衰减(等价原 ageNow→0 + mRate→0)
+			if (rc.RemotePausedRamp > 0f)
+			{
+				rc.IntegVel = rc.IntegVel * (1.0 - rc.RemotePausedRamp);
+				return rc.IntegPos;
+			}
+			// ② 积分:严格 V×dt(× mRate 换算发送端时间基,慢放兼容)
+			float mRate = rc.SenderMotionRate > 0.01f ? rc.SenderMotionRate : 1f;
+			rc.IntegPos = rc.IntegPos + rc.IntegVel * (double)(dt * mRate);
+			// ③ 有界误差回收
+			if (rc.IntegAnchorValid)
+			{
+				Vector3d e = rc.IntegAnchorPos - rc.IntegPos;
+				double em = e.magnitude;
+				double vMag = rc.IntegVel.magnitude;
+				double maxErr = Math.Max(vMag * IntegMaxErrSec, 0.05);
+				if (em > maxErr)
+				{
+					// 硬账:只保留 maxErr,其余直接吞掉(避免瞬移把可见位置拽走)
+					rc.IntegPos = rc.IntegPos + e * (1.0 - maxErr / em);
+					e = rc.IntegAnchorPos - rc.IntegPos;
+					em = e.magnitude;
+					if (rc.IntegHardResync < 1000000) rc.IntegHardResync++;
+				}
+				double corr = 1.0 - Math.Exp(-dt / IntegErrTauSec);
+				Vector3d step = e * corr;
+				double stepM = step.magnitude;
+				double maxStep = Math.Max(vMag * IntegMaxCorrFrac * dt, 1e-4);
+				if (stepM > maxStep)
+				{
+					step = step * (maxStep / stepM);
+					stepM = maxStep;
+					if (rc.IntegClampFrames < 1000000) rc.IntegClampFrames++;
+				}
+				rc.IntegPos = rc.IntegPos + step;
+				rc.IntegLastErrM = (float)em;
+				rc.IntegLastCorrM = (float)stepM;
+			}
+			return rc.IntegPos;
 		}
 
 		/// <summary>把 target 的 body 位姿快照进平滑数组(首帧 / body 数量变化时调用)。</summary>

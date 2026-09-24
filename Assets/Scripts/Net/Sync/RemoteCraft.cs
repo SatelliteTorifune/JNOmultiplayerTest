@@ -120,6 +120,31 @@ namespace Assets.Scripts.Net.Sync
 		//   ② 连续多包位置零位移(兼容旧版本对端;也不依赖标记是否被中继/丢包)。
 		public bool RemotePaused;              // 判定:发送端当前处于"位置冻结"(暂停/完全静止)
 		public bool LastPktPausedFlag;         // 最新包携带的发送端暂停标记(包内显式字段)
+		/// <summary>
+		/// P1(2026-09-23):连续携带 Paused=1 的包数(收到 Paused=0 即清零)。
+		/// 冻结判据由"单包标志"改为"连续 ≥ PausedFlagConfirmPackets 包",消除发送端 TimeManager.Paused 瞬时抖动
+		/// 造成的"冻结↔解冻"反复(每次反复都让幽灵按 V×VA 后退/前冲;实测 HOST 40/198 条 sendDiag 报 paused=1)。
+		/// </summary>
+		public int PausedFlagStreak;
+
+		// --- P2(2026-09-24)位置积分器状态(自由运行:与包到达无关) ---
+		public Vector3d IntegPos;               // 积分位置(地表坐标,与 RemoteDataPack.Position 同系)
+		public Vector3d IntegVel;               // 积分速度(EMA 后的包速度,同系)
+		public bool IntegHas;                   // 是否已初始化
+		public Vector3d IntegAnchorPos;         // 锚点 = 包位置 + 速度×(单向延迟 + EMA 包龄)
+		public bool IntegAnchorValid;
+		public float IntegAgeEmaSec;            // 平滑后的真实包龄(秒)
+		public int IntegHardResync;             // 窗口内"硬账"触发帧数(锚点残差 > V×IntegMaxErrSec)
+		public int IntegClampFrames;            // 窗口内误差回收被上限截断的帧数
+		public float IntegLastErrM;             // 最近一帧锚点残差(m)
+		public float IntegLastCorrM;            // 最近一帧实际回收量(m)
+		// --- P2b(2026-09-24)位置流推导速度:与锚点同源,消除"上报速度 ↔ 位置推进"不自洽 ---
+		// 实测(P2 上线后):积分器锚点残差长期 2~7m(≈26~80ms 行程)、corr 打满回收上限、hard 触发,
+		// 而 pkΔ/gapEMA 与自称速度之比 P90 达 1.49 ⇒ 上报速度与位置推进速率不自洽(历史问题 #10 同类)。
+		// 用 (本包位置 − 上包位置)/内容间隔 作为积分速度,积分器与锚点由同一数据源驱动 ⇒ 残差趋零、不再饱和。
+		public Vector3d PosDerivedVel;          // 位置流推导速度(地表坐标,与 Position 同系)
+		public bool HasPosDerivedVel;
+		public float IntegVelSrcDiffMs;         // P2b 诊断:位置流推导速度 与 包内上报速度 之差(m/s)
 		public long FrozenFrames;              // 完全冻结态(ramp=1)的帧数(诊断)
 		public float RemotePausedRamp;         // 0..1 平滑过渡量(0=正常外推,1=完全停止速度外推),避免冻结/解冻瞬间跳变
 		public int PktStallCount;              // 连续"位置零位移"包计数
@@ -214,11 +239,32 @@ namespace Assets.Scripts.Net.Sync
 		public Vector3 DiagSmoothedBody0;      // 平滑后 body[0] 相对 comRot 位置(目标)
 		public float LastTwitchLogTime;        // 抽搐诊断周期日志计时
 
+		// --- 渲染前漂移基准(2026-09,纯观测):mod 的 LateUpdate 写完后立刻记录 root/body[0]/comRot 的
+		// 帧空间位置;RemoteCraftPoseProbe 在 [DefaultExecutionOrder(30000)] 的 LateUpdate(所有写者之后、
+		// 渲染之前)读取同一批 Transform 并求差。差 >0 即证明"mod 写完之后、渲染之前还有写者在动这艘幽灵"
+		// ——既有诊断(tfDrift=下一帧 Update 采样、b0d=写回路径内部采样)都覆盖不到这一段。
+		public Vector3 DiagLateRootPos;        // LateUpdate 写完后的 root 帧空间位置
+		public bool DiagHasLateRootPos;
+		public Vector3 DiagLateBody0Pos;        // LateUpdate 写完后的 body[0] 世界位置
+		public bool DiagHasLateBody0Pos;
+		public Vector3 DiagLateComPos;          // LateUpdate 写完后的 comRot 世界位置
+		public bool DiagHasLateComPos;
+
+		// --- 暂停标志观察(2026-09-23,纯观测):本窗内收到 Paused=1 的包数(rprobe 每窗读取后清零)。 ---
+		// 背景:发送端 LocalCraftSender 透传 TimeManager.Paused,接收端单包即冻结(RemoteCraftDriver 判据),
+		// 实测 HOST 有 40/198 条 sendDiag 报 paused=1(含飞行中),每次 pause↔unpause 都让幽灵按 V×VA 后退/前冲。
+		public int DiagPausedPktCount;
+
 		// --- 帧级匀速性诊断(2026-09-22 纯观测,零行为改动;MultiPlayer ext / MultiPlayer frame / MultiPlayer chain / MultiPlayer diag) ---
 		// 依据 acceleration-smoothing 文档 §六之七/十六/十八:r27 定位残余抖动在"目标速度抖"与
 		// "帧显示节拍",r30 四层抖动(目标/可见物/部件/显示)并列 + SEG= 自打结论是最有效读法。
 		// 所有字段只记录、不参与任何位置计算;总开关 ExtraDiagEnabled 改 false 即关闭全部新日志。
-		public const bool ExtraDiagEnabled = true;
+		/// <summary>
+		/// 诊断总开关(2026-09-24 抽象):转发到 <see cref="MultiPlayerDiag.Enabled"/>,统一由该类门控所有同步诊断行。
+		/// ⚠️ 必须用**属性**而非 const:原实现为 `const bool = true`,会被编译器常量折叠 → 运行时关不掉,且相关分支
+		/// 被判为可达性异常(CS0162)。控制台命令 `MpDiag off` 可一键静默。
+		/// </summary>
+		public static bool ExtraDiagEnabled { get { return MultiPlayerDiag.Enabled; } }
 		public int DiagPktThisFrame;           // 本帧到达包数(PushSample 自增,UpdateRemoteCrafts 帧首清零)
 		public float DiagVaRaw;                // 本帧 VA 钳制前原值(自造时钟是否活着:恒定 0/负 → 时钟死)
 		public Vector3d DiagPrevTgtPos;        // 上一帧目标位置(外推后、平滑前;算 tgtMove)
@@ -273,6 +319,8 @@ namespace Assets.Scripts.Net.Sync
 		{
 			// 帧级诊断:本帧到达包数(UpdateRemoteCrafts 帧首清零;供 MultiPlayer frame/chain 判断"目标是否随包到达成串推进")
 			if (RemoteCraft.ExtraDiagEnabled && DiagPktThisFrame < 999) DiagPktThisFrame++;
+			// 暂停标志观察(纯观测):统计本窗内 Paused=1 的包数,由 RemoteCraftPoseProbe 每窗读取并清零。
+			if (data.Paused && DiagPausedPktCount < 9999) DiagPausedPktCount++;
 			// 2026-09-19:按 BodyData.Id 把发送端 body 列表重排为幽灵装配顺序(索引错位修复)。
 			// 须在入缓冲前完成,让缓冲/平滑/应用全部按幽灵序索引对齐。
 			ReorderRemoteBodiesByGhost(this, data);
@@ -300,7 +348,7 @@ namespace Assets.Scripts.Net.Sync
 					if (arrivalTime - LastGapLogTime > 1f)
 					{
 						LastGapLogTime = arrivalTime;
-						Mod.LogLobby("MultiPlayer gap P" + PlayerId + ": gap=" + gapMs.ToString("F0") + "ms" +
+						MultiPlayerDiag.Log("MultiPlayer gap P" + PlayerId + ": gap=" + gapMs.ToString("F0") + "ms" +
 							" gapEMA=" + GapEmaMs.ToString("F0") + "ms" +
 							" jitterEMA=" + JitterEmaMs.ToString("F0") + "ms" +
 							" mRate=" + SenderMotionRate.ToString("F3") +
@@ -427,6 +475,36 @@ namespace Assets.Scripts.Net.Sync
 				double d = Vector3d.Distance(data.Position, LastPktPos);
 				if (d > PktJumpM) PktJumpM = d;
 			}
+			// P2b(2026-09-24)位置流推导速度 = **跨多包基线**求差(必须长基线,见下)。
+			// 单包差分会被"发送端物理步量化"污染:发送端位置每 10ms 整步跳,单包间隔 ~13ms 时
+			// 差值在 1~2 个量化步之间 → 推导速度在 0.77~1.54×v 之间跳(实测 velSrcDiff 中位 8.5m/s、
+			// 最大 44.9m/s,正是该噪声,而非行星自转项)。取 ≥80ms 基线可把量化噪声摊到 <15%。
+			if (BufferCount >= 2)
+			{
+				int newestIdx = (BufferHead + BufferCount - 1) % BufferCapacity;
+				double tNew = Buffer[newestIdx].PacketTime;
+				int baseIdx = -1;
+				double baseSpan = 0.0;
+				for (int back = 1; back < BufferCount; back++)
+				{
+					int scanIdx = (BufferHead + BufferCount - 1 - back + BufferCapacity * 2) % BufferCapacity;
+					double span = tNew - Buffer[scanIdx].PacketTime;
+					if (span <= 0.0) break;
+					baseIdx = scanIdx; baseSpan = span;          // 兜底:最老的可用样本
+					if (span >= 0.08) break;                     // 达标即止(最小可用长基线)
+				}
+				if (baseIdx >= 0 && baseSpan > 0.02)
+				{
+					Vector3d p0 = Buffer[baseIdx].Data.Position;
+					Vector3d p1 = Buffer[newestIdx].Data.Position;
+					Vector3d dv = new Vector3d(
+						(p1.x - p0.x) / baseSpan,
+						(p1.y - p0.y) / baseSpan,
+						(p1.z - p0.z) / baseSpan);
+					double dvm = dv.magnitude;
+					if (dvm > 0.01 && dvm < 5000.0) { PosDerivedVel = dv; HasPosDerivedVel = true; }
+				}
+			}
 			LastPktPos = data.Position;
 			HasLastPktPos = true;
 
@@ -458,6 +536,8 @@ namespace Assets.Scripts.Net.Sync
 			PktFreezePos = data.Position;
 			HasPktFreezePos = true;
 			LastPktPausedFlag = data.Paused;
+			// P1(2026-09-23):暂停标志连续计数(判据见 RemoteCraftDriver pausedNow)
+			PausedFlagStreak = data.Paused ? Mathf.Min(PausedFlagStreak + 1, 999) : 0;
 		}
 
 		/// <summary>取最新样本。</summary>
@@ -538,7 +618,7 @@ namespace Assets.Scripts.Net.Sync
 			if (!rc.BodyMapDiagLogged)
 			{
 				rc.BodyMapDiagLogged = true;
-				Mod.LogLobby("MultiPlayer bodyMap P" + rc.PlayerId + ": ids=" + n + " ghost=" + gn + " mapped=" + mapped + " miss=" + miss +
+				MultiPlayerDiag.Log("MultiPlayer bodyMap P" + rc.PlayerId + ": ids=" + n + " ghost=" + gn + " mapped=" + mapped + " miss=" + miss +
 					" (mapped=15 → 重排生效;mapped=0 → 旧对端/幽灵 id 不匹配)");
 			}
 			for (int g = 0; g < gn; g++)
