@@ -1,6 +1,6 @@
 <Strings>
-    <s id="MultiPlayer.MultiPlayerUI.MPinspector">联机UI</s>
-    <s id="MultiPlayer.MultiPlayerUI.MpButtonTooltip">打开联机UI</s>
+    <s id="MultiPlayer.MultiPlayerUI.MultiPlayerInspector">联机UI</s>
+    <s id="MultiPlayer.MultiPlayerUI.MultiPlayerButtonTooltip">打开联机UI</s>
     <s id="MultiPlayer.MultiPlayerUI.PlayerJoined">{0} 加入了游戏</s>
     <s id="MultiPlayer.MultiPlayerUI.PlayerLeft">{0} 离开了游戏</s>
     <s id="MultiPlayer.MultiPlayerUI.ConnectedToHost">已作为 {0} 连接到主机（玩家 {1}）</s>
@@ -55,6 +55,19 @@
     <s id="MultiPlayer.MultiPlayerUI.NetSimStats">投递统计</s>
     <s id="MultiPlayer.MultiPlayerUI.NetSimToggle">启用延迟模拟</s>
     <s id="MultiPlayer.MultiPlayerUI.NetSimToggleHint">关闭时包直通（不延迟不丢包），保证普通 TCP 测试延迟尽量小</s>
+    <s id="MultiPlayer.MultiPlayerUI.FixSwitches">同步修复开关</s>
+    <s id="MultiPlayer.MultiPlayerUI.PosIntegratorToggle">位置积分器</s>
+    <s id="MultiPlayer.MultiPlayerUI.PosIntegratorHint">开：幽灵位置按 V×dt 自由积分 + 有界误差回收（单帧位移恒定，治抖）。关：旧外推 + 指数平滑路径。仅影响本机接收端，不随网络同步。</s>
+    <s id="MultiPlayer.MultiPlayerUI.LocalInterpToggle">本机船渲染插值</s>
+    <s id="MultiPlayer.MultiPlayerUI.LocalInterpHint">开：强制本机船 body 使用 RigidbodyInterpolation.Interpolate（消除观察者侧物理节拍台阶）。关：回滚为游戏默认 None。只影响本机观感。</s>
+    <s id="MultiPlayer.MultiPlayerUI.DiagToggle">诊断日志</s>
+    <s id="MultiPlayer.MultiPlayerUI.DiagHint">关：静默全部同步诊断（零日志开销），用于真实网络下的干净基线。开：完整诊断。</s>
+    <s id="MultiPlayer.MultiPlayerUI.ProbeToggle">渲染前探针</s>
+    <s id="MultiPlayer.MultiPlayerUI.ProbeHint">每帧可见位姿探针 追求性能时关掉它，保留周期诊断行。</s>
+    <s id="MultiPlayer.MultiPlayerUI.NetSimDuplicate">重复包（%）</s>
+    <s id="MultiPlayer.MultiPlayerUI.NetSimResetButton">复位延迟模拟</s>
+    <s id="MultiPlayer.MultiPlayerUI.LobbyWorldListButton">刷新房间列表（跨区）</s>
+    <s id="MultiPlayer.MultiPlayerUI.SteamSpikeButton">Steam 身份自检</s>
     <s id="MultiPlayer.MultiPlayerUI.NetSimDelay">延迟（ms）</s>
     <s id="MultiPlayer.MultiPlayerUI.NetSimJitter">抖动 ±（ms）</s>
     <s id="MultiPlayer.MultiPlayerUI.NetSimLoss">丢包率（%）</s>

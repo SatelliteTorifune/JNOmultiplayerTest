@@ -80,7 +80,7 @@ comLink=0.0299m ...  (恒定)
 | `comLink` | **0.0299m 恒定** | 写 body 前后 comRot 连带位移 = 根 body 写入位移 = 每帧基准污染量 |
 | `b0dLate` | **0.0299m 恒定** | LateUpdate 重写 body[0] 的位移 ≈ comLink ⇒ **Update/LateUpdate 双写基准不一致,同帧两次写入位置差 3cm** |
 | `comCross`/`b0d` | 0.0001~0.05m 变化 | 跨帧基准漂移(小) |
-| `frozen=1` `moveDelta=0.00` | — | 死区外推修复(§9.7)已收敛 → **残余抽搐与平滑无关,坐实为 comRot 反馈环** |
+| `frozen=1` `moveDelta=0.00` | — | 死区外推修复(§9.5 暂停冻结)已收敛 → **残余抽搐与平滑无关,坐实为 comRot 反馈环** |
 
 ### 根因(机制 1+2 合并确认)
 

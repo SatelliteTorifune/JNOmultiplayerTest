@@ -1,13 +1,13 @@
 using System;
 using System.Collections.Generic;
 using Assets.Packages.DevConsole;
-using Assets.Scripts.Net;
 using ModApi.Mods;
-using ModApi.Scenes.Events;
 using UnityEngine;
 
 using HarmonyLib;
 using Jundroo.ModTools;
+using Assets.Scripts.Net.MultiPlayerTransport;
+using Assets.Scripts.Net.Session;
 
 namespace Assets.Scripts
 {
@@ -40,10 +40,11 @@ namespace Assets.Scripts
 
 				// 联机房间管理器（独立类，负责网络管理器创建与场景事件）
 				new LobbyManager();
-				LobbyManager.Instance.EnsureMpManager();
+				LobbyManager.Instance.EnsureMultiPlayerManager();
 				Game.Instance.SceneManager.SceneLoaded += LobbyManager.Instance.OnSceneLoaded;
 
-				RegisterMpCommands();
+				// 常驻 UI（跨场景存活）：MultiPlayer 检查器面板；所有调试开关都在该面板里
+				// （2026-09-24：原 DevConsole 注册的调试命令已全部迁移到 UI 并删除注册）。
 				InitializeUserInterface();
 
 				// 更新检查（移植自 Volken2 ModUpdater，含防卡死机制）：
@@ -59,7 +60,7 @@ namespace Assets.Scripts
 
 		private void DeployHarmony()
 		{
-			Harmony harmony = new Harmony("MPTest");
+			Harmony harmony = new Harmony("MultiPlayer");
 			harmony.PatchAll();
 			JetEngineGhostPatch.Apply(harmony);
 		}
@@ -74,121 +75,9 @@ namespace Assets.Scripts
 
 			// Steam 大厅浏览器（房间列表）：独立对象跨场景常驻，任何场景都泵回调（SteamAPI.RunCallbacks 保险），
 			// 并处理好友"加入游戏"邀请（GameLobbyJoinRequested_t）。见 plans/steam-lobby-2026-09-12.md。
-			GameObject lobbyObject = new GameObject("MPSteamLobbyBrowser");
+			GameObject lobbyObject = new GameObject("MultiPlayerSteamLobbyBrowser");
 			lobbyObject.AddComponent<Net.SteamLobbyBrowser>();
 			GameObject.DontDestroyOnLoad(lobbyObject);
-		}
-
-		/// <summary>注册联机控制台命令（HostLobby / JoinLobby / StopLobby）。</summary>
-		private void RegisterMpCommands()
-		{
-			DevConsoleApi.RegisterCommand<int>("HostLobbyPort", new Action<int>(port => LobbyManager.Instance.HostLobby(port)));
-			DevConsoleApi.RegisterCommand<string, int>("JoinLobbyPort", new Action<string, int>((host, port) => LobbyManager.Instance.JoinLobby(host, port)));
-			DevConsoleApi.RegisterCommand("StopLobby", new Action(() => LobbyManager.Instance.StopLobby()));
-			// FishNet spike 临时验证命令：起本地 server+client 验证连接
-			DevConsoleApi.RegisterCommand("FishNetSpike", new Action(() =>
-			{
-				Log("FishNetSpike: creating spike object");
-				new GameObject("FishNetSpike").AddComponent<Net.FishNetSpike>();
-			}));
-			// Steam API 可行性 spike：反射 SocialExt 验证 mod 能否拿到 Steam 身份
-			DevConsoleApi.RegisterCommand("SteamSpike", new Action(() =>
-			{
-				LogLobby("SteamSpike: creating spike object");
-				new GameObject("SteamSpike").AddComponent<Net.SteamSpike>();
-			}));
-			// Steam P2P：房主开房（port 忽略，Steam 无端口）
-			DevConsoleApi.RegisterCommand<int>("SteamHostLobby", new Action<int>(port => LobbyManager.Instance.HostLobby(port)));
-			// Steam P2P：客户端按房主 SteamId 加入
-			DevConsoleApi.RegisterCommand<string>("SteamJoinLobby", new Action<string>(hostSteamId => LobbyManager.Instance.JoinLobby(hostSteamId, 0)));
-			// Steam 房间列表（大厅浏览器，见 plans/steam-lobby-2026-09-12.md）：开房可见、点列表加入
-			DevConsoleApi.RegisterCommand("SteamLobbyList", new Action(() =>
-			{
-				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.RefreshLobbyList();
-			}));
-			// 世界范围列表（默认 Regional 距离过滤；跨区找房用）
-			DevConsoleApi.RegisterCommand("SteamLobbyListWorld", new Action(() =>
-			{
-				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.RefreshLobbyList(true);
-			}));
-			DevConsoleApi.RegisterCommand<string>("SteamLobbyCreate", new Action<string>(name =>
-			{
-				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.CreateLobby(name, Net.SteamLobbyBrowser.DefaultMaxPlayers);
-			}));
-			DevConsoleApi.RegisterCommand<ulong>("SteamLobbyJoin", new Action<ulong>(lobbyId =>
-			{
-				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.JoinLobby(lobbyId);
-			}));
-			DevConsoleApi.RegisterCommand("SteamLobbyLeave", new Action(() =>
-			{
-				if (Net.SteamLobbyBrowser.Instance != null) Net.SteamLobbyBrowser.Instance.LeaveLobby();
-			}));
-			// TCP debug（本地虚拟机联机调试）：先切到 TcpTransport 再开房 / 加入。
-			// 房主监听 IPAddress.Any:port；客户端按宿主局域网 IP:port 连接（如 192.168.x.x:25555）。
-			// 若已启用 NetSim 延迟模拟（NetSimDelay 等），自动包一层 LagSimTransport 模拟公网延迟。
-			DevConsoleApi.RegisterCommand<int>("TcpHostLobby", new Action<int>(port =>
-			{
-				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-				if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
-				LobbyManager.Instance.HostLobby(port);
-			}));
-			DevConsoleApi.RegisterCommand<string, int>("TcpJoinLobby", new Action<string, int>((host, port) =>
-			{
-				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
-				if (mgr != null) mgr.SetTransport(Net.LagSimTransport.MaybeWrap(new Net.TcpTransport()));
-				LobbyManager.Instance.JoinLobby(host, port);
-			}));
-			// 网络延迟模拟（NetSim）：无需 Steam 好友，在 TCP+本地 VM 上模拟公网延迟/抖动/丢包。
-			// 语义：数值命令(NetSimDelay/Jitter/Loss/Duplicate)只设数值、不开总开关；
-			//      总开关 NetSimOn/NetSimOff（或 UI Toggle）控制是否实际生效——避免其它场景残留延迟。
-			// 会话中改值实时生效；已启用实例改总开关也实时直通/恢复。
-			DevConsoleApi.RegisterCommand<int>("NetSimDelay", new Action<int>(ms =>
-			{
-				Net.LagSimTransport.SetDelay(Mathf.Max(0, ms));
-				LogLobby("NetSimDelay -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + "; 需 NetSimOn 或 UI 开关开启后生效)");
-			}));
-			DevConsoleApi.RegisterCommand<int>("NetSimJitter", new Action<int>(ms =>
-			{
-				Net.LagSimTransport.SetJitter(Mathf.Max(0, ms));
-				LogLobby("NetSimJitter -> " + ms + "ms (" + Net.LagSimTransport.DescribeConfig() + ")");
-			}));
-			DevConsoleApi.RegisterCommand<float>("NetSimLoss", new Action<float>(pct =>
-			{
-				Net.LagSimTransport.SetLoss(Mathf.Clamp(pct, 0f, 100f));
-				LogLobby("NetSimLoss -> " + pct + "% (" + Net.LagSimTransport.DescribeConfig() + ")");
-			}));
-			DevConsoleApi.RegisterCommand<float>("NetSimDuplicate", new Action<float>(pct =>
-			{
-				Net.LagSimTransport.SetDuplicate(Mathf.Clamp(pct, 0f, 100f));
-				LogLobby("NetSimDuplicate -> " + pct + "% (" + Net.LagSimTransport.DescribeConfig() + ")");
-			}));
-			DevConsoleApi.RegisterCommand("NetSimOn", new Action(() =>
-			{
-				Net.LagSimTransport.SetToggle(true);
-				LogLobby("NetSimOn: " + Net.LagSimTransport.DescribeConfig() +
-					(Net.LagSimTransport.Enabled ? "（已生效；开房自动包装，活跃实例实时生效）" : "（数值未设,实为直通）"));
-			}));
-			DevConsoleApi.RegisterCommand("NetSimOff", new Action(() =>
-			{
-				Net.LagSimTransport.SetToggle(false);
-				LogLobby("NetSimOff: 延迟模拟已关闭（直通；后续 TcpHostLobby/TcpJoinLobby 不包装，活跃实例立即直通）");
-			}));
-			DevConsoleApi.RegisterCommand("NetSimReset", new Action(() =>
-			{
-				Net.LagSimTransport.ResetConfig();
-				LogLobby("NetSimReset: 数值与总开关已清空（后续 TcpHostLobby/TcpJoinLobby 不再包装；当前会话若已包装则立即直通）");
-			}));
-			DevConsoleApi.RegisterCommand("NetSim", new Action(() =>
-			{
-				MpNetworkManager mgr = MpNetworkManager.Instance;
-				Net.LagSimTransport lag = mgr != null ? mgr.Transport as Net.LagSimTransport : null;
-				LogLobby("NetSim 配置: " + Net.LagSimTransport.DescribeConfig() +
-					(lag != null ? " | 活跃实例统计: " + lag.DescribeStats() : " | 当前传输未启用延迟模拟(需开房前配置或重启会话)"));
-			}));
-			// 接收端平滑/网络诊断仅通过 Mod.LogLobby 写 Player.log（3s 周期行 "MP smoothing P#"），不设悬浮窗。
-			// 房主调整状态包发送频率（Hz）：SetTickRate 20 → 50ms（默认）；5 → 200ms；60 → ~16.7ms。
-			// 房主设置后广播给所有客户端（SP2 ServerTickRate 同款思路）。
-			DevConsoleApi.RegisterCommand<int>("SetTickRate", new Action<int>(hz => LobbyManager.Instance.SetTickRate(hz)));
 		}
 
 		/// <summary>联机状态包数据结构。</summary>
@@ -242,9 +131,38 @@ namespace Assets.Scripts
 			public List<Vector3> BodyPositions;
 
 			/// <summary>
+			/// 每个 body 的稳定标识(BodyData.Id,craft XML 的 id 属性,与 BodyPositions 平行同索引)。
+			/// 2026-09-19:发送端装配顺序/列表可能与本机幽灵不一致(实测 bodyMaxRelΔ 4~6m/1s、
+			/// 接收端 bodyTgt≈5m 恒定 → 索引错位把不同部件位姿互写 → 部件持续追赶抖动)。
+			/// 接收端按 id 重排到幽灵装配顺序(见 MultiPlayerNetworkManager.ReorderRemoteBodiesByGhost);
+			/// 旧对端无此字段时回退索引直用。仅在包尾传输,双向兼容。
+			/// </summary>
+			public List<int> BodyIds;
+
+			/// <summary>
+			/// 每个 body 的角速度(**body 自身局部系**,弧度/秒,与 BodyPositions 平行同索引,rotating-body-sync)。
+			/// 旋翼叶片等高速旋转 body 在 20Hz 位置快照下每包相位跳 90°+(实测接收端 bodyTgt≈5.9m 恒定、
+			/// bodyBig 数百) → 10·dt 平滑追不上 → 叶片"跳着转"。接收端据此做"刚体旋转外推":
+			/// 目标位置/朝向 = 包内值绕 ω 轴旋转 ω·ext(与朝向外推同手法)。
+			/// 局部系定义:发送端采样 Quaternion.Inverse(body.Transform.rotation) * rigidbody.angularVelocity。
+			/// 协议尾部追加(2026-09-22):旧对端包读到 EOF → 零值(无外推,行为不变)。
+			/// </summary>
+			public List<Vector3> BodyAngularVelocities;
+
+			/// <summary>
+			/// 每个 body 相对 comRot 的**线速度**(comRot 局部系,米/秒,与 BodyPositions 平行同索引,
+			/// rotating-body-sync)。旋翼叶片绕桨毂公转时位置快照每包跳 90°+,且桨毂不在 comRot 上
+			/// (绕 comRot 原点外推位置会画错圆) → 发送端直接传"相对 comRot 位置的变化率"
+			/// (数值差分 BodyPositions),接收端对旋转 body 逐帧积分:sp += v·dt,切线方向随 ω 旋转。
+			/// 不需要知道旋转中心,逐帧小步积分(60fps 下 θ_frame≈0.5rad)天然精确。
+			/// 协议尾部追加(2026-09-22):旧对端包读到 EOF → 零值(无位置外推,行为不变)。
+			/// </summary>
+			public List<Vector3> BodyVelocities;
+
+			/// <summary>
 			/// 每台引擎的"视觉 throttle"(0..1)，按确定顺序(Data.Assembly.Parts 顺序→每部件 modifiers 顺序)
 			/// 与接收端一一对应：液体引擎=EngineThrottle，航发=EngineThrottle(接收端据此推导加力尾焰驱动值 ab)。
-			/// 接收端据此驱动幽灵船尾焰(液体走 ExhaustThrottleOverride;航发加力由 MP 层直接驱动)。
+			/// 接收端据此驱动幽灵船尾焰(液体走 ExhaustThrottleOverride;航发加力由 MultiPlayer 层直接驱动)。
 			/// </summary>
 			public List<float> EngineThrottles;
 
@@ -307,6 +225,9 @@ namespace Assets.Scripts
 				Stage = 0;
 				BodyRotations = new List<Vector3>();
 				BodyPositions = new List<Vector3>();
+				BodyIds = new List<int>();
+				BodyAngularVelocities = new List<Vector3>();
+				BodyVelocities = new List<Vector3>();
 				EngineThrottles = new List<float>();
 				PartActivated = new List<bool>();
 				Paused = false;

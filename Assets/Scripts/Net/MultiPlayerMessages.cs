@@ -12,7 +12,7 @@ namespace Assets.Scripts.Net
 	/// SP2 方案：PlayerJoin 只广播"谁加入了 + 飞船 hash"，不带飞船 XML；
 	/// 客户端收到后若本地缓存无该 hash，则发 CraftXmlRequest 按需拉取 XML。
 	/// </summary>
-	public enum MpMessageType : byte
+	public enum MultiPlayerMessageType : byte
 	{
 		Hello = 1,       // 加入者 -> 房主：请求加入（含玩家名）
 		Welcome = 2,     // 房主 -> 加入者：欢迎（分配 PlayerId / 初始 NodeId）
@@ -36,11 +36,11 @@ namespace Assets.Scripts.Net
 	/// [msgType:1][payload...]
 	/// 状态包：NodeId(int) + FlightState.Time(double) + recdata
 	/// </summary>
-	public static class MpMessages
+	public static class MultiPlayerMessages
 	{
 		// ---------------- 基础封装 ----------------
 
-		private static byte[] Pack(MpMessageType type, Action<BinaryWriter> writePayload)
+		private static byte[] Pack(MultiPlayerMessageType type, Action<BinaryWriter> writePayload)
 		{
 			using (MemoryStream ms = new MemoryStream())
 			using (BinaryWriter w = new BinaryWriter(ms))
@@ -51,10 +51,10 @@ namespace Assets.Scripts.Net
 			}
 		}
 
-		public static MpMessageType PeekType(byte[] buffer)
+		public static MultiPlayerMessageType PeekType(byte[] buffer)
 		{
 			if (buffer == null || buffer.Length < 1) return 0;
-			return (MpMessageType)buffer[0];
+			return (MultiPlayerMessageType)buffer[0];
 		}
 
 		// ---------------- craft XML 压缩 ----------------
@@ -96,7 +96,7 @@ namespace Assets.Scripts.Net
 
 		public static byte[] EncodeHello(string playerName)
 		{
-			return Pack(MpMessageType.Hello, w => w.Write(playerName ?? "Player"));
+			return Pack(MultiPlayerMessageType.Hello, w => w.Write(playerName ?? "Player"));
 		}
 
 		public static bool TryDecodeHello(byte[] buffer, out string playerName)
@@ -108,7 +108,7 @@ namespace Assets.Scripts.Net
 				using (BinaryReader r = new BinaryReader(ms))
 				{
 					byte type = r.ReadByte();
-					if (type != (byte)MpMessageType.Hello) return false;
+					if (type != (byte)MultiPlayerMessageType.Hello) return false;
 					playerName = r.ReadString();
 					return true;
 				}
@@ -118,7 +118,7 @@ namespace Assets.Scripts.Net
 
 		public static byte[] EncodeWelcome(int playerId, int nodeId, long serverTick)
 		{
-			return Pack(MpMessageType.Welcome, w =>
+			return Pack(MultiPlayerMessageType.Welcome, w =>
 			{
 				w.Write(playerId);
 				w.Write(nodeId);
@@ -134,7 +134,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.Welcome) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.Welcome) return false;
 					playerId = r.ReadInt32();
 					nodeId = r.ReadInt32();
 					serverTick = r.ReadInt64();
@@ -162,7 +162,7 @@ namespace Assets.Scripts.Net
 
 		public static byte[] EncodePlayerJoin(int playerId, int nodeId, string playerName, string craftXmlHash)
 		{
-			return Pack(MpMessageType.PlayerJoin, w =>
+			return Pack(MultiPlayerMessageType.PlayerJoin, w =>
 			{
 				w.Write(playerId);
 				w.Write(nodeId);
@@ -179,7 +179,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.PlayerJoin) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.PlayerJoin) return false;
 					playerId = r.ReadInt32();
 					nodeId = r.ReadInt32();
 					playerName = r.ReadString();
@@ -192,7 +192,7 @@ namespace Assets.Scripts.Net
 
 		public static byte[] EncodePlayerLeave(int playerId)
 		{
-			return Pack(MpMessageType.PlayerLeave, w => w.Write(playerId));
+			return Pack(MultiPlayerMessageType.PlayerLeave, w => w.Write(playerId));
 		}
 
 		public static bool TryDecodePlayerLeave(byte[] buffer, out int playerId)
@@ -203,7 +203,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.PlayerLeave) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.PlayerLeave) return false;
 					playerId = r.ReadInt32();
 					return true;
 				}
@@ -219,7 +219,7 @@ namespace Assets.Scripts.Net
 		/// </summary>
 		public static byte[] EncodeState(int playerId, int nodeId, double time, Mod.RemoteDataPack data)
 		{
-			return Pack(MpMessageType.State, w =>
+			return Pack(MultiPlayerMessageType.State, w =>
 			{
 				w.Write(playerId);
 				w.Write(nodeId);
@@ -236,7 +236,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.State) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.State) return false;
 					playerId = r.ReadInt32();
 					nodeId = r.ReadInt32();
 					time = r.ReadDouble();
@@ -251,7 +251,7 @@ namespace Assets.Scripts.Net
 
 		public static byte[] EncodeCraftData(int nodeId, string craftXml)
 		{
-			return Pack(MpMessageType.CraftData, w =>
+			return Pack(MultiPlayerMessageType.CraftData, w =>
 			{
 				w.Write(nodeId);
 				byte[] xmlBytes = CompressXml(craftXml ?? string.Empty);
@@ -268,7 +268,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.CraftData) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.CraftData) return false;
 					nodeId = r.ReadInt32();
 					int len = r.ReadInt32();
 					craftXml = DecompressXml(r.ReadBytes(len));
@@ -282,7 +282,7 @@ namespace Assets.Scripts.Net
 
 		public static byte[] EncodeCraftDataAck(int nodeId)
 		{
-			return Pack(MpMessageType.CraftDataAck, w => w.Write(nodeId));
+			return Pack(MultiPlayerMessageType.CraftDataAck, w => w.Write(nodeId));
 		}
 
 		public static bool TryDecodeCraftDataAck(byte[] buffer, out int nodeId)
@@ -293,7 +293,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.CraftDataAck) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.CraftDataAck) return false;
 					nodeId = r.ReadInt32();
 					return true;
 				}
@@ -305,7 +305,7 @@ namespace Assets.Scripts.Net
 
 		public static byte[] EncodePlayerJoinAck(int playerId)
 		{
-			return Pack(MpMessageType.PlayerJoinAck, w => w.Write(playerId));
+			return Pack(MultiPlayerMessageType.PlayerJoinAck, w => w.Write(playerId));
 		}
 
 		public static bool TryDecodePlayerJoinAck(byte[] buffer, out int playerId)
@@ -316,7 +316,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.PlayerJoinAck) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.PlayerJoinAck) return false;
 					playerId = r.ReadInt32();
 					return true;
 				}
@@ -329,7 +329,7 @@ namespace Assets.Scripts.Net
 		/// <summary>客户端 -> 房主：请求指定玩家（playerId）的飞船 XML（带其 hash 供房主校验）。</summary>
 		public static byte[] EncodeCraftXmlRequest(int playerId, string craftXmlHash)
 		{
-			return Pack(MpMessageType.CraftXmlRequest, w =>
+			return Pack(MultiPlayerMessageType.CraftXmlRequest, w =>
 			{
 				w.Write(playerId);
 				w.Write(craftXmlHash ?? string.Empty);
@@ -344,7 +344,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.CraftXmlRequest) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.CraftXmlRequest) return false;
 					playerId = r.ReadInt32();
 					craftXmlHash = r.ReadString();
 					return true;
@@ -356,7 +356,7 @@ namespace Assets.Scripts.Net
 		/// <summary>房主 -> 客户端：返回指定玩家的飞船 XML（压缩，大包自动分片）。</summary>
 		public static byte[] EncodeCraftXmlResponse(int playerId, string craftXmlHash, string craftXml)
 		{
-			return Pack(MpMessageType.CraftXmlResponse, w =>
+			return Pack(MultiPlayerMessageType.CraftXmlResponse, w =>
 			{
 				w.Write(playerId);
 				w.Write(craftXmlHash ?? string.Empty);
@@ -374,7 +374,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.CraftXmlResponse) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.CraftXmlResponse) return false;
 					playerId = r.ReadInt32();
 					craftXmlHash = r.ReadString();
 					int len = r.ReadInt32();
@@ -389,12 +389,12 @@ namespace Assets.Scripts.Net
 
 		public static byte[] EncodePing(long tick)
 		{
-			return Pack(MpMessageType.Ping, w => w.Write(tick));
+			return Pack(MultiPlayerMessageType.Ping, w => w.Write(tick));
 		}
 
 		public static byte[] EncodePong(long tick)
 		{
-			return Pack(MpMessageType.Pong, w => w.Write(tick));
+			return Pack(MultiPlayerMessageType.Pong, w => w.Write(tick));
 		}
 
 		public static bool TryDecodePing(byte[] buffer, out long tick)
@@ -405,7 +405,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.Ping) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.Ping) return false;
 					tick = r.ReadInt64();
 					return true;
 				}
@@ -421,7 +421,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.Pong) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.Pong) return false;
 					tick = r.ReadInt64();
 					return true;
 				}
@@ -433,7 +433,7 @@ namespace Assets.Scripts.Net
 
 		public static byte[] EncodeKick()
 		{
-			return Pack(MpMessageType.Kick, _ => { });
+			return Pack(MultiPlayerMessageType.Kick, _ => { });
 		}
 
 		public static bool TryDecodeKick(byte[] buffer)
@@ -443,7 +443,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					return r.ReadByte() == (byte)MpMessageType.Kick;
+					return r.ReadByte() == (byte)MultiPlayerMessageType.Kick;
 				}
 			}
 			catch { return false; }
@@ -453,7 +453,7 @@ namespace Assets.Scripts.Net
 
 		public static byte[] EncodeTickRate(int hz)
 		{
-			return Pack(MpMessageType.TickRate, w => w.Write(hz));
+			return Pack(MultiPlayerMessageType.TickRate, w => w.Write(hz));
 		}
 
 		public static bool TryDecodeTickRate(byte[] buffer, out int hz)
@@ -464,7 +464,7 @@ namespace Assets.Scripts.Net
 				using (MemoryStream ms = new MemoryStream(buffer))
 				using (BinaryReader r = new BinaryReader(ms))
 				{
-					if (r.ReadByte() != (byte)MpMessageType.TickRate) return false;
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.TickRate) return false;
 					hz = r.ReadInt32();
 					return true;
 				}
@@ -531,6 +531,32 @@ namespace Assets.Scripts.Net
 			// 新端读旧包读到 EOF → 零值(见 ReadRecdata 的 try/catch,退化 1 阶外推)。
 			w.Write(d.Acceleration.x); w.Write(d.Acceleration.y); w.Write(d.Acceleration.z);
 			w.Write(d.AngularVelocity.x); w.Write(d.AngularVelocity.y); w.Write(d.AngularVelocity.z);
+
+			// body 稳定标识(2026-09-19,body-sync 索引错位修复):BodyData.Id,与 BodyPositions 平行同索引。
+			// 仍**最后**追加:旧端读新包忽略尾部;新端读旧包 EOF → BodyIds=null → 回退索引直用(兼容)。
+			int bidCount = d.BodyIds == null ? 0 : d.BodyIds.Count;
+			w.Write(bidCount);
+			for (int i = 0; i < bidCount; i++) w.Write(d.BodyIds[i]);
+
+			// body 角速度(2026-09-22,rotating-body-sync):body 自身局部系,弧度/秒,与 BodyPositions 平行同索引。
+			// 仍**最后**追加:旧端读新包忽略尾部;新端读旧包 EOF → BodyAngularVelocities=null → 无旋转外推(兼容)。
+			int bwCount = d.BodyAngularVelocities == null ? 0 : d.BodyAngularVelocities.Count;
+			w.Write(bwCount);
+			for (int i = 0; i < bwCount; i++)
+			{
+				Vector3 bw = d.BodyAngularVelocities[i];
+				w.Write(bw.x); w.Write(bw.y); w.Write(bw.z);
+			}
+
+			// body 相对 comRot 线速度(2026-09-22,rotating-body-sync):comRot 局部系,米/秒,与 BodyPositions 平行同索引。
+			// 仍**最后**追加:旧端读新包忽略尾部;新端读旧包 EOF → BodyVelocities=null → 无位置外推(兼容)。
+			int bvCount = d.BodyVelocities == null ? 0 : d.BodyVelocities.Count;
+			w.Write(bvCount);
+			for (int i = 0; i < bvCount; i++)
+			{
+				Vector3 bv = d.BodyVelocities[i];
+				w.Write(bv.x); w.Write(bv.y); w.Write(bv.z);
+			}
 		}
 
 		public static Mod.RemoteDataPack ReadRecdata(BinaryReader r)
@@ -595,6 +621,36 @@ namespace Assets.Scripts.Net
 				d.AngularVelocity = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
 			}
 			catch { d.Acceleration = Vector3.zero; d.AngularVelocity = Vector3.zero; }
+
+			// body 稳定标识(2026-09-19):仍尾部最后;旧对端包无 → EOF → BodyIds=null(接收端回退索引直用)。
+			try
+			{
+				int bidCount = r.ReadInt32();
+				for (int i = 0; i < bidCount; i++) d.BodyIds.Add(r.ReadInt32());
+			}
+			catch { d.BodyIds = null; }
+
+			// body 角速度(2026-09-22,rotating-body-sync):仍尾部最后;旧对端包无 → EOF → null(无旋转外推)。
+			try
+			{
+				int bwCount = r.ReadInt32();
+				for (int i = 0; i < bwCount; i++)
+				{
+					d.BodyAngularVelocities.Add(new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
+				}
+			}
+			catch { d.BodyAngularVelocities = null; }
+
+			// body 相对 comRot 线速度(2026-09-22,rotating-body-sync):仍尾部最后;旧对端包无 → EOF → null(无位置外推)。
+			try
+			{
+				int bvCount = r.ReadInt32();
+				for (int i = 0; i < bvCount; i++)
+				{
+					d.BodyVelocities.Add(new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
+				}
+			}
+			catch { d.BodyVelocities = null; }
 
 			return d;
 		}

@@ -10,7 +10,7 @@ using ModApi.Craft.Parts;
 using ModApi.Flight.GameView;
 using UnityEngine;
 
-namespace Assets.Scripts.Net
+namespace Assets.Scripts.Net.CraftVisual
 {
 	/// <summary>
 	/// 异步 prefab 预加载器（SP2 式"异步预加载 + 真实百分比加载框"）：
@@ -22,7 +22,7 @@ namespace Assets.Scripts.Net
 	///   mod 部件（PartType.Mod != null 且 PrefabPath 以 "Assets/" 开头）走 mod.ResourceLoader.LoadAsset（同步，数量少，分帧散开）。
 	/// 不拦截/不改写/不跳过任何装配逻辑。
 	/// </summary>
-	public static class MpCraftPreloader
+	public static class MultiPlayerCraftPreloader
 	{
 		/// <summary>单个 prefab 加载任务。</summary>
 		private struct PrefabJob
@@ -91,11 +91,11 @@ namespace Assets.Scripts.Net
 					try
 					{
 						GameObject asset = job.Mod.ResourceLoader.LoadAsset<GameObject>(job.Path);
-						if (asset == null) Mod.LogError("MP preloader: mod prefab not found: '" + job.Path + "'");
+						if (asset == null) Mod.LogError("MultiPlayer preloader: mod prefab not found: '" + job.Path + "'");
 					}
 					catch (Exception e)
 					{
-						Mod.LogError("MP preloader: mod prefab load error '" + job.Path + "': " + e.Message);
+						Mod.LogError("MultiPlayer preloader: mod prefab load error '" + job.Path + "': " + e.Message);
 					}
 					done++;
 					if (onProgress != null) onProgress((float)done / total);
@@ -111,12 +111,12 @@ namespace Assets.Scripts.Net
 					}
 					catch (Exception e)
 					{
-						Mod.LogError("MP preloader: async load start error '" + job.Path + "': " + e.Message);
+						Mod.LogError("MultiPlayer preloader: async load start error '" + job.Path + "': " + e.Message);
 					}
 					if (wrapper == null || wrapper.Request == null)
 					{
 						// 启动失败：记日志、继续（不阻塞整体）
-						Mod.LogError("MP preloader: async load failed to start '" + job.Path + "'");
+						Mod.LogError("MultiPlayer preloader: async load failed to start '" + job.Path + "'");
 						done++;
 						if (onProgress != null) onProgress((float)done / total);
 						continue;
@@ -128,7 +128,7 @@ namespace Assets.Scripts.Net
 					}
 					if (wrapper.Request.asset == null)
 					{
-						Mod.LogError("MP preloader: main prefab not found: '" + job.Path + "'");
+						Mod.LogError("MultiPlayer preloader: main prefab not found: '" + job.Path + "'");
 					}
 					done++;
 					if (onProgress != null) onProgress((float)done / total);
@@ -142,7 +142,7 @@ namespace Assets.Scripts.Net
 	/// SP2 风格加载进度框：远程玩家位置上方一个"旋转的白色薄板方框" + TextMesh 百分比（真实进度）。
 	/// 始终面向相机（billboard：拷贝相机旋转）+ 薄板绕视线轴（自身 Z）旋转；加载完成/取消时调用 DestroyIndicator 销毁。
 	/// </summary>
-	public class MpCraftLoadingIndicator : MonoBehaviour
+	public class MultiPlayerCraftLoadingIndicator : MonoBehaviour
 	{
 		private const float SpinSpeedDeg = 150f;
 
@@ -152,11 +152,11 @@ namespace Assets.Scripts.Net
 		private string _label;
 
 		/// <summary>在指定世界坐标创建加载进度框。</summary>
-		public static MpCraftLoadingIndicator Create(Vector3 worldPosition)
+		public static MultiPlayerCraftLoadingIndicator Create(Vector3 worldPosition)
 		{
-			GameObject go = new GameObject("MpCraftLoadingIndicator");
+			GameObject go = new GameObject("MultiPlayerCraftLoadingIndicator");
 			go.transform.position = worldPosition;
-			MpCraftLoadingIndicator ind = go.AddComponent<MpCraftLoadingIndicator>();
+			MultiPlayerCraftLoadingIndicator ind = go.AddComponent<MultiPlayerCraftLoadingIndicator>();
 			ind.Build();
 			return ind;
 		}
@@ -166,7 +166,7 @@ namespace Assets.Scripts.Net
 			// 旋转的白色薄板方框：宽 X/Y、薄 Z（法线朝 Z）→ 朝向相机后正面是 2.2x2.2 的大面，
 			// 绕自身 Z（视线轴）旋转呈"旋转方框"（SP2 LoadingAircraftStatusScript 同款）。
 			GameObject cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
-			cube.name = "MpLoadingSpinner";
+			cube.name = "MultiPlayerLoadingSpinner";
 			cube.transform.SetParent(transform, false);
 			cube.transform.localPosition = Vector3.zero;
 			cube.transform.localScale = new Vector3(2.2f, 2.2f, 0.06f);
@@ -182,7 +182,7 @@ namespace Assets.Scripts.Net
 			_spinner = cube.transform;
 
 			// 子物体 TextMesh 显示 "正在加载飞船\nN%"（真实进度）
-			GameObject textGo = new GameObject("MpLoadingText");
+			GameObject textGo = new GameObject("MultiPlayerLoadingText");
 			textGo.transform.SetParent(transform, false);
 			textGo.transform.localPosition = new Vector3(0f, 1.9f, 0f);
 			_text = textGo.AddComponent<TextMesh>();

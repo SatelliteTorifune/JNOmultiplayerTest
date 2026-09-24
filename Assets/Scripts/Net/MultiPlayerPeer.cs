@@ -6,7 +6,7 @@ namespace Assets.Scripts.Net
 	/// <summary>
 	/// 一个远端对等端（玩家）的标识与元信息。
 	/// </summary>
-	public class MpPeer : IEquatable<MpPeer>
+	public class MultiPlayerPeer : IEquatable<MultiPlayerPeer>
 	{
 		public IPEndPoint EndPoint;
 		public ulong SteamId;          // Steam 传输下的对端 SteamId（Steam P2P 寻址用）
@@ -33,12 +33,12 @@ namespace Assets.Scripts.Net
 		public int PingMs = -1;        // 房主测量的该对端往返延迟（RTT，毫秒）；-1 = 尚未测得
 		public bool IsServer;
 
-		public bool Equals(MpPeer other)
+		public bool Equals(MultiPlayerPeer other)
 		{
 			return other != null && EndPoint != null && other.EndPoint != null && EndPoint.Equals(other.EndPoint);
 		}
 
-		public override bool Equals(object obj) => Equals(obj as MpPeer);
+		public override bool Equals(object obj) => Equals(obj as MultiPlayerPeer);
 		public override int GetHashCode() => EndPoint == null ? 0 : EndPoint.GetHashCode();
 	}
 }

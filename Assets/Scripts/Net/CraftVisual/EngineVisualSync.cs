@@ -10,8 +10,9 @@ using ModApi.Craft.Parts;
 using ModApi.Flight.GameView;
 using ModApi.Flight.Sim;
 using UnityEngine;
+using Assets.Scripts.Net.Sync;
 
-namespace Assets.Scripts.Net
+namespace Assets.Scripts.Net.CraftVisual
 {
 	/// <summary>
 	/// 幽灵船引擎尾焰同步(液体尾焰 + 航发尾焰,见 plans/archive/engine-fx-sync-feasibility.md §3.5/§3.6)。
@@ -64,10 +65,10 @@ namespace Assets.Scripts.Net
 			/// <summary>液体火箭的尾焰 ExhaustSystemScript(写 ExpansionRatio 用;仅 IsRocket,航发走 RocketExhaust)。</summary>
 			public ExhaustSystemScript RocketExhaustSystem;
 			/// <summary>
-			/// 是否由 MP 层每帧直接调 EngineCommon.FlightUpdate(1f,1f) 驱动:
-			/// - EngineScript:false —— 游戏自身 IFlightUpdate 每帧无条件调,走 Route A,MP 层不重复调(避免纹理滚动 2x);
+			/// 是否由 MultiPlayer 层每帧直接调 EngineCommon.FlightUpdate(1f,1f) 驱动:
+			/// - EngineScript:false —— 游戏自身 IFlightUpdate 每帧无条件调,走 Route A,MultiPlayer 层不重复调(避免纹理滚动 2x);
 			/// - RocketEngineScript:true —— 其 IFlightUpdate 被 (Activated&&throttle>0)||_hasBeenActivated 门控,
-			///   幽灵上 throttle=0 游戏不调,必须由 MP 层驱动;
+			///   幽灵上 throttle=0 游戏不调,必须由 MultiPlayer 层驱动;
 			/// - JetEngineScript:true —— 其 IFlightUpdate 已被 Harmony patch 跳过。
 			/// </summary>
 			public bool DriveDirectly;
@@ -211,7 +212,7 @@ namespace Assets.Scripts.Net
 		/// InjectGhostMotion 注入的 rigidbody.velocity 驱动(见 plans §10)。
 		/// 幂等:已建立则跳过。CraftScript 未就绪时返回 false,调用方下一帧重试。
 		/// </summary>
-		public static bool SetupGhostEngineVisuals(MpNetworkManager.RemoteCraft rc)
+		public static bool SetupGhostEngineVisuals(RemoteCraft rc)
 		{
 			if (rc == null || rc.Node == null || rc.Node.CraftScript == null) return false;
 			if (rc.EngineDrivers != null) return true; // 已建立
@@ -250,7 +251,7 @@ namespace Assets.Scripts.Net
 								// 发送端航发可见尾焰只由 _afterburnerThrottle 决定;普通节流阀 EngineThrottle 只用于烟雾门控(ApplyJetSmokeVisuals)。
 								// 航发自身 FlightUpdate 被 patch 跳过,由 DriveGhostEngineVisuals 调用 ec.FlightUpdate。
 								EngineCommon captured = ec;
-								MpNetworkManager.RemoteCraft capturedRc = rc;
+								RemoteCraft capturedRc = rc;
 								int capturedIdx = idx;
 								bool hasAb = jd != null && jd.HasAfterburner;
 								float abStart = jd != null ? jd.AfterburnerThrottleStart : 0.8f;
@@ -279,11 +280,11 @@ namespace Assets.Scripts.Net
 							if (ec != null)
 							{
 								EngineCommon captured = ec;
-								MpNetworkManager.RemoteCraft capturedRc = rc;
+								RemoteCraft capturedRc = rc;
 								int capturedIdx = idx;
 								captured.ExhaustThrottleOverride = () => GetSyncedThrottle(capturedRc, capturedIdx);
 							}
-							// RocketEngine:游戏 IFlightUpdate 被 throttle>0 门控,幽灵上不调 → 由 MP 层直接驱动
+							// RocketEngine:游戏 IFlightUpdate 被 throttle>0 门控,幽灵上不调 → 由 MultiPlayer 层直接驱动
 							RocketEngineScript res = (RocketEngineScript)mod;
 							RocketEngineData rd = res.Data;
 							ExhaustSystemScript resEx = part.PartScript.GameObject.GetComponentInChildren<ExhaustSystemScript>(true);
@@ -320,7 +321,7 @@ namespace Assets.Scripts.Net
 							{
 								// Route A:游戏自身 IFlightUpdate 每帧无条件调 FlightUpdate,经此 override 驱动尾焰
 								EngineCommon captured = ec;
-								MpNetworkManager.RemoteCraft capturedRc = rc;
+								RemoteCraft capturedRc = rc;
 								int capturedIdx = idx;
 								captured.ExhaustThrottleOverride = () => GetSyncedThrottle(capturedRc, capturedIdx);
 							}
@@ -339,7 +340,7 @@ namespace Assets.Scripts.Net
 		}
 
 		/// <summary>每帧驱动幽灵船引擎尾焰(用最近应用状态的每引擎 throttle)。</summary>
-		public static void DriveGhostEngineVisuals(MpNetworkManager.RemoteCraft rc)
+		public static void DriveGhostEngineVisuals(RemoteCraft rc)
 		{
 			if (rc == null) return;
 			if (rc.EngineDrivers == null)
@@ -366,7 +367,7 @@ namespace Assets.Scripts.Net
 					}
 					if (d.DriveDirectly)
 					{
-						// RocketEngine(游戏门控不调)/航发(已 patch 跳过):由 MP 层每帧调 FlightUpdate 驱动主喷嘴火焰。
+						// RocketEngine(游戏门控不调)/航发(已 patch 跳过):由 MultiPlayer 层每帧调 FlightUpdate 驱动主喷嘴火焰。
 						// 航发时 override=推导的加力节流阀 ab(ComputeAfterburnerThrottle)→ 主喷嘴 exhaust 走加力值;烟雾门控仍由 ApplyJetSmokeVisuals 按同步 EngineThrottle 重写。
 						d.EngineCommon.FlightUpdate(1f, 1f);
 					}
@@ -383,7 +384,7 @@ namespace Assets.Scripts.Net
 						// 有自定义烟色时 RGB 取自定义值。EmissionEnabled/Throttle 也按发送端口径重写(含 HasSmoke 门控)。
 						ApplyJetSmokeVisuals(d, t);
 					}
-					// EngineScript:Route A —— 游戏自身 FlightUpdate 每帧经 override 驱动,MP 层不重复调
+					// EngineScript:Route A —— 游戏自身 FlightUpdate 每帧经 override 驱动,MultiPlayer 层不重复调
 				}
 				catch (Exception e)
 				{
@@ -404,7 +405,7 @@ namespace Assets.Scripts.Net
 		/// FlightStart 的 ApplyNozzleExhaustSettings 算好;AirPressure 由 CraftFlightData 按当前位置刷新(正确)。
 		/// 只读不写其他字段,幂等;仅 tail 活跃(油门&gt;0)时由 DriveGhostEngineVisuals 调用。
 		/// </summary>
-		private static void SyncJetExpansionRatio(MpNetworkManager.RemoteCraft rc, EngineVisualDriver d)
+		private static void SyncJetExpansionRatio(RemoteCraft rc, EngineVisualDriver d)
 		{
 			ExhaustSystemScript ex = d.RocketExhaust;
 			if (ex == null || rc == null || rc.Node == null || rc.Node.CraftScript == null) return;
@@ -431,7 +432,7 @@ namespace Assets.Scripts.Net
 		/// 所需参数(RocketExitPressure / RocketAltitudeCompensation / ExhaustExpansionRange)已在 Setup 时缓存(双端同引擎)。
 		/// 只写 ExpansionRatio,幂等;由 DriveGhostEngineVisuals 在 EngineCommon.FlightUpdate 之前调用。
 		/// </summary>
-		private static void SyncRocketExpansionRatio(MpNetworkManager.RemoteCraft rc, EngineVisualDriver d)
+		private static void SyncRocketExpansionRatio(RemoteCraft rc, EngineVisualDriver d)
 		{
 			ExhaustSystemScript ex = d.RocketExhaustSystem;
 			if (ex == null || rc == null || rc.Node == null || rc.Node.CraftScript == null) return;
@@ -496,7 +497,7 @@ namespace Assets.Scripts.Net
 		/// 写入时临时切回非 kinematic 再写回(调用点在 Update、物理步在帧末,刚体不会被真正积分,
 		/// velocity 数据照常存储,SmokeTrailScript 读 rigidbody.velocity 不受影响)。
 		/// </summary>
-		public static void InjectGhostMotion(MpNetworkManager.RemoteCraft rc, Mod.RemoteDataPack data, IPlanetNode planet, IReferenceFrame frame, Quaternion headingFrame)
+		public static void InjectGhostMotion(RemoteCraft rc, Mod.RemoteDataPack data, IPlanetNode planet, IReferenceFrame frame, Quaternion headingFrame)
 		{
 			if (rc == null || rc.Node == null || rc.Node.CraftScript == null || planet == null ) return;
 
@@ -548,7 +549,7 @@ namespace Assets.Scripts.Net
 			rc.LastInjectedAngularVelocity = angularVel;
 		}
 
-		internal static float GetSyncedThrottle(MpNetworkManager.RemoteCraft rc, int idx)
+		internal static float GetSyncedThrottle(RemoteCraft rc, int idx)
 		{
 			if (rc == null || rc.SyncedThrottles == null || idx < 0 || idx >= rc.SyncedThrottles.Count) return 0f;
 			return rc.SyncedThrottles[idx];
@@ -562,7 +563,7 @@ namespace Assets.Scripts.Net
 		/// 即航发可见尾焰只由加力节流阀决定(普通节流阀 EngineThrottle 只用于烟雾门控/ApplyJetSmokeVisuals),
 		/// 因此幽灵必须绑定 ab,不能把普通节流阀 t 一起 Lerp 进去(旧实现 = 加力/普通节流阀绑定错误)。
 		/// </summary>
-		private static float ComputeAfterburnerThrottle(MpNetworkManager.RemoteCraft rc, int idx, bool hasAfterburner, float afterburnerThrottleStart)
+		private static float ComputeAfterburnerThrottle(RemoteCraft rc, int idx, bool hasAfterburner, float afterburnerThrottleStart)
 		{
 			if (!hasAfterburner) return 0f;
 			if (afterburnerThrottleStart >= 1f) return 0f;

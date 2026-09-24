@@ -5,7 +5,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 
-namespace Assets.Scripts.Net
+namespace Assets.Scripts.Net.MultiPlayerTransport
 {
     /// <summary>
     /// TCP 传输封装（主机中继模式），公共接口与 UdpTransport 完全兼容：
@@ -15,10 +15,10 @@ namespace Assets.Scripts.Net
     ///   无需应用层分片/重组（大飞船 XML 压缩后可直接整包发送）。
     /// 本类不触碰任何 Unity API，可在网络线程安全运行。
     /// </summary>
-    public class TcpTransport : IMpTransport
+    public class TcpTransport : IMultiPlayerTransport
     {
-        public event Action<MpPeer, byte[]> OnDataReceived;
-        public event Action<MpPeer> OnPeerTimeout;
+        public event Action<MultiPlayerPeer, byte[]> OnDataReceived;
+        public event Action<MultiPlayerPeer> OnPeerTimeout;
 
         /// <summary>单条消息最大长度（128MB，含压缩后的大飞船 XML 与诊断数据）。</summary>
         private const int MaxMessageLength = 128 * 1024 * 1024;
@@ -29,10 +29,10 @@ namespace Assets.Scripts.Net
         private Thread _recvThread; // 客户端：接收主连接数据
         private volatile bool _running;
 
-        private readonly ConcurrentQueue<KeyValuePair<MpPeer, byte[]>> _incoming =
-            new ConcurrentQueue<KeyValuePair<MpPeer, byte[]>>();
+        private readonly ConcurrentQueue<KeyValuePair<MultiPlayerPeer, byte[]>> _incoming =
+            new ConcurrentQueue<KeyValuePair<MultiPlayerPeer, byte[]>>();
 
-        private readonly Dictionary<string, MpPeer> _peers = new Dictionary<string, MpPeer>();
+        private readonly Dictionary<string, MultiPlayerPeer> _peers = new Dictionary<string, MultiPlayerPeer>();
         private readonly Dictionary<string, TcpClient> _peerClients = new Dictionary<string, TcpClient>();
         private readonly object _peersLock = new object();
 
@@ -54,7 +54,7 @@ namespace Assets.Scripts.Net
                 _listener.Start(16);
                 LocalPort = port;
                 _running = true;
-                _acceptThread = new Thread(AcceptLoop) { IsBackground = true, Name = "MpTcpAccept" };
+                _acceptThread = new Thread(AcceptLoop) { IsBackground = true, Name = "MultiPlayerTcpAccept" };
                 _acceptThread.Start();
                 Mod.LogLobby("TcpTransport.Start SUCCESS: TCP listening on port " + LocalPort + ", IsRunning=" +
                              _running);
@@ -92,11 +92,11 @@ namespace Assets.Scripts.Net
                 _running = true;
                 LocalPort = ((IPEndPoint)_client.Client.LocalEndPoint).Port;
                 IPEndPoint remoteEp = (IPEndPoint)_client.Client.RemoteEndPoint;
-                MpPeer server = GetOrAddPeer(remoteEp);
+                MultiPlayerPeer server = GetOrAddPeer(remoteEp);
                 server.IsServer = true;
                 SendTo(server, helloPacket);
                 _recvThread = new Thread(() => PeerReceiveLoop(server))
-                    { IsBackground = true, Name = "MpTcpClientRecv" };
+                    { IsBackground = true, Name = "MultiPlayerTcpClientRecv" };
                 _recvThread.Start();
                 Mod.LogLobby("TcpTransport.StartClient SUCCESS: connected " + ip + ":" + port +
                              ", hello sent (" + (helloPacket == null ? 0 : helloPacket.Length) + " bytes), localPort=" +
@@ -161,7 +161,7 @@ namespace Assets.Scripts.Net
 
         public void DrainIncoming()
         {
-            KeyValuePair<MpPeer, byte[]> item;
+            KeyValuePair<MultiPlayerPeer, byte[]> item;
             while (_incoming.TryDequeue(out item))
             {
                 try
@@ -177,7 +177,7 @@ namespace Assets.Scripts.Net
 
         // ---------------- 发送 ----------------
 
-        public void SendTo(MpPeer peer, byte[] data)
+        public void SendTo(MultiPlayerPeer peer, byte[] data)
         {
             if (data == null || data.Length == 0) return;
             TcpClient tc = GetClientForPeer(peer);
@@ -197,7 +197,7 @@ namespace Assets.Scripts.Net
             if (data == null) return;
             lock (_peersLock)
             {
-                foreach (MpPeer peer in _peers.Values)
+                foreach (MultiPlayerPeer peer in _peers.Values)
                 {
                     TcpClient tc;
                     if (_peerClients.TryGetValue(peer.EndPoint.ToString(), out tc))
@@ -216,7 +216,7 @@ namespace Assets.Scripts.Net
         }
 
         /// <summary>房主：踢人用——关闭指定对端的 TCP 连接。read loop 检测到断开后会移除该 peer 并触发 OnPeerTimeout。</summary>
-        public void DisconnectPeer(MpPeer peer)
+        public void DisconnectPeer(MultiPlayerPeer peer)
         {
             if (peer == null || peer.EndPoint == null) return;
             lock (_peersLock)
@@ -254,14 +254,14 @@ namespace Assets.Scripts.Net
                     // 与 StartClient 一致：设置发送超时，防对端不读时主线程 WriteMessage 永久阻塞
                     client.SendTimeout = 5000;
                     IPEndPoint ep = (IPEndPoint)client.Client.RemoteEndPoint;
-                    MpPeer peer = GetOrAddPeer(ep);
+                    MultiPlayerPeer peer = GetOrAddPeer(ep);
                     lock (_peersLock)
                     {
                         _peerClients[ep.ToString()] = client;
                     }
 
                     Thread t = new Thread(() => PeerReceiveLoop(peer))
-                        { IsBackground = true, Name = "MpTcpPeer" + ep.Port };
+                        { IsBackground = true, Name = "MultiPlayerTcpPeer" + ep.Port };
                     t.Start();
                     Mod.LogLobby("TcpTransport: accepted client " + ep + ", total peers=" + GetPeersCount());
                 }
@@ -287,7 +287,7 @@ namespace Assets.Scripts.Net
         }
 
         /// <summary>单个连接的接收循环：读 [4字节长度][payload]，完整包入队。</summary>
-        private void PeerReceiveLoop(MpPeer peer)
+        private void PeerReceiveLoop(MultiPlayerPeer peer)
         {
             TcpClient tc = GetClientForPeer(peer);
             if (tc == null) return;
@@ -312,7 +312,7 @@ namespace Assets.Scripts.Net
                     byte[] data = new byte[len];
                     if (!ReadExactly(ns, data, len)) break;
                     peer.LastReceiveTick = NowMs;
-                    _incoming.Enqueue(new KeyValuePair<MpPeer, byte[]>(peer, data));
+                    _incoming.Enqueue(new KeyValuePair<MultiPlayerPeer, byte[]>(peer, data));
                 }
 				catch (Exception)
 				{
@@ -321,7 +321,7 @@ namespace Assets.Scripts.Net
 			}
 			// 连接断开（EOF/异常/对方 Close）：从对端表移除并通知上层。
 			// 注意：仅当仍在运行（非 Stop() 主动关闭）时才通知，避免清理时的噪音。
-			MpPeer removedPeer = null;
+			MultiPlayerPeer removedPeer = null;
 			if (_running)
 			{
 				lock (_peersLock)
@@ -358,7 +358,7 @@ namespace Assets.Scripts.Net
         }
 
         /// <summary>根据 peer 获取其 TCP 连接（房主按 endpoint 查表；客户端返回主连接）。</summary>
-        private TcpClient GetClientForPeer(MpPeer peer)
+        private TcpClient GetClientForPeer(MultiPlayerPeer peer)
         {
             if (peer == null || peer.EndPoint == null) return null;
             lock (_peersLock)
@@ -370,15 +370,15 @@ namespace Assets.Scripts.Net
             return _client; // 客户端模式：对端即房主主连接
         }
 
-        private MpPeer GetOrAddPeer(IPEndPoint ep)
+        private MultiPlayerPeer GetOrAddPeer(IPEndPoint ep)
         {
             lock (_peersLock)
             {
                 string key = ep.ToString();
-                MpPeer peer;
+                MultiPlayerPeer peer;
                 if (!_peers.TryGetValue(key, out peer))
                 {
-                    peer = new MpPeer { EndPoint = ep, LastReceiveTick = NowMs };
+                    peer = new MultiPlayerPeer { EndPoint = ep, LastReceiveTick = NowMs };
                     _peers[key] = peer;
                 }
 
@@ -394,21 +394,21 @@ namespace Assets.Scripts.Net
 		public void CheckTimeouts(long timeoutMs)
 		{
 			long now = NowMs;
-			List<MpPeer> expired = null;
+			List<MultiPlayerPeer> expired = null;
 			lock (_peersLock)
 			{
-				foreach (MpPeer peer in _peers.Values)
+				foreach (MultiPlayerPeer peer in _peers.Values)
 				{
 					if (now - peer.LastReceiveTick > timeoutMs)
 					{
-						if (expired == null) expired = new List<MpPeer>();
+						if (expired == null) expired = new List<MultiPlayerPeer>();
 						expired.Add(peer);
 					}
 				}
 
                 if (expired != null)
                 {
-                    foreach (MpPeer peer in expired)
+                    foreach (MultiPlayerPeer peer in expired)
                     {
                         _peers.Remove(peer.EndPoint.ToString());
                         TcpClient c;
@@ -430,15 +430,15 @@ namespace Assets.Scripts.Net
 
             if (expired != null)
             {
-                foreach (MpPeer peer in expired) OnPeerTimeout?.Invoke(peer);
+                foreach (MultiPlayerPeer peer in expired) OnPeerTimeout?.Invoke(peer);
             }
         }
 
-        public IReadOnlyCollection<MpPeer> GetPeers()
+        public IReadOnlyCollection<MultiPlayerPeer> GetPeers()
         {
             lock (_peersLock)
             {
-                return new List<MpPeer>(_peers.Values);
+                return new List<MultiPlayerPeer>(_peers.Values);
             }
         }
 

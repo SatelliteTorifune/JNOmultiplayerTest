@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using Assets.Scripts.Net.MultiPlayerTransport;
 using ModApi;
 using Steamworks;
 using UnityEngine;
+using Assets.Scripts.Net.Session;
 
 namespace Assets.Scripts.Net
 {
@@ -29,12 +31,12 @@ namespace Assets.Scripts.Net
 		public const int DefaultMaxPlayers = 8;
 
 		// ---- lobby data key（写入大厅元数据；数值 key 供 RequestLobbyList 过滤用）----
-		private const string KeyName = "mp_name";
-		private const string KeyDescription = "mp_desc";
-		private const string KeyOwner = "mp_owner";
-		private const string KeyVerMajor = "mp_ver_major";
-		private const string KeyVerMinor = "mp_ver_minor";
-		private const string KeyVerBuild = "mp_ver_build";
+		private const string KeyName = "multiPlayer_name";
+		private const string KeyDescription = "multiPlayer_desc";
+		private const string KeyOwner = "multiPlayer_owner";
+		private const string KeyVerMajor = "multiPlayer_ver_major";
+		private const string KeyVerMinor = "multiPlayer_ver_minor";
+		private const string KeyVerBuild = "multiPlayer_ver_build";
 
 		// 回调引用必须持有（防 GC 自动退订）。
 		private Callback<LobbyCreated_t> _onLobbyCreated;
@@ -304,7 +306,7 @@ namespace Assets.Scripts.Net
 					", ver=" + (v == null ? "?" : v.ToString()));
 
 				// 起 P2P 监听（复用现有 HostLobby；确保走 Steam 传输，防止停留在 TCP debug 传输上）
-				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
+				NetworkManager mgr = LobbyManager.Instance.EnsureMultiPlayerManager();
 				if (mgr != null && !(mgr.Transport is SteamTransport)) mgr.SetTransport(new SteamTransport());
 				bool ok = LobbyManager.Instance.HostLobby(0);
 				if (!ok)
@@ -367,7 +369,7 @@ namespace Assets.Scripts.Net
 					return;
 				}
 				CurrentLobbyId = info.m_ulSteamIDLobby;
-				// 大厅内可查房主；兜底从 lobby data 读 mp_owner（列表阶段写好的）
+				// 大厅内可查房主；兜底从 lobby data 读 multiPlayer_owner（列表阶段写好的）
 				ulong owner = SteamMatchmaking.GetLobbyOwner(new CSteamID(CurrentLobbyId)).m_SteamID;
 				if (owner == 0)
 				{
@@ -378,7 +380,7 @@ namespace Assets.Scripts.Net
 				if (owner == me)
 				{
 					// 自己创建的大厅同样会收到 LobbyEnter_t（创建者自动进入）：这是开房流程（OnLobbyCreated 已写元数据并起 P2P 监听），
-					// 绝不能走"加入"逻辑——否则 GetLobbyOwner 返回自己 → 把自己当房主去 Join → MP.Stop() 停掉开房会话 +
+					// 绝不能走"加入"逻辑——否则 GetLobbyOwner 返回自己 → 把自己当房主去 Join → MultiPlayer.Stop() 停掉开房会话 +
 					// ConnectP2P 连自己必然失败，房间创建整体回滚。
 					Mod.LogLobby("SteamLobbyBrowser: entered own lobby (host), skip join flow");
 					return;
@@ -390,7 +392,7 @@ namespace Assets.Scripts.Net
 					return;
 				}
 				// 复用现有 Steam P2P 加入流程（SteamTransport.StartClient + Hello 握手），传输/同步零改动
-				MpNetworkManager mgr = LobbyManager.Instance.EnsureMpManager();
+				NetworkManager mgr = LobbyManager.Instance.EnsureMultiPlayerManager();
 				if (mgr != null && !(mgr.Transport is SteamTransport)) mgr.SetTransport(new SteamTransport());
 				bool ok = LobbyManager.Instance.JoinLobby(owner.ToString(), 0);
 				if (!ok)
