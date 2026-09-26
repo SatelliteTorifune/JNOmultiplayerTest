@@ -79,6 +79,11 @@
     <s id="MultiPlayer.MultiPlayerUI.Cancel">取消</s>
     <s id="MultiPlayer.MultiPlayerUI.Kicked">你已被房主踢出</s>
     <s id="MultiPlayer.MultiPlayerUI.LoadingCraft">正在加载飞船</s>
+    <!-- 文字聊天 -->
+    <s id="MultiPlayer.Chat.ButtonTooltip">聊天</s>
+    <s id="MultiPlayer.Chat.WindowTitle">聊天窗口</s>
+    <s id="MultiPlayer.Chat.Send">发送</s>
+    <s id="MultiPlayer.Chat.InputPlaceholder">输入消息…</s>
     <!-- Update Reminder -->
     <s id="MultiPlayer.MultiPlayerUI.UpdateAvailable">联机mod 有新版本可用！</s>
     <s id="MultiPlayer.MultiPlayerUI.UpdateNewVersion">新版本：{0}</s>

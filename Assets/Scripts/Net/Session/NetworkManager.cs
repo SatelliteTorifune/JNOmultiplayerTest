@@ -73,6 +73,8 @@ namespace Assets.Scripts.Net.Session
 		internal RemoteCraftManager Crafts { get; private set; }
 		internal RemoteCraftDriver Driver { get; private set; }
 		internal MultiPlayerMessageRouter Router { get; private set; }
+		/// <summary>聊天会话(2026-09-24,plans/text-chat-2026-09-24.md):环形缓冲 + 名字解析 + Policy 过滤接口;Stop 时清空。</summary>
+		internal ChatSession Chat { get; private set; }
 
 		private void Awake()
 		{
@@ -83,6 +85,7 @@ namespace Assets.Scripts.Net.Session
 			Crafts = new RemoteCraftManager(this);
 			Driver = new RemoteCraftDriver(this);
 			Router = new MultiPlayerMessageRouter(this);
+			Chat = new ChatSession(this);
 			// 渲染前可见位姿探针(纯观测,零行为改动):挂同一 GameObject,自带
 			// [DefaultExecutionOrder(30000)] 的 LateUpdate → 在所有写者(mod 1000 / 游戏默认 0)之后、渲染之前采样。
 			// 只在 RemoteCraft.ExtraDiagEnabled 为 true 时输出;不读写任何游戏状态。
@@ -247,6 +250,7 @@ namespace Assets.Scripts.Net.Session
 			Crafts.ClearSpawnTracking();
 			ResetForStop();
 			Registry.Clear();
+			Chat.Clear(); // 聊天历史随会话清空(2026-09-24 拍板;新会话从空白开始)
 			Crafts.DestroyAllRemoteCrafts();
 			Mod.LogLobby("MultiPlayer.Stop: wasServer=" + wasServer + ", wasConnected=" + wasConnected +
 				", wasPlayerId=" + wasPlayerId + ", Transport.IsRunning=" + Transport.IsRunning);
@@ -370,7 +374,7 @@ namespace Assets.Scripts.Net.Session
 		/// <summary>停止联机时复位提示去重状态(与旧 Stop() 等价)。</summary>
 		internal void ResetForStop() { _joinNoticeShown.Clear(); _clientJoinedTime = -1f; }
 
-		/// <summary>有玩家加入：FlightUI 提示（按 playerId 去重，只提示一次）。</summary>
+		/// <summary>有玩家加入：FlightUI 提示（按 playerId 去重，只提示一次）+ 聊天窗系统消息（同一去重/宽限逻辑,SP2 同款双通道）。</summary>
 		internal void ShowPlayerJoinedNotice(MultiPlayerPeer peer)
 		{
 			if (peer == null || peer.PlayerId < 0) return;
@@ -384,10 +388,11 @@ namespace Assets.Scripts.Net.Session
 			if (!_joinNoticeShown.Add(peer.PlayerId)) return;
 			string name = string.IsNullOrEmpty(peer.PlayerName) ? ("Player " + peer.PlayerId) : peer.PlayerName;
 			ShowFlightMessage(Locale.GetString("MultiPlayer.MultiPlayerUI.PlayerJoined", name));
+			Chat.AddSystem(Locale.GetString("MultiPlayer.MultiPlayerUI.PlayerJoined", name)); // 复用同一文案,本地生成不经网络
 		}
 
 
-		/// <summary>有玩家离开：FlightUI 提示。</summary>
+		/// <summary>有玩家离开：FlightUI 提示 + 聊天窗系统消息。</summary>
 		internal void ShowPlayerLeftNotice(MultiPlayerPeer peer)
 		{
 			if (peer == null || peer.PlayerId < 0) return;
@@ -395,6 +400,7 @@ namespace Assets.Scripts.Net.Session
 			if (!IsServer && peer.PlayerId == 0) return;
 			string name = string.IsNullOrEmpty(peer.PlayerName) ? ("Player " + peer.PlayerId) : peer.PlayerName;
 			ShowFlightMessage(Locale.GetString("MultiPlayer.MultiPlayerUI.PlayerLeft", name), false, 5f);
+			Chat.AddSystem(Locale.GetString("MultiPlayer.MultiPlayerUI.PlayerLeft", name)); // 复用同一文案,本地生成不经网络
 		}
 	}
 }

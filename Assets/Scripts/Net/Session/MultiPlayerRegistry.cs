@@ -101,5 +101,16 @@ namespace Assets.Scripts.Net.Session
 		{
 			lock (_playersByPlayerId) { return new List<MultiPlayerPeer>(_playersByPlayerId.Values); }
 		}
+
+		/// <summary>按 PlayerId 查玩家(聊天名字解析等);未登记返回 null。</summary>
+		internal MultiPlayerPeer GetPlayer(int playerId)
+		{
+			lock (_playersByPlayerId)
+			{
+				MultiPlayerPeer peer;
+				_playersByPlayerId.TryGetValue(playerId, out peer);
+				return peer;
+			}
+		}
 	}
 }

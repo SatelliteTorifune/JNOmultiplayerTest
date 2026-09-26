@@ -1,7 +1,7 @@
 # JNOMultiPlayer —— 会话上下文 + 设计文档索引(plans/README.md)
 
 > 项目:JNOMultiPlayer(SimpleRockets 2 / JNO 联机 mod `MultiPlayer`;Steam AppID **870200**;Unity **2022.3.62f3**;C# 命名空间 `Assets.Scripts.*`)。思路:**反编译游戏源码导航内部 API** + 参考 KSP LunaMultiplayer 与 SP2(SimplePlanes 2)的联机实现。
-> **当前进度**:单船"幽灵船"原型已通过 **Steam 双账号公网实测**;**架构重构已完成归档(2026-09-22)**:`MpNetworkManager` 上帝类(3717 行)拆为 **391 行瘦门面 + 11 个职责类**,并按 5 层目录分类(`Net/` 协议基础 / `Net/MultiPlayerTransport/` 传输实现 / `Net/Session/` 会话房间 / `Net/Sync/` 同步管线 / `Net/CraftVisual/` 远程船呈现,共 25 文件;行为保持,构建 0/0,见 `archive/refactor-mpnetworkmanager-2026-09-22.md`);**2026-09-22 再整理:残留 `Mp*`/`MP`/`_mp` 命名统一为 `MultiPlayer`**(`MpNetworkManager`→`NetworkManager`、`MpMessageRouter`→`MultiPlayerMessageRouter`、`MpCraftCatalog`→`MultiPlayerCraftCatalog`、`MpPlayerRegistry`→`MultiPlayerRegistry`、`MpSyncUtil`→`MultiPlayerSyncUtil`、`MpCraftPreloader`→`MultiPlayerCraftPreloader`、`MpMessage.cs`→`MultiPlayerMessages.cs`、`_mp`→`_multiPlayer`、`EnsureMpManager`→`EnsureMultiPlayerManager`、`MPTest`→`MultiPlayer`、`mp_name`→`multiPlayer_name`、日志前缀 `MP.`→`MultiPlayer.`;重命名脚本 `plans/archive/rename-mp-to-multiplayer.ps1`);§六 现有 **1 个待办活跃主题**(`observer-tick-quantization` **🔧 阶段性收尾(2026-09-24,保持活跃)**:并排"前后抖动"= **两层**且都在本机侧——①本机船/相机只在物理固定步更新(`CraftBuilder.cs:223` 插值 `None`)而幽灵每渲染帧写入;②旧位置构造(`锚点外推+指数平滑+maxStep`)使渲染位移 0.5×~2.6× 摆动。**P0/P2/P2b/P1 已落地并经双机 A/B 客观验证**(构建 0/0;`bSpdAbs` 1.22× vs 旧路径 23.78×、`lSpeed` 1.006 vs 1.259),**待 Steam 实测观感**;诊断已抽象为 `MultiPlayerDiag` 唯一出口、全部开关进 UI(DevConsole 注册已清空),见 `observer-tick-quantization-2026-09-23.md`;smoothing-reset **⛔ 失败已归档(2026-09-23)**:SP2 全量对齐 + 5 轮追加修改全部实测无效,代码回滚 `d09be5c`,见 `archive/smoothing-reset-2026-09-23.md`;前身 `archive/acceleration-smoothing-2026-09-14.md` 亦 ⛔ 已归档)+ **5 个待拍板**(含 1 份参考资料)+ **18 个已归档**;1.4.2 适配 / 部件开关回归 / 高延迟平滑 / Vizzy 隔离 / 旋翼 body 同步均已结案。
+> **当前进度**:单船"幽灵船"原型已通过 **Steam 双账号公网实测**;**架构重构已完成归档(2026-09-22)**:`MpNetworkManager` 上帝类(3717 行)拆为 **391 行瘦门面 + 11 个职责类**,并按 5 层目录分类(`Net/` 协议基础 / `Net/MultiPlayerTransport/` 传输实现 / `Net/Session/` 会话房间 / `Net/Sync/` 同步管线 / `Net/CraftVisual/` 远程船呈现,共 25 文件;行为保持,构建 0/0,见 `archive/refactor-mpnetworkmanager-2026-09-22.md`);**2026-09-22 再整理:残留 `Mp*`/`MP`/`_mp` 命名统一为 `MultiPlayer`**(`MpNetworkManager`→`NetworkManager`、`MpMessageRouter`→`MultiPlayerMessageRouter`、`MpCraftCatalog`→`MultiPlayerCraftCatalog`、`MpPlayerRegistry`→`MultiPlayerRegistry`、`MpSyncUtil`→`MultiPlayerSyncUtil`、`MpCraftPreloader`→`MultiPlayerCraftPreloader`、`MpMessage.cs`→`MultiPlayerMessages.cs`、`_mp`→`_multiPlayer`、`EnsureMpManager`→`EnsureMultiPlayerManager`、`MPTest`→`MultiPlayer`、`mp_name`→`multiPlayer_name`、日志前缀 `MP.`→`MultiPlayer.`;重命名脚本 `plans/archive/rename-mp-to-multiplayer.ps1`);§六 现有 **1 个待办活跃主题**(`observer-tick-quantization` **🔧 阶段性收尾(2026-09-24,保持活跃)**:并排"前后抖动"= **两层**且都在本机侧——①本机船/相机只在物理固定步更新(`CraftBuilder.cs:223` 插值 `None`)而幽灵每渲染帧写入;②旧位置构造(`锚点外推+指数平滑+maxStep`)使渲染位移 0.5×~2.6× 摆动。**P0/P2/P2b/P1 已落地并经双机 A/B 客观验证**(构建 0/0;`bSpdAbs` 1.22× vs 旧路径 23.78×、`lSpeed` 1.006 vs 1.259),**待 Steam 实测观感**;诊断已抽象为 `MultiPlayerDiag` 唯一出口、全部开关进 UI(DevConsole 注册已清空),见 `observer-tick-quantization-2026-09-23.md`;smoothing-reset **⛔ 失败已归档(2026-09-23)**:SP2 全量对齐 + 5 轮追加修改全部实测无效,代码回滚 `d09be5c`,见 `archive/smoothing-reset-2026-09-23.md`;前身 `archive/acceleration-smoothing-2026-09-14.md` 亦 ⛔ 已归档)+ **5 个待拍板**(含 1 份参考资料)+ **19 个已归档**;1.4.2 适配 / 部件开关回归 / 高延迟平滑 / Vizzy 隔离 / 旋翼 body 同步均已结案。
 > 用法:新会话第一条上下文直接投喂本文档(§一~§五 即提示词核心)。本文档是**原 `AGENT_CONTEXT.md`(会话上下文)+ 原 `README.md`(索引/决策/规则)的合并版**,只读参考;**方案 / 决策类内容一律写进对应主题 plan**,再同步本文档索引与决策速查。
 > **职责边界(重要)**:mod 的**打包 / 部署 / DLL 更新 / 发布链条**(装进游戏的 DLL、AssetBundle、版本号、GitHub Releases)**全部由用户负责**——agent 不执行、不代劳、不为此改版本号或构建产物;agent 只负责**源码改动 + 文档同步 + `dotnet build MultiPlayer.csproj -c Debug` 验证(0 错误 0 警告)**。
 > 调试日志(联机双端,真实路径见 `LOCAL_PATHS.md`):本机 `<USERPROFILE>\AppData\LocalLow\Jundroo\SimpleRockets 2\Player.log`(Unity 运行时日志;`Mod.LogLobby` / `MultiPlayer smoothing` / `MultiPlayer twitch` / `MultiPlayer sendDiag` 等输出在这里);对面(VM 客户端)`<SHARED>\Player.log`。⚠️ 双开同机时两个实例写同一本机日志会互相覆盖,双端取证必须用 VM。
@@ -18,6 +18,7 @@
 | **ModApi 源码(官方公共 API)** | `<MOD_API>\`(即 `ModApi.sln`,只读;`ICraftFlightData`/`ICraftScript` 等接口在此,反编译游戏源码里搜不到接口定义) |
 | SP2 联机参考(可抄的平滑/序列化实现) | `<SP2_MP>\`(联机核心在 `Multiplayer\` 子目录) |
 | KSP 联机参考 | `<LUNA_MP>` |
+| Craft Spawner mod(聊天按钮 ViewPanel 注入/接线照抄来源,用户已发布) | `<CRAFTSP>` |
 | 游戏本体(本地) | `<SR2_GAME>\`(目录名**没有空格**;Steam 显示名 "Juno: New Origins") |
 | 参考程序集(编译期) | `Assets/ModTools/Assemblies/`(`SimpleRockets2.dll`、`ModApi.dll`、`Jundroo.ModTools.dll`、`com.rlabrecque.steamworks.net.dll`、`0Harmony.dll` 等) |
 | 游戏内 UI 文案 | `Assets/Content/Languages/EN-US.xml` / `ZH-CN.xml`(key 前缀 `MultiPlayer.*`) |
@@ -37,15 +38,16 @@
 
 | 文件 | 职责 |
 |---|---|
-| `Mod.cs` | 入口:`Harmony("MultiPlayer").PatchAll()` + `JetEngineGhostPatch.Apply`;`RemoteDataPack`(状态包结构体);DevConsole 命令注册;UI 对象创建;`ModVersion` + `ModUpdater` 启动 |
+| `Mod.cs` | 入口:`Harmony("MultiPlayer").PatchAll()` + `JetEngineGhostPatch.Apply`;`RemoteDataPack`(状态包结构体);UI 对象创建;聊天 UI 入口(ViewPanel 聊天按钮注入 + 接线 → `MultiPlayerChatWindow.Toggle()`,2026-09-24,见 `archive/text-chat-2026-09-24.md`);`ModVersion` + `ModUpdater` 启动(DevConsole 命令注册已于 2026-09-24 全部移除,§五) |
 | `LobbyManager.cs` | 房间生命周期(Host/Join/Stop、`DontDestroyOnLoad`、`SceneLoaded`→`OnFlightSceneLoaded`、创建/持有 `NetworkManager`) |
 | **`Net/`(根层,namespace `Assets.Scripts.Net`)= 协议基础与 spike 参考** | `MultiPlayerMessages.cs`(二进制消息编解码 + GZip XML 分片;`MultiPlayerMessageType`/`MultiPlayerMessages`) / `MultiPlayerPeer.cs`(对端) / `LiteNetLibTransport.cs`(备用未启用) / `SteamLobbyBrowser.cs`(Steam 房间列表) / `SteamSpike.cs` `FishNetSpike.cs`(spike 参考) |
 | **`Net/MultiPlayerTransport/`(namespace `Assets.Scripts.Net.MultiPlayerTransport`)= 传输实现**(2026-09-22 传输目录整理) | `IMultiPlayerTransport.cs`(传输薄接口) / `SteamTransport.cs`(默认) / `TcpTransport.cs`(debug) / `LagSimTransport.cs`(NetSim 延迟模拟装饰器);消费点 `Mod.cs` / `MultiPlayerUI.cs` / `LobbyManager.cs` 需 `using Assets.Scripts.Net.MultiPlayerTransport;`(同文件内 `Net.` 前缀会被 `namespace Assets.Scripts` 下的 `Net` 子命名空间解析,不再是传输类所在命名空间) |
 | **`Net/Session/`(namespace `...Net.Session`)= 会话与房间** | |
 | `Net/Session/NetworkManager.cs` | **瘦门面 + 组合根(391 行)**:会话身份(`IsServer`/`PlayerId`/`TickRate`…)、对外 API(UI/LobbyManager/Harmony patch 用)、FlightUI 提示、`Awake` 组建组件、`Update`/`LateUpdate` 按序驱动、`Raise*` 广播、`SendOrBroadcastToNet` 发包出口 |
-| `Net/Session/MultiPlayerMessageRouter.cs` | 协议分发(`HandlePacket`)+ 房间流程处理器(Hello/Welcome/PlayerJoin/PlayerLeave/State/Pong/Kick/TickRate);CraftData 与 XML 类消息转 `MultiPlayerCraftCatalog` |
+| `Net/Session/MultiPlayerMessageRouter.cs` | 协议分发(`HandlePacket`)+ 房间流程处理器(Hello/Welcome/PlayerJoin/PlayerLeave/State/Pong/Kick/TickRate/Chat);CraftData 与 XML 类消息转 `MultiPlayerCraftCatalog` |
 | `Net/Session/MultiPlayerCraftCatalog.cs` | 飞船内容分发:本机飞船上报、XML 按需下载(SP2)、客户端 `CraftData` 与房主 host craft 的双向重发确认 |
-| `Net/Session/MultiPlayerRegistry.cs` | 玩家表:PlayerId 分配、登记、超时/踢出/离开的统一移除出口 |
+| `Net/Session/MultiPlayerRegistry.cs` | 玩家表:PlayerId 分配、登记、超时/踢出/离开的统一移除出口、`GetPlayer(playerId)` 名字查询 |
+| `Net/Session/ChatSession.cs` | **聊天会话(2026-09-24)**:环形缓冲(100 条)+ `MessageReceived` 事件 + 名字解析 + `ChatPolicy` 三钩子(`AllowRelay`/`AllowDisplay` 留 BadWord/屏蔽扩展;`Sanitize` 默认恒等 = **允许玩家发 RTF**,名字与正文同等)+ `Send`/`Add` 双端 Trim/500 截断 + `Stop` 清空;UI = `MultiPlayerChatWindow.cs`(XmlLayout 原生窗),见 `archive/text-chat-2026-09-24.md` |
 | **`Net/Sync/`(namespace `...Net.Sync`)= 状态同步管线** | |
 | `Net/Sync/LocalCraftSender.cs` | **发送端**(采样 + 节拍合一):坐标系换算、body 位姿/角速度/线速度差分、加速度 EMA 与钳制、控制输入采集;状态包节流(F4/F5/F6b)、暂停降频、保活心跳、`MultiPlayer sendDiag` |
 | `Net/Sync/RemoteCraftManager.cs` | **幽灵生命周期**:登记表、异步预加载生成协程、加载进度框、幻影模式懒初始化、移除/可见性强制、场景加载清理、`IsRemoteCraftNode` |
@@ -62,6 +64,7 @@
 | `ModSettings.cs` | Mod 设置项 |
 | `CraftUtils.cs` | 状态应用(`RecalculateFrameState`)+ 幽灵物理禁用(`DisableCraftPhysicCalculation`) |
 | `MultiPlayerUI.cs` | 联机 UI(房间/玩家列表、踢人、TickRate、NetSim 分组、TCP debug 分组、加载进度) |
+| `MultiPlayerChatWindow.cs` | **文字聊天 UI(2026-09-24,XmlLayout 原生窗)**:`BuildUserInterfaceFromXml<T>` 建左下角聊天窗(XML 为 C# 字符串常量,不依赖 bundle 资源),三态(隐藏/预览条 5 秒淡出/展开窗)+ Enter 提交 + 焦点保持 + **名字与正文都允许玩家 RTF**(行尾 `</color>` 收口);输入框为 TMP ⇒ 聚焦即屏蔽飞行控制;入口 = ViewPanel 聊天按钮,见 `archive/text-chat-2026-09-24.md` |
 | `HarmonyPatches/` | Harmony patch(**新 patch 放这里**):`JetEngineGhostPatch.cs`、`LayoutRebuildPatch.cs`、`VizzyIsolationPatch.cs` |
 | `Net/SteamSpike.cs` / `FishNetSpike.cs` | spike 验证脚本(结论已用,留作参考) |
 
@@ -84,7 +87,7 @@
 **状态包(recdata = `Mod.cs` 的 `RemoteDataPack`)**
 - Position/Velocity/Heading(行星空间)+ `SrfRel`(相对地表朝向)+ Pitch/Yaw/Roll/Throttle/Brake/Sliders/Translate + `ActivationGroupStates` + `Stage` + `BodyRotations` + `BodyPositions`(每 body;位置采样基准 2026-09-19 起为包 Position 稳定锚点,此前 comRot)+ `EngineThrottles` + `PartActivated` + `Paused` + `Acceleration`/`AngularVelocity`(2 阶外推,2026-09-14;尾部追加字段,EOF 容错)+ `BodyIds`(body 稳定标识,2026-09-19 索引错位修复;尾部最后,EOF 容错)。
 - **无燃料 / 资源数值、无部件损伤**(已知限制);**无 craft id / 无多船数组**(多 craft 未做)。
-- 消息类型 `MultiPlayerMessageType`:Hello=1、Welcome=2、PlayerJoin=3、PlayerLeave=4、State=5、Pause=6、CraftData=7、Ping=8、Pong=9、CraftDataAck=10、PlayerJoinAck=11、CraftXmlRequest=12、CraftXmlResponse=13、TickRate=14、Kick=15。
+- 消息类型 `MultiPlayerMessageType`:Hello=1、Welcome=2、PlayerJoin=3、PlayerLeave=4、State=5、Pause=6、CraftData=7、Ping=8、Pong=9、CraftDataAck=10、PlayerJoinAck=11、CraftXmlRequest=12、CraftXmlResponse=13、TickRate=14、Kick=15、Chat=16(文字聊天,2026-09-24:客户端→房主→全员,`[playerId:int][text:string]`,房主转发时以连接身份重写 playerId 防冒充,见 `archive/text-chat-2026-09-24.md`)。
 
 **朝向 / 速度坐标系(最容易踩坑)**
 - **朝向同步 = `recdata.SrfRel`(相对地表朝向)**:解决①游戏每帧用 pod 座椅朝向覆盖根朝向、②跨机行星自转角差。`LateUpdate`(`[DefaultExecutionOrder(1000)]`)重写朝向以抗游戏覆盖。
@@ -135,6 +138,7 @@
 | 文档 | 主题 | 状态 | 一句话摘要 |
 |---|---|---|---|
 | [`observer-tick-quantization-2026-09-23.md`](observer-tick-quantization-2026-09-23.md) | **观察者侧节拍量化 + 幽灵位置积分器**(并排飞行"前后抖动"真根因与修复) | 🔧 **活跃 · 阶段性收尾(2026-09-24)**:P0 / P2 / P2b 已落地并经**双机 A/B 客观验证**(构建 0/0);**待 Steam 实测观感** | 抖动是**两层**:①观察者侧——本机船/相机只在物理固定步推进(`CraftBuilder.cs:223` 插值 `None`),幽灵每渲染帧写入 ⇒ 相对参照系按 `v×fixedDt` 台阶跳;②mod 侧——"锚点外推+指数平滑+maxStep"使渲染位移在 0.5×~2.6× 摆动。**修复**:P0 本机船开 `Interpolate`(含 OFF 回滚)、P2 位置自由积分 `Δpos≡V×dt` + 有界误差回收、P2b 速度用 ≥80ms 位置流基线并与锚点同源、P1 暂停标志去抖。**证据**:`drift*=0`/`gameDelta=0`(110/110 窗)、相机位移恒为 `v×fixedDt` 整数倍、`bSpdAbs` 1.22× vs 旧路径 23.78×、`lSpeed` 1.006 vs 1.259。诊断已抽象为 `MultiPlayerDiag` 唯一出口;全部开关进 UI(DevConsole 注册已清空) |
+
 | *(历史)* | smoothing-reset(上一活跃主题)**⛔ 失败已归档(2026-09-23)**,见 §6.3 | | |
 
 ### 6.2 已论证可行 · 待拍板(`proposals/`,尚未动手)
@@ -151,6 +155,7 @@
 
 | 文档 | 主题 | 状态 | 一句话摘要 |
 |---|---|---|---|
+| [`archive/text-chat-2026-09-24.md`](archive/text-chat-2026-09-24.md) | **文字聊天**(SP2 对照 + XmlLayout 原生窗 + CraftSp 入口) | ✅ **已实现归档(2026-09-24)**:协议 `Chat=16` 房主中继 + 入口按钮 + XmlLayout 原生聊天窗全部落地(构建 0/0),并按实测反馈完成五轮迭代(自己名字显示 / 输入框尺寸 / RTF 解析 / × 关闭键 / 玩家名 RTF);§七 判据留档(双机与 Steam 公网全表未逐一勾选) | `MultiPlayerMessageType.Chat=16`(客户端→房主→全员,房主以连接身份重写 playerId 防冒充)+ `ChatSession`(100 条环形 + `Policy` 三钩子)+ `MultiPlayerChatWindow`(XmlLayout 三态窗:预览条 5 秒淡出 / Enter 发送 / 焦点保持 / 名字与正文允许玩家 RTF / TMP 输入框聚焦即屏蔽飞行控制);**决策**:UI 走 XmlLayout(IMGUI 版外观被否已删,检查器面板留退路)、BadWord/屏蔽暂不做;3 项 XmlLayout 待验证项消解 2 项;**经验**:游戏 UI XML 全套参考在 `<CRAFTSP>` ModTools、XmlLayout 的 TMP 默认不解析富文本、可点元素须显式 raycastTarget 且优先用 ContentButton |
 | [`archive/acceleration-smoothing-2026-09-14.md`](archive/acceleration-smoothing-2026-09-14.md) | **远程船平滑**(2 阶外推 + 回滚复盘 + SP2/LMP 对照 + 高速并排卡顿定位史) | ✅ **已归档(2026-09-23)**:realAge 尝试部分改善未治愈 → 整体裁定失败,转彻底重构(见 §6.3 smoothing-reset) | 完整排查史与决策记录:VA 时钟锯齿根因、realAge 修复实测(clamp 55~71f→0~5f、残留 jerk 5~16%、包率<帧率"停-走"帧)、排除表、4 真 bug、方法论教训、R1~R8 对照 |
 | [`archive/smoothing-reset-2026-09-23.md`](archive/smoothing-reset-2026-09-23.md) | **平滑管线归零重建 / SP2 架构移植**(阶段 A 物理时钟轴 + 阶段 B PhysX 接管) | ⛔ **失败已归档(2026-09-23)**:SP2 全量对齐 + 5 轮追加(逐帧写/ageNow 钳制/插值 None/刚体 kinematic/GhostCraftNodeUpdatePatch kill-switch)全部实测无效 → **代码已回滚 `d09be5c`,任务终止** | moveMax 恒 ≈v×50ms(VM)/v×100ms(HOST)、与发包率 17~86Hz 无关;台阶由**游戏自身渲染管线固定节拍驱动**,mod 侧已达极限;完整证据链见文档 §七/§九 |
 | [`archive/refactor-mpnetworkmanager-2026-09-22.md`](archive/refactor-mpnetworkmanager-2026-09-22.md) | **MpNetworkManager 上帝类重构**(3717 行 → 391 行瘦门面;15 类 → 合并 11 类 + 4 层目录;后改名 `NetworkManager`) | ✅ **已完成归档**(2026-09-22:构建 0/0、文本级行为对账通过;双端实测回归待用户复跑) | 分析 + 实施 + 目录二次整理同日完成。**目录**:`Net/`(传输协议)/`Net/Session/`(会话房间)/`Net/Sync/`(同步管线)/`Net/CraftVisual/`(远程船呈现),25 文件;**验证**(可复用):字符串字面量多重集对账(新增 0、缺失 18 处全是死代码 `Q()`)+ `Mod.Log*` 84→84 + 4 个大方法逐字节重建比对;**含 8 条经验教训**;未做:P3 诊断收拢、§八 #5/#12/#13 修复 |
@@ -199,11 +204,13 @@
 | Volken 冲突(`SceneLoaded` 链 NRE) | **✅ 根因已定位并修复**(`OnSceneLoaded` 空值护栏) | [archive/volken-sceneloaded-nre-2026-08-27.md](archive/volken-sceneloaded-nre-2026-08-27.md) |
 | 多 craft 同步 | 📋 **方案研究,代码零实现**(每玩家一船、无 `Guid`、状态包无船标识) | [proposals/multi-craft-sync-2026-08-16.md](proposals/multi-craft-sync-2026-08-16.md) §〇 |
 | **EVA 出舱 / 回舱同步** | 📋 **方案研究,代码零实现**;**定论:EVA 就是 craft(出舱=split / 回舱=merge)→ 必须并到多 craft 身份层,不做"每玩家两艘"特例** | [proposals/eva-sync-2026-09-18.md](proposals/eva-sync-2026-09-18.md) §〇、§二 |
+| **文字聊天** | **✅ 2026-09-24 拍板并实现归档(构建 0/0)**:UI 经"IMGUI → 外观被否 → **XmlLayout 原生窗**"落地;协议 `Chat=16` 房主中继 + 房主重写发送者身份;每玩家屏蔽 / BadWord 过滤**暂不做**,`ChatSession.Policy` 三钩子留接口;**允许玩家 RTF(名字与正文同等)** | [archive/text-chat-2026-09-24.md](archive/text-chat-2026-09-24.md) §3.3、§四、§六、§八 |
 
 **当前待定(尚未拍板 / 未调研)**:
 
 - **多 craft**:A1 方案选型(推荐 A+B 混合)、A2 里程碑顺序、A3 残骸同步策略、A4 观察他人第二艘船;B1 跨机身份(Guid + `InitialCraftNodeIds` 溯源)、B2 对账参数、B3 轨道残骸 spawn 可行性、B4 未加载节点采样、B5 MapView 多船回归、B6 时钟对齐——见 [proposals/multi-craft-sync-2026-08-16.md](proposals/multi-craft-sync-2026-08-16.md)。
 - **EVA 同步**:E1 乘组处理选型(C1 影子成员 / C2 名字占位,建议先 C2)、E2 里程碑是否按 M0→M1→M2→M3 顺序推进(**M1 换节点即时性可独立先做**)、E3 `EvaGhostPatch` 是否与 `JetEngineGhostPatch` 合并为一个"幽灵飞行循环总闸"、E4 是否补 `CraftSituation`(轨道出舱,与 MC2 合并)、E5 舱内可见乘员是否需要在母船包里带"舱内乘组"——见 [proposals/eva-sync-2026-09-18.md](proposals/eva-sync-2026-09-18.md) §五、§六、§八、§九。
+- **文字聊天(✅ 已实现归档,2026-09-24)**:协议 + 入口按钮 + XmlLayout 原生聊天窗全部落地(构建 0/0,见 [archive/text-chat-2026-09-24.md](archive/text-chat-2026-09-24.md));**归档时仍留的小尾巴**(未拍板 / 未逐一验证,需要时另开主题):展开聊天快捷键(按钮入口已落地,降级可选)、房主防刷屏限速、全局 ChatEnabled 设置;§七 回归判据的双机与 Steam 公网全表未逐一勾选。
 - **SP2 式物理同步**:研究完成待拍板,建议 P0(每 body 速度进协议 + 修 §八 #10)+ P1(旋转 1 阶外推)约 3~5 天——见 [proposals/physics-sync-2026-09-14.md](proposals/physics-sync-2026-09-14.md)。
 - **速度修复项**:远程船游戏侧速度缺自转项,分析完成待实施,修复已并入 physics-sync P0——见 [proposals/remote-craft-velocity-2026-09-13.md](proposals/remote-craft-velocity-2026-09-13.md)。
 - **平滑剩余项**:⛔ **2026-09-23 失败终止**——三轮重试(含 VA→realAge)+ 阶段 A 物理时钟轴 + 阶段 B PhysX 接管(SP2 全量对齐)后,接收端渲染台阶 moveMax 恒 ≈v×50ms(VM)/v×100ms(HOST)、与发包率 17~86Hz 无关,5 轮追加修改(逐帧写/钳制/插值/kinematic/kill-switch patch)全部无效 → 判定 mod 侧已达极限,任务失败,代码回滚 `d09be5c`。阶段 A/B 全程证据链见 [archive/smoothing-reset-2026-09-23.md](archive/smoothing-reset-2026-09-23.md) §六/§七/§九。前身教训 + 4 个真 bug 见 [archive/acceleration-smoothing-2026-09-14.md](archive/acceleration-smoothing-2026-09-14.md) §四。**⚠️ 2026-09-23 深夜更正**:该"台阶"的**真源是观察者侧**(本机船/相机按物理固定步推进,而幽灵按渲染帧写入)——`drift*=0` 与 `gameDelta=0` 证明**没有任何第三方覆盖 mod 写入**,故"mod 侧已达极限"应更正为"**该路线无法触及该层**";修正与修复见 [observer-tick-quantization-2026-09-23.md](observer-tick-quantization-2026-09-23.md)。
@@ -288,6 +295,6 @@
 
 ### 10. 隐私红线(公开仓库强制)
 - **本机绝对路径 / 用户名 / IP / SteamID 一律不进被跟踪文档**;真实值只存在于本机被 `.gitignore` 排除的 `plans/LOCAL_PATHS.md`(严禁提交,公开仓库不含该文件)。
-- **令牌**:`<JNO_CODE>` 反编译游戏源码根(含 `SimpleRockets2/`、`ModApi/` 与两个 `.sln`)/ `<MOD_API>` ModApi 官方公共 API 源码 / `<SP2_MP>` SP2 反编译联机参考 / `<LUNA_MP>` KSP LunaMultiplayer / `<VOLKEN2>` Volken2 / `<SR2_GAME>` 游戏安装目录 / `<USERPROFILE>` 本机用户目录 / `<PROJECT>` 本工程目录 / `<VM_IP>` 测试 VM 地址。
+- **令牌**:`<JNO_CODE>` 反编译游戏源码根(含 `SimpleRockets2/`、`ModApi/` 与两个 `.sln`)/ `<MOD_API>` ModApi 官方公共 API 源码 / `<SP2_MP>` SP2 反编译联机参考 / `<LUNA_MP>` KSP LunaMultiplayer / `<VOLKEN2>` Volken2 / `<CRAFTSP>` Craft Spawner mod 工程(聊天按钮接线参考) / `<SR2_GAME>` 游戏安装目录 / `<USERPROFILE>` 本机用户目录 / `<PROJECT>` 本工程目录 / `<VM_IP>` 测试 VM 地址。
 - 引用反编译源码保留「文件名 + 行号」(如 `` `CraftNode.cs:1235-1240` ``),**不写**本机路径形式的站外链接(GitHub 上是死链,且泄路径)。
 - **上传前自查**(脚本 / CI 已不维护,靠约定 + 自查):全仓库搜盘符绝对路径、file URI、17 位 SteamID、IPv4、本机链接残留;发现即令牌化并核对 `LOCAL_PATHS.md`。

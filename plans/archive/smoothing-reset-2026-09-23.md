@@ -2,8 +2,8 @@
 
 > 状态:⛔ **失败,已归档(2026-09-23)**——阶段 A(物理时钟轴)/ 阶段 B(PhysX 接管,SP2 架构)全量实施并 10+ 轮双端实测:接收端渲染台阶 moveMax≈v×50ms(VM)/v×100ms(HOST)**与发包率(17~86Hz)、与所有 mod 侧写入方式无关**(逐帧写/混合写回/插值/钳制/刚体 kinematic/kill-switch patch 均无效,见 §七/§九);结论:台阶由游戏自身渲染管线按固定节拍驱动,mod 侧已达极限。**代码已回滚至上个 commit(d09be5c),任务终止。**
 > 日期:2026-09-23(创建)
-> 关联:[`archive/acceleration-smoothing-2026-09-14.md`](archive/acceleration-smoothing-2026-09-14.md)(前身主题:三轮重试失败的平滑调整,已归档;本文档取代其"继续打补丁"路线,其结论作历史参考);[`archive/latency-smoothing-2026-08-22.md`](archive/latency-smoothing-2026-08-22.md) §9(被移除管线的实现事实);[`archive/refactor-mpnetworkmanager-2026-09-22.md`](archive/refactor-mpnetworkmanager-2026-09-22.md)(平滑代码所在分层结构)。
-> 本文档已**归档(⛔ 失败)**;acceleration-smoothing 已归档至 [`archive/acceleration-smoothing-2026-09-14.md`](archive/acceleration-smoothing-2026-09-14.md)(2026-09-23;其 §〇 VA/realAge 结论随 P1 直写基线一并弃用/验证)。
+> 关联:[`acceleration-smoothing-2026-09-14.md`](acceleration-smoothing-2026-09-14.md)(前身主题:三轮重试失败的平滑调整,已归档;本文档取代其"继续打补丁"路线,其结论作历史参考);[`latency-smoothing-2026-08-22.md`](latency-smoothing-2026-08-22.md) §9(被移除管线的实现事实);[`refactor-mpnetworkmanager-2026-09-22.md`](refactor-mpnetworkmanager-2026-09-22.md)(平滑代码所在分层结构)。
+> 本文档已**归档(⛔ 失败)**;acceleration-smoothing 已归档至 [`acceleration-smoothing-2026-09-14.md`](acceleration-smoothing-2026-09-14.md)(2026-09-23;其 §〇 VA/realAge 结论随 P1 直写基线一并弃用/验证)。
 
 ---
 

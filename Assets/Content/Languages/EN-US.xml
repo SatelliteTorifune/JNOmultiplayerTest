@@ -79,6 +79,11 @@
     <s id="MultiPlayer.MultiPlayerUI.Cancel">Cancel</s>
     <s id="MultiPlayer.MultiPlayerUI.Kicked">You have been kicked by the host</s>
     <s id="MultiPlayer.MultiPlayerUI.LoadingCraft">Loading craft</s>
+    <!-- Text Chat  -->
+    <s id="MultiPlayer.Chat.ButtonTooltip">Chat</s>
+    <s id="MultiPlayer.Chat.WindowTitle">Chat Window</s>
+    <s id="MultiPlayer.Chat.Send">Send</s>
+    <s id="MultiPlayer.Chat.InputPlaceholder">Type a message…</s>
     <!-- Update Reminder -->
     <s id="MultiPlayer.MultiPlayerUI.UpdateAvailable">A new version of MultiPlayer Mod is available!</s>
     <s id="MultiPlayer.MultiPlayerUI.UpdateNewVersion">New version: {0}</s>

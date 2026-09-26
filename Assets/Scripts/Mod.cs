@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Xml.Linq;
 using Assets.Packages.DevConsole;
+using ModApi;
 using ModApi.Mods;
 using UnityEngine;
 
@@ -8,6 +11,8 @@ using HarmonyLib;
 using Jundroo.ModTools;
 using Assets.Scripts.Net.MultiPlayerTransport;
 using Assets.Scripts.Net.Session;
+using ModApi.Ui;
+using UI.Xml;
 
 namespace Assets.Scripts
 {
@@ -37,7 +42,7 @@ namespace Assets.Scripts
 				base.OnModInitialized();
 				//HarmonyPatch部署
 				DeployHarmony();
-
+				ChatUiButtonSetUp();
 				// 联机房间管理器（独立类，负责网络管理器创建与场景事件）
 				new LobbyManager();
 				LobbyManager.Instance.EnsureMultiPlayerManager();
@@ -235,6 +240,48 @@ namespace Assets.Scripts
 				AngularVelocity = Vector3.zero;
 			}
 
+		}
+		
+		private void ChatUiButtonSetUp()
+		{
+			Game.Instance.UserInterface.AddBuildUserInterfaceXmlAction("Ui/Xml/Flight/ViewPanel", OnBuildViewPanel); 
+			Game.Instance.SceneManager.SceneLoaded += (sender, e) => 
+			{
+				if (Game.Instance.SceneManager.InFlightScene)
+				{
+					Game.Instance.FlightScene.GameObject.GetComponentsInChildren<XmlElement>().ToList().ForEach(x =>
+					{
+						// id 必须与 OnBuildViewPanel 注入的 ContentButton id 一致(CraftSp 同款模式)
+						if (x.id == "multiplayer-chat")
+						{
+							x.AddOnClickEvent(OnChatUiButtonClicked);
+						}
+					});
+				}
+			};
+		}
+		private static void OnBuildViewPanel(BuildUserInterfaceXmlRequest request)
+		{
+			var cameraPanelButton =
+				request.XmlDocument.Descendants(XmlLayoutConstants.XmlNamespace + "ContentButton")
+					.FirstOrDefault(n => n.Attribute("id")?.Value == "toggle-camera-panel-button");
+
+			if (cameraPanelButton != null)
+			{
+				cameraPanelButton.AddAfterSelf(
+					XElement.Parse(
+						$"<ContentButton name=\"MultiPlayerChat\" id=\"multiplayer-chat\" class=\"view-button audio-btn-click\" tooltip=\"{Locale.GetString("MultiPlayer.Chat.ButtonTooltip")}\" xmlns=\"{XmlLayoutConstants.XmlNamespace}\">" +
+						"    <Image sprite=\"MultiPlayer/Sprites/ChatIcon\" />" +
+						"</ContentButton>"
+					)
+				);
+			}
+		}
+
+		/// <summary>ViewPanel 聊天按钮点击:转发聊天窗切换(XmlLayout 原生窗,未连接/不在飞行场景时不生效,见 MultiPlayerChatWindow.Toggle)。</summary>
+		public void OnChatUiButtonClicked()
+		{
+			MultiPlayerChatWindow.Toggle();
 		}
 	}
 }
