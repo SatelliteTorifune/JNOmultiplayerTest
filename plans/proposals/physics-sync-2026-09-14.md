@@ -1,8 +1,8 @@
 # SP2 式物理同步移植评估(physics-sync)— 每 body 速度注入 + 开销/工期
 
-> 状态:📋 **研究完成,未实施**(2026-09-14 通读 SP2 反编译 + JNO 现状后成文;两问「开销多大 / 多复杂多久」已在 §四、§五作答,实施路径见 §六)
+> 状态:📋 **研究完成,未实施**(2026-09-14 通读 SP2 反编译 + JNO 现状后成文;两问「开销多大 / 多复杂多久」已在 §四、§五作答,实施路径见 §六;**2026-09-26:P0 ③ 的"游戏侧速度修复"部分已独立先行落地,见 [remote-craft-velocity-2026-09-13.md](../remote-craft-velocity-2026-09-13.md);P0 ① ② 协议与注入部分仍未实施**)
 > 日期:2026-09-14
-> 关联:[`archive/acceleration-smoothing-2026-09-14.md`](../archive/acceleration-smoothing-2026-09-14.md)(旋转 1 阶外推与 2 阶外推的姊妹篇,已归档;本方案 P1 即其中期 1);[`remote-craft-velocity-2026-09-13.md`](remote-craft-velocity-2026-09-13.md)(游戏侧速度缺自转项根因,本方案 P0 直接覆盖其修复);[`body-sync-2026-08-18.md`](../archive/body-sync-2026-08-18.md)(每 body 位姿域,本方案 P0 的协议基础);SP2 参考:`<SP2_MP>\Multiplayer\`(只读)
+> 关联:[`archive/acceleration-smoothing-2026-09-14.md`](../archive/acceleration-smoothing-2026-09-14.md)(旋转 1 阶外推与 2 阶外推的姊妹篇,已归档;本方案 P1 即其中期 1);[`remote-craft-velocity-2026-09-13.md`](../remote-craft-velocity-2026-09-13.md)(游戏侧速度缺自转项根因,本方案 P0 直接覆盖其修复);[`body-sync-2026-08-18.md`](../archive/body-sync-2026-08-18.md)(每 body 位姿域,本方案 P0 的协议基础);SP2 参考:`<SP2_MP>\Multiplayer\`(只读)
 > 主题:把 SP2(SimplePlanes 2 官方联机)的「每 body 速度注入真实刚体」式物理同步机制解析清楚,对照 JNO 现状给出差距表,回答开销与工期,并给出**低风险移植路径(不照搬真实刚体架构)**
 
 ---
@@ -122,12 +122,12 @@ JNO 平滑管线(采样→序列化→外推→平滑→应用)已存在且稳�
 
 | 阶段 | 内容 | 触及文件 | 工期 |
 |---|---|---|---|
-| **P0** | ① 协议尾部追加 `BodyVelocities/BodyAngularVelocities`(EOF 容错);② 发送端 `TrySampleLocalCraft` 采样每 body 速度;③ 接收端写回 kinematic 刚体 + **游戏侧速度修复**(`GroundedSurfaceVelocity += CalculateSurfaceVelocity` + `FlightData` 速度字段反射刷新 = remote-craft-velocity §五修复) | `Mod.cs`、`MpMessage.cs`、`MpNetworkManager.cs`(采样/ApplyRemoteState/ApplyRemoteGroundedSurface) | **1~2 天** |
+| **P0** | ① 协议尾部追加 `BodyVelocities/BodyAngularVelocities`(EOF 容错);② 发送端 `TrySampleLocalCraft` 采样每 body 速度;③ 接收端写回 kinematic 刚体 + **游戏侧速度修复** — ✅ 游戏侧部分已先行落地(2026-09-26:`GroundedSurfaceVelocity += CalculateSurfaceVelocity` + `FlightData` 速度字段反射刷新,见 [remote-craft-velocity-2026-09-13.md](../remote-craft-velocity-2026-09-13.md) §五 实施记录),剩 ①② 协议 + 刚体注入 | `Mod.cs`、`MpMessage.cs`、`MpNetworkManager.cs`(采样/ApplyRemoteState/ApplyRemoteGroundedSurface;2026-09-22 重构后: `Net/Sync/LocalCraftSender.cs`、`Net/Sync/GhostPoseWriter.cs`、`Net/Sync/RemoteCraftManager.cs`) | **1~2 天**(仅剩 ①②③注入) |
 | **P1** | 旋转 1 阶外推 `SrfRel · AngleAxis(ω·ext)` + 每 body 速度外推;钳制/防御/诊断(即 acceleration-smoothing 期 1) | `MpNetworkManager.cs`(外推段 1995-2018 + 平滑 2343) | **0.5~1 天** |
 | **P2**(可选) | 带宽预算化(SP2 式 5+5 优先级挑选)+ 速度量化压缩 | `MpNetworkManager.cs` + `MpMessage.cs` | **1~2 天** |
 | **P3**(不推荐) | 照搬 SP2 真实刚体(`RigidBodyRemote` 等价物) | 全仓库 + Harmony 新 patch | **1~2 周,高回归风险** |
 
-**推荐路径(P0+P1)合计:约 3~5 个工作日,含 NetSim(150ms/30ms)双端实测与回归。**
+**推荐路径(P0+P1)合计:约 3~5 个工作日,含双端实测与回归(高延迟场景用 frp / 真实网络;**NetSim 已于 2026-09-26 整体移除**)。**
 
 ### 5.3 风险点(诚实版)
 
@@ -144,7 +144,7 @@ JNO 平滑管线(采样→序列化→外推→平滑→应用)已存在且稳�
 
 1. **P0-数据验证**(半天):发送端临时日志打印每 body `RigidBody.velocity/angularVelocity`(量级/静止是否≈0/关节 body 是否带噪),真实飞行 + 转弯段各一次;
 2. **P0-协议+采样+写回**(1~1.5 天):`RemoteDataPack` 加两个平行 List → `WriteRecdata/ReadRecdata` 尾部追加(EOF→空)→ 采样 → 接收端写回 kinematic 刚体 + `ApplyRemoteGroundedSurface` 补自转项 + `FlightData` 速度字段反射刷新;
-3. **P0-验证**(半天):静止远程船 `craft.Velocity.magnitude ≈ 158.85 m/s`(测试行星)非 0;运动船无帧内振荡;`MP smoothing` 诊断加 `bodyVel=`;NetSim 150ms/30ms 双端;
+3. **P0-验证**(半天):静止远程船 `craft.Velocity.magnitude ≈ 158.85 m/s`(测试行星)非 0;运动船无帧内振荡;`MP smoothing` 诊断加 `bodyVel=`;双端实测(高延迟用 frp / 真实网络;NetSim 已于 2026-09-26 移除);
 4. **P1-旋转 1 阶外推**(0.5~1 天):朝向外推 + 每 body 速度外推,钳制/防御/诊断(回填 acceleration-smoothing 期 1 并更新其状态);
 5. **收尾**:更新本文件状态 → `plans/README.md` 索引/决策速查 → 与代码同批提交。
 
@@ -165,7 +165,7 @@ JNO 平滑管线(采样→序列化→外推→平滑→应用)已存在且稳�
 ## 八、关联文档与决策记录
 
 - 决策建议(待用户拍板):**【建议:2026-09-14】先做 P0+P1(3~5 天),不做 P3 真实刚体**;拍板后回填本文件状态并同步 `plans/README.md`。
-- [`remote-craft-velocity-2026-09-13.md`](remote-craft-velocity-2026-09-13.md):P0 直接执行其 §五修复方案(字段补自转项 + FlightData 速度刷新);
+- [`remote-craft-velocity-2026-09-13.md`](../remote-craft-velocity-2026-09-13.md):P0 直接执行其 §五修复方案(字段补自转项 + FlightData 速度刷新)— ✅ **该部分已于 2026-09-26 先行落地**;P0 剩余 ①② 协议 + ③ 刚体注入
 - [`archive/acceleration-smoothing-2026-09-14.md`](../archive/acceleration-smoothing-2026-09-14.md):P1 执行其期 1(旋转 `ω·ext` + 平移 2 阶可选);其 §二 已核实 `FlightData.Acceleration/AngularVelocity` 可直接采样;
 - [`archive/latency-smoothing-2026-08-22.md`](../archive/latency-smoothing-2026-08-22.md) §9:现行接收端管线,本方案全部改动挂在其上;
 - SP2 参考(只读):`<SP2_MP>\Multiplayer\CraftStateSerializer.cs` / `NetworkBodyScript.cs` / `RigidBodyRemote.cs`。

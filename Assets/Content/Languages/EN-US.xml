@@ -50,11 +50,6 @@
     <s id="MultiPlayer.MultiPlayerUI.EnterTcpHost">Enter host IP (e.g. 192.168.x.x:25555)</s>
     <s id="MultiPlayer.MultiPlayerUI.InvalidTcpHost">Invalid host: '{0}'</s>
     <s id="MultiPlayer.MultiPlayerUI.RebuildPanelButton">Force Rebuild Panel</s>
-    <s id="MultiPlayer.MultiPlayerUI.NetSimGroup">Network Latency Sim (NetSim)</s>
-    <s id="MultiPlayer.MultiPlayerUI.NetSimStatus">Status</s>
-    <s id="MultiPlayer.MultiPlayerUI.NetSimStats">Delivery Stats</s>
-    <s id="MultiPlayer.MultiPlayerUI.NetSimToggle">Enable Latency Sim</s>
-    <s id="MultiPlayer.MultiPlayerUI.NetSimToggleHint">When OFF, packets pass through instantly (no delay/loss) so normal TCP testing stays low-latency</s>
     <s id="MultiPlayer.MultiPlayerUI.FixSwitches">Sync Fix Switches</s>
     <s id="MultiPlayer.MultiPlayerUI.PosIntegratorToggle">Position Integrator</s>
     <s id="MultiPlayer.MultiPlayerUI.PosIntegratorHint">ON: remote craft position is integrated as V x dt with bounded error feedback (uniform per-frame motion; the jitter fix). OFF: legacy extrapolation + exponential smoothing. Receiver-side only, not synced over the network.</s>
@@ -64,13 +59,8 @@
     <s id="MultiPlayer.MultiPlayerUI.DiagHint">OFF: silences all sync diagnostics (zero logging overhead) for a clean real-network run. ON: full diagnostics.</s>
     <s id="MultiPlayer.MultiPlayerUI.ProbeToggle">Render Pre-Pose Probe</s>
     <s id="MultiPlayer.MultiPlayerUI.ProbeHint">Per-frame visible-pose probe (heaviest diagnostic: rprobe / rprobeObs lines). Turn OFF for maximum performance while keeping the periodic diagnostic lines.</s>
-    <s id="MultiPlayer.MultiPlayerUI.NetSimDuplicate">Duplicate %</s>
-    <s id="MultiPlayer.MultiPlayerUI.NetSimResetButton">Reset Latency Sim</s>
     <s id="MultiPlayer.MultiPlayerUI.LobbyWorldListButton">Refresh Lobby List (World)</s>
     <s id="MultiPlayer.MultiPlayerUI.SteamSpikeButton">Steam Identity Spike</s>
-    <s id="MultiPlayer.MultiPlayerUI.NetSimDelay">Delay (ms)</s>
-    <s id="MultiPlayer.MultiPlayerUI.NetSimJitter">Jitter +/- (ms)</s>
-    <s id="MultiPlayer.MultiPlayerUI.NetSimLoss">Packet Loss (%)</s>
     <s id="MultiPlayer.MultiPlayerUI.PlayerList">Players</s>
     <s id="MultiPlayer.MultiPlayerUI.YouTag"> (You)</s>
     <s id="MultiPlayer.MultiPlayerUI.KickButton">Kick {0}</s>
