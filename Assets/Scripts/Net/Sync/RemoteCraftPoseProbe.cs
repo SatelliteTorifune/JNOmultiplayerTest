@@ -18,8 +18,8 @@ namespace Assets.Scripts.Net.Sync
 	///   - b0d / comLink / comCross(GhostPoseWriter.cs:245-273) → 采样点在 **mod 自己的写回路径内部**;
 	///   - tfDrift(RemoteCraftDriver.cs:51) → 采样点是**下一帧 Update**,且只读 **root transform**
 	///     (1.4.2 起可见几何在 body 上、body 已脱离 craft 层级)。
-	/// 本探针以 <see cref="DefaultExecutionOrder"/> = 30000 的 LateUpdate 采样:
-	///   游戏 Update/LateUpdate(默认 0)→ mod NetworkManager.Update/LateUpdate(1000)→ **探针(30000)→ 渲染**。
+	/// 本探针在近相机 Camera.onPreCull 采样:
+	///   游戏/模组 Update 与 LateUpdate → 近相机剔除前采样 → 渲染;每帧只采一次。
 	///
 	/// 2026-09-23 实测定案(见 plans/observer-tick-quantization-2026-09-23.md):并排飞行"前后抖动"的根因在**观察者侧**——
 	/// 本机船/相机的位置只在物理固定步更新(CraftBuilder.cs:223 刚体 interpolation=None),而幽灵由 mod 每渲染帧写入连续位置;
@@ -34,7 +34,6 @@ namespace Assets.Scripts.Net.Sync
 	///                            + relSeq(幽灵相对本机船质心,即眼睛看到的相对运动)
 	///   rprobeInterp    (事件): 本机船/幽灵逐 body 插值状态发生变化时(例如按 Ctrl+Shift+I 或 P0 生效)
 	/// </summary>
-	[DefaultExecutionOrder(30000)]
 	internal class RemoteCraftPoseProbe : MonoBehaviour
 	{
 		/// <summary>每条序列保留的帧数(1s 窗口 ≈ 该机器的渲染帧数)。</summary>
@@ -66,6 +65,7 @@ namespace Assets.Scripts.Net.Sync
 		{
 			public bool HasPrev;
 			public Vector3 PrevRoot, PrevBody0, PrevCam, PrevLocalRoot, PrevLocalCoM;
+			public Vector3 PrevLocalBody0, PrevRelBody0;
 			public Quaternion PrevCamRot = Quaternion.identity;
 			public Vector3 PrevGhostFromCam, PrevLocalFromCam, PrevRelRoot, PrevRelCoM;
 			public Vector3 Axis = Vector3.forward;
@@ -75,6 +75,8 @@ namespace Assets.Scripts.Net.Sync
 			public readonly float[] SeqDtMs = new float[SeqLen];
 			public readonly int[] SeqSteps = new int[SeqLen];
 			public readonly float[] SeqLocalCoM = new float[SeqLen];
+			public readonly float[] SeqLocalBody0 = new float[SeqLen];
+			public readonly float[] SeqRelBody0 = new float[SeqLen];
 			public readonly float[] SeqCamMove = new float[SeqLen];
 			public readonly float[] SeqCamRot = new float[SeqLen];
 			public readonly float[] SeqGhostRelCam = new float[SeqLen];
@@ -109,6 +111,7 @@ namespace Assets.Scripts.Net.Sync
 			// ★ 可见几何(幽灵是 isPhysics=1 的船:root transform 由游戏 RecenterTransformOnCoM 从物理 CoM 摆出,
 			// 而**可见几何在 body 上、由 mod 每帧写**)。故 body[0] 的模长速度才是"眼睛看到的那条曲线"。
 			public float WinBSpdAbsMax, WinBSpdAbsMin = float.MaxValue;
+			public float WinLocalBodySpdMax, WinLocalBodySpdMin = float.MaxValue, WinRelBody0Max;
 		}
 
 		private readonly Dictionary<int, CraftProbe> _probes = new Dictionary<int, CraftProbe>();
@@ -121,7 +124,23 @@ namespace Assets.Scripts.Net.Sync
 		private string _lastLocalInterp = "";
 		private string _lastGhostInterp = "";
 
-		private void LateUpdate()
+		private int _lastSampleFrame = -1;
+
+		private void OnEnable() { Camera.onPreCull += OnCameraPreCull; }
+		private void OnDisable() { Camera.onPreCull -= OnCameraPreCull; }
+
+		private void OnCameraPreCull(Camera camera)
+		{
+			if (!ProbeEnabled || _lastSampleFrame == Time.frameCount) return;
+			FlightSceneScript scene = FlightSceneScript.Instance;
+			if (scene == null || scene.ViewManager == null || scene.ViewManager.GameView == null ||
+				scene.ViewManager.GameView.GameCamera == null || camera != scene.ViewManager.GameView.GameCamera.NearCamera) return;
+			_lastSampleFrame = Time.frameCount;
+			ProbeFrame();
+		}
+
+		// 在近相机剔除前采样,覆盖脚本 LateUpdate 之后的引擎/相机写入;每个实际渲染帧只采一次。
+		private void ProbeFrame()
 		{
 			if (!ProbeEnabled) return;
 			NetworkManager mgr = NetworkManager.Instance;
@@ -179,6 +198,7 @@ namespace Assets.Scripts.Net.Sync
 			catch { }
 			Vector3 localRootPos = localRoot != null ? localRoot.position : Vector3.zero;
 			Vector3 localCoMPos = localCoM != null ? localCoM.position : localRootPos;
+			Vector3 localBody0Pos = localBody0 != null ? localBody0.position : localCoMPos;
 			bool hasLocal = localCoM != null || localRoot != null;
 
 			if (!_envLogged && crafts.Count > 0)
@@ -196,7 +216,7 @@ namespace Assets.Scripts.Net.Sync
 				if (!_probes.TryGetValue(kv.Key, out p)) { p = new CraftProbe(); _probes[kv.Key] = p; }
 				try
 				{
-					if (!ProbeOne(rc, p, dt, steps, now, hasCam, camPos, camRot, hasLocal, localRootPos, localCoMPos)) _stale.Add(kv.Key);
+					if (!ProbeOne(rc, p, dt, steps, now, hasCam, camPos, camRot, hasLocal, localRootPos, localCoMPos, localBody0Pos)) _stale.Add(kv.Key);
 				}
 				catch (Exception e)
 				{
@@ -208,7 +228,7 @@ namespace Assets.Scripts.Net.Sync
 
 		/// <summary>采样一艘幽灵。返回 false 表示该幽灵当前不可采样(移出探针表)。</summary>
 		private bool ProbeOne(RemoteCraft rc, CraftProbe p, float dt, int steps, float now,
-			bool hasCam, Vector3 camPos, Quaternion camRot, bool hasLocal, Vector3 localRootPos, Vector3 localCoMPos)
+			bool hasCam, Vector3 camPos, Quaternion camRot, bool hasLocal, Vector3 localRootPos, Vector3 localCoMPos, Vector3 localBody0Pos)
 		{
 			if (rc == null) return false;
 			if (rc.Node == null || rc.Node.CraftScript == null) return false;
@@ -266,6 +286,10 @@ namespace Assets.Scripts.Net.Sync
 				float dRoot = Vector3.Dot(rootPos - p.PrevRoot, p.Axis) * 100f;
 				float dBody0 = Vector3.Dot(body0Pos - p.PrevBody0, p.Axis) * 100f;
 				float dLocalCoM = Vector3.Dot(localCoMPos - p.PrevLocalCoM, p.Axis) * 100f;
+				float dLocalBody0 = Vector3.Dot(localBody0Pos - p.PrevLocalBody0, p.Axis) * 100f;
+				Vector3 relBody0 = body0Pos - localBody0Pos;
+				float dRelBody0 = Vector3.Dot(relBody0 - p.PrevRelBody0, p.Axis) * 100f;
+				if (hasLocal && Mathf.Abs(dRelBody0) > p.WinRelBody0Max) p.WinRelBody0Max = Mathf.Abs(dRelBody0);
 				float dCamMove = hasCam ? Vector3.Dot(camPos - p.PrevCam, p.Axis) * 100f : 0f;
 				float camRotDeg = hasCam ? Quaternion.Angle(p.PrevCamRot, camRot) : 0f;
 				float dGhostRelCam = 0f, dLocalRelCam = 0f, dRelRoot = 0f, dRelCoM = 0f;
@@ -296,6 +320,12 @@ namespace Assets.Scripts.Net.Sync
 				// 若两者同样抖 ⇒ 积分器自身没做到匀速。
 				float gSpdAbs = (rootPos - p.PrevRoot).magnitude * 100f / dtMs;
 				float bSpdAbs = (body0Pos - p.PrevBody0).magnitude * 100f / dtMs;   // ★ 可见几何的真实速度
+				float localBodySpd = (localBody0Pos - p.PrevLocalBody0).magnitude * 100f / dtMs;
+				if (hasLocal)
+				{
+					if (localBodySpd > p.WinLocalBodySpdMax) p.WinLocalBodySpdMax = localBodySpd;
+					if (localBodySpd < p.WinLocalBodySpdMin) p.WinLocalBodySpdMin = localBodySpd;
+				}
 				float iSpd = 0f;
 				if (p.HasPrevInteg)
 				{
@@ -304,7 +334,7 @@ namespace Assets.Scripts.Net.Sync
 					if (iSpd < p.WinISpeedMin) p.WinISpeedMin = iSpd;
 				}
 				p.PrevIntegPos = rc.IntegPos; p.HasPrevInteg = true;
-				float iVelMag = (float)rc.IntegVel.magnitude * 100f; // 积分速度(cm/ms;与速度同量纲 ×100)
+				float iVelMag = (float)rc.IntegVel.magnitude * 0.1f; // m/s → cm/ms,与 iSpd、bSpdAbs 同单位
 				if (iVelMag > p.WinIVelMax) p.WinIVelMax = iVelMag;
 				if (gSpdAbs > p.WinGSpdAbsMax) p.WinGSpdAbsMax = gSpdAbs;
 				if (gSpdAbs < p.WinGSpdAbsMin) p.WinGSpdAbsMin = gSpdAbs;
@@ -316,6 +346,8 @@ namespace Assets.Scripts.Net.Sync
 				p.SeqDtMs[idx] = dtMs;
 				p.SeqSteps[idx] = steps;
 				p.SeqLocalCoM[idx] = dLocalCoM;
+				p.SeqLocalBody0[idx] = dLocalBody0;
+				p.SeqRelBody0[idx] = dRelBody0;
 				p.SeqCamMove[idx] = dCamMove;
 				p.SeqCamRot[idx] = camRotDeg;
 				p.SeqGhostRelCam[idx] = dGhostRelCam;
@@ -359,6 +391,7 @@ namespace Assets.Scripts.Net.Sync
 			}
 
 			p.PrevRoot = rootPos; p.PrevBody0 = body0Pos; p.PrevLocalRoot = localRootPos; p.PrevLocalCoM = localCoMPos;
+			p.PrevLocalBody0 = localBody0Pos; p.PrevRelBody0 = body0Pos - localBody0Pos;
 			p.PrevCam = camPos; p.PrevCamRot = camRot;
 			p.HasPrev = true;
 			p.LastSeenTime = now;
@@ -480,6 +513,7 @@ namespace Assets.Scripts.Net.Sync
 			_sb.Length = 0;
 			_sb.Append("MultiPlayer rprobe P").Append(rc.PlayerId)
 				.Append(": frames=").Append(p.WinFrames)
+				.Append(" utc=").Append(DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"))
 				.Append(" fps=").Append(dt > 0f ? (1f / dt).ToString("F0") : "?")
 				.Append(" dtWin=").Append(p.WinDtMinMs.ToString("F1")).Append('~').Append(p.WinDtMaxMs.ToString("F1")).Append("ms")
 				.Append(" dist=").Append((rootPos - localCoMPos).magnitude.ToString("F0")).Append("m")
@@ -506,6 +540,8 @@ namespace Assets.Scripts.Net.Sync
 			AppendSeq(" dtSeq", p.SeqDtMs, p.Head, p.Count, "F1");
 			AppendSeqInt(" stepsSeq", p.SeqSteps, p.Head, p.Count);
 			AppendSeq(" lCoMSeq", p.SeqLocalCoM, p.Head, p.Count, "F1");
+			AppendSeq(" lBodySeq", p.SeqLocalBody0, p.Head, p.Count, "F1");
+			AppendSeq(" relBodySeq", p.SeqRelBody0, p.Head, p.Count, "F1");
 			AppendSeq(" camMoveSeq", p.SeqCamMove, p.Head, p.Count, "F1");
 			_sb.Append(" lQuant=").Append(qLocal.ToString("F2")).Append("(unit=").Append(localUnit.ToString("F1")).Append("cm)")
 				.Append(" camQuant=").Append(qCam.ToString("F2")).Append("(unit=").Append(camUnit.ToString("F1")).Append("cm)")
@@ -533,6 +569,9 @@ namespace Assets.Scripts.Net.Sync
 				.Append('/').Append(p.WinGSpdAbsMax.ToString("F2")).Append("cm/ms")
 				.Append(" bSpdAbs=").Append(p.WinBSpdAbsMin == float.MaxValue ? "?" : p.WinBSpdAbsMin.ToString("F2"))
 				.Append('/').Append(p.WinBSpdAbsMax.ToString("F2")).Append("cm/ms")
+				.Append(" lBodySpdAbs=").Append(p.WinLocalBodySpdMin == float.MaxValue ? "?" : p.WinLocalBodySpdMin.ToString("F2"))
+				.Append('/').Append(p.WinLocalBodySpdMax.ToString("F2")).Append("cm/ms")
+				.Append(" relBodyMax=").Append(p.WinRelBody0Max.ToString("F1")).Append("cm")
 				.Append(" iVelMax=").Append(p.WinIVelMax.ToString("F2")).Append("cm/ms")
 				.Append(" integVel=(").Append(rc.IntegVel.x.ToString("F2")).Append(',').Append(rc.IntegVel.y.ToString("F2")).Append(',').Append(rc.IntegVel.z.ToString("F2")).Append(')');
 			_sb.Append(" relMax=").Append(p.WinRelMax.ToString("F1")).Append("cm")
@@ -557,6 +596,7 @@ namespace Assets.Scripts.Net.Sync
 			p.WinISpeedMax = 0f; p.WinISpeedMin = float.MaxValue;
 			p.WinGSpdAbsMax = 0f; p.WinGSpdAbsMin = float.MaxValue; p.WinIVelMax = 0f;
 			p.WinBSpdAbsMax = 0f; p.WinBSpdAbsMin = float.MaxValue;
+			p.WinLocalBodySpdMax = 0f; p.WinLocalBodySpdMin = float.MaxValue; p.WinRelBody0Max = 0f;
 		}
 
 		/// <summary>本机船 / 幽灵逐 body 插值状态串(判定"是否已开插值")。</summary>

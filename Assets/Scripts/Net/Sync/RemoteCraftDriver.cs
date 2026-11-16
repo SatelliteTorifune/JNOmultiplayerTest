@@ -159,9 +159,8 @@ namespace Assets.Scripts.Net.Sync
 						if (ext > rc.WinExtMax) rc.WinExtMax = ext;
 						if (rc.SenderMotionRate < rc.WinMRateMin) rc.WinMRateMin = rc.SenderMotionRate;
 						if (rc.SenderMotionRate > rc.WinMRateMax) rc.WinMRateMax = rc.SenderMotionRate;
-						// P2(2026-09-24)位置积分器:锚点 = 包位置 + 速度×(单向延迟 + **EMA 平滑后**的真实包龄)。
-						// 锚点必须平滑 —— 若直接用逐包重置的瞬时 age,其锯齿会经"误差回收"重新注入渲染位置。
-						// 位置本体的推进改由 ApplyRemoteSmoothing 内的积分器完成(Δpos ≡ V×dt,与包到达无关)。
+						// 锚点按连续发送端时间推进。到达时间与 RTT 只缓慢校准时间偏移,
+						// 避免真实包龄的逐包重置把网络抖动经误差修正重新带入位置。
 						if (EnablePositionIntegrator)
 						{
 							rc.IntegAgeEmaSec = rc.IntegAgeEmaSec <= 0f
@@ -170,9 +169,7 @@ namespace Assets.Scripts.Net.Sync
 							// 锚点前导项**必须与积分器同用"位置流推导速度"**:两者若不同源(一方上报速度、
 							// 一方位置流),前导项 V×延迟 的差异会变成常驻残差(实测 err 2~4m、clamp 打满),
 							// 让有界回收每帧饱和 → 渲染位移重新出现 ±25% 调制。
-							Vector3d anchorVel = rc.HasPosDerivedVel ? rc.PosDerivedVel : latest.Velocity;
-							rc.IntegAnchorPos = latest.Position + anchorVel * (double)(latencySec + rc.IntegAgeEmaSec);
-							rc.IntegAnchorValid = true;
+							UpdatePositionAnchor(rc, latest.Position, latest.Velocity, latencySec, age);
 						}
 						else
 						{
@@ -255,6 +252,8 @@ namespace Assets.Scripts.Net.Sync
 						float wMRateMin = rc.WinMRateMin, wMRateMax = rc.WinMRateMax, wExtMax = rc.WinExtMax;
 						float wMaxGap = rc.WinMaxGapMs, wMoveMax = rc.WinMoveMaxM;
 						float wBodyTgtMax = rc.WinBodyTgtMaxM; int wBodyBig = rc.WinBodyBigSum; // 2026-09-19 部件抖动诊断
+						int wSpinCount = rc.SpinBodyCount;
+						float wSpinMax = rc.SpinBodyMaxW;
 						long wGapFreeze = rc.WinGapFreezeFrames; // 持续激活帧数(而非跃迁计数,永久闩锁也能看见)
 						int wLongGap = rc.WinLongGapCount;
 						rc.MoveSumM = 0; rc.PktJumpM = 0; rc.HeadDeg3s = 0;
@@ -296,23 +295,26 @@ namespace Assets.Scripts.Net.Sync
 							" interpPct=" + rc.InterpPct.ToString("F2") +
 							" moveDelta=" + rc.LastMoveDeltaM.ToString("F2") + "m bodyDelta=" + rc.LastBodyPoseDeltaM.ToString("F2") + "m" +
 							" bodyTgt=" + wBodyTgtMax.ToString("F2") + "m bodyBig=" + wBodyBig + " bRmap=" + rc.BodyRemapCount +
-							" spin=" + rc.SpinBodyCount + " wMax=" + rc.SpinBodyMaxW.ToString("F1") + "rad/s" +
+							" spin=" + wSpinCount + " wMax=" + wSpinMax.ToString("F1") + "rad/s" +
 							" tfDrift=" + rc.LastTfDriftM.ToString("F2") + "m" +
 							" move3s=" + move3s.ToString("F3") + "m pktJump=" + pktJump.ToString("F3") + "m" +
 							" vel=" + vel + "m/s acc=" + accStr + "m/s² aExt=" + rc.LastAccelTermM.ToString("F2") + "m" +
 							" w=" + wStr + "rad/s headYaw=" + headYaw + "deg head3s=" + headDeg.ToString("F1") + "deg" +
-							// P2 位置积分器诊断:hard=锚点残差超 V×IntegMaxErrSec 被吞掉的帧数(应为 0~个位数,
-							// 持续增长说明锚点/速度估计发散);clamp=误差回收撞上限的帧数(持续满值说明锚点长期偏);
-							// err=最近一帧锚点残差;corr=最近一帧实际回收量;ageEma=锚点用的平滑包龄。
+							// 位置积分器诊断:hard=超过 100m 的真正瞬移恢复次数(正常飞行应为 0);
+							// clamp=误差回收撞上限的帧数(持续满值说明锚点长期偏);
+							// err=最近一帧锚点残差;corr=最近一帧有界回收量;ageEma=历史平滑包龄,仅供对照。
 							" integ=(hard=" + rc.IntegHardResync + ",clamp=" + rc.IntegClampFrames +
 							",err=" + rc.IntegLastErrM.ToString("F3") + "m,corr=" + rc.IntegLastCorrM.ToString("F4") +
 							"m,ageEma=" + rc.IntegAgeEmaSec.ToString("F3") + "s" +
 							",velSrcDiff=" + rc.IntegVelSrcDiffMs.ToString("F1") + "m/s" +
 							",posDerived=" + (rc.HasPosDerivedVel ? 1 : 0) +
+							",clockStepMax=" + rc.IntegClockStepMaxMs.ToString("F3") + "ms,clockReset=" + rc.IntegClockResets +
 							",pos=(" + rc.IntegPos.x.ToString("F1") + "," + rc.IntegPos.y.ToString("F1") + "," + rc.IntegPos.z.ToString("F1") + "))" +
 							" newest=(" + newestPos + ") posErr=" + rc.LastPosErrorM.ToString("F2") + "m");
 						rc.IntegHardResync = 0;
 						rc.IntegClampFrames = 0;
+						rc.IntegClockStepMaxMs = 0f;
+						rc.IntegClockResets = 0;
 					}
 
 					// 慢放诊断(2026-09,0.5s 周期):接收端慢放(Time.timeScale<0.99)或发送端慢放(rate<0.99)时
@@ -446,7 +448,7 @@ namespace Assets.Scripts.Net.Sync
 					// 避免"Update 插值 → LateUpdate 被最新包覆盖"导致的朝向跳变。
 					ForceRemoteHeading(rc, rc.LastApplied);
 					// 渲染前漂移基准(纯观测,零行为改动):记录 mod **最后一次写完**之后的 root/body[0]/comRot 位姿,
-					// 由 RemoteCraftPoseProbe([DefaultExecutionOrder(30000)] 的 LateUpdate,即所有写者之后、渲染之前)
+					// 由 RemoteCraftPoseProbe 在近相机 Camera.onPreCull(脚本 LateUpdate 之后、剔除之前)
 					// 读同一批 Transform 求差 → driftRoot/driftB0/driftCom 非 0 即证明"mod 写完后渲染前还有写者"。
 					// 既有 tfDrift 在下一帧 Update 采样、b0d 在写回路径内部采样,都覆盖不到这一段。
 					if (RemoteCraft.ExtraDiagEnabled)

@@ -80,9 +80,13 @@ namespace Assets.Scripts
 
 			// Steam 大厅浏览器（房间列表）：独立对象跨场景常驻，任何场景都泵回调（SteamAPI.RunCallbacks 保险），
 			// 并处理好友"加入游戏"邀请（GameLobbyJoinRequested_t）。见 plans/steam-lobby-2026-09-12.md。
-			GameObject lobbyObject = new GameObject("MultiPlayerSteamLobbyBrowser");
-			lobbyObject.AddComponent<Net.SteamLobbyBrowser>();
-			GameObject.DontDestroyOnLoad(lobbyObject);
+			// Android 上没有 Steam 运行时（steam_api64 不存在），创建它会抛 DllNotFoundException 并中断联机初始化。
+			if(!ModApi.Device.IsMobileBuild)
+			{
+				GameObject lobbyObject = new GameObject("MultiPlayerSteamLobbyBrowser");
+				lobbyObject.AddComponent<Net.SteamLobbyBrowser>();
+				GameObject.DontDestroyOnLoad(lobbyObject);
+			}
 		}
 
 		/// <summary>联机状态包数据结构。</summary>

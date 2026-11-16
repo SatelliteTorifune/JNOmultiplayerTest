@@ -33,7 +33,10 @@ namespace Assets.Scripts.Net.Session
 		// - TcpTransport：TCP，可走 frp/nginx 等纯 TCP 内网穿透（无 MTU 限制，无需分片）；缺点 head-of-line blocking。
 		// - LiteNetLibTransport：UDP + 可靠/不可靠通道分离 + 应用层分片；缺点公网需 UDP 端口转发。
 		// 默认 Steam；本地虚拟机 debug 时用控制台 TcpHostLobby / TcpJoinLobby 切到 TcpTransport（见 SetTransport）。
-		public IMultiPlayerTransport Transport { get; private set; } = new SteamTransport();
+		// Android 没有 Steam 运行时，必须默认使用 TcpTransport，否则构造 SteamTransport 时就会抛
+		// DllNotFoundException，联机管理器创建失败，表现为"UI 能开但连不上"。
+		public IMultiPlayerTransport Transport { get; private set; } =
+			ModApi.Device.IsMobileBuild ? (IMultiPlayerTransport)new TcpTransport() : new SteamTransport();
 
 		public bool IsServer { get; private set; }
 		public bool IsConnected { get; private set; }
@@ -87,12 +90,12 @@ namespace Assets.Scripts.Net.Session
 			Router = new MultiPlayerMessageRouter(this);
 			Chat = new ChatSession(this);
 			// 渲染前可见位姿探针(纯观测,零行为改动):挂同一 GameObject,自带
-			// [DefaultExecutionOrder(30000)] 的 LateUpdate → 在所有写者(mod 1000 / 游戏默认 0)之后、渲染之前采样。
+			// 近相机 Camera.onPreCull → 在脚本 LateUpdate 之后、剔除之前采样。
 			// 只在 RemoteCraft.ExtraDiagEnabled 为 true 时输出;不读写任何游戏状态。
 			gameObject.AddComponent<RemoteCraftPoseProbe>();
 			Transport.OnDataReceived += Router.HandlePacket;
 			Transport.OnPeerTimeout += Registry.HandlePeerTimeout;
-			Mod.LogLobby("MultiPlayer build r10 2026-09-19 (= r6 baseline: r4 id-remap + r5 stable-anchor + bodyNames/rbΔ diag; r7 orbit / r8 freeze / r9 SP2 dead-reckon all removed)");
+			Mod.LogLobby("MultiPlayer sync revision 2026-10-28-clock (continuous sender timeline; near-camera pre-cull probe)");
 			Mod.LogLobby("MultiPlayerNetworkManager created on GameObject '" + gameObject.name + "' (Awake)");
 		}
 

@@ -82,7 +82,9 @@ namespace Assets.Scripts.Net.Sync
 					smoothedPos = rc.SmoothedPos + stepDelta * (maxStep / stepLen);
 				}
 			}
-			if (Vector3d.Distance(smoothedPos, target.Position) > 100.0) smoothedPos = target.Position;
+			// 积分器以预测锚点判断真正瞬移;不能再拿未外推的包位置绕过它的位移上限。
+			if (!EnablePositionIntegrator && Vector3d.Distance(smoothedPos, target.Position) > PositionTeleportDistanceM)
+				smoothedPos = target.Position;
 			rc.SmoothedPos = smoothedPos;
 
 			// --- 朝向:Slerp 平滑(SP2 :94 用 2.5*dt) ---
@@ -225,12 +227,12 @@ namespace Assets.Scripts.Net.Sync
 		/// 每帧三步:
 		///   ① 速度向包速度做 EMA(时间常数 <see cref="IntegVelTauSec"/>)—— 低通,防止把包内速度噪声积分成位置抖动;
 		///   ② 位置严格按速度积分 → **Δpos ≡ V×dt**,与包到达节奏、帧时长完全无关;
-		///   ③ 用锚点(包位置 + 速度×(单向延迟 + EMA 包龄),由 RemoteCraftDriver 每帧写入 rc.IntegAnchorPos)
-		///      做**有界**误差回收:残差 > V×<see cref="IntegMaxErrSec"/> 的部分直接吞掉(瞬移/丢包积欠,不回收),
-		///      其余按 (1−exp(−dt/<see cref="IntegErrTauSec"/>)) 回收,且单帧上限 <see cref="IntegMaxCorrFrac"/>×V×dt。
+		///   ③ 用锚点(包位置 + 同源速度×(连续发送端时间 − 包时间))做有界误差回收:
+		///      按 (1−exp(−dt/<see cref="IntegErrTauSec"/>)) 回收,单帧上限 <see cref="IntegMaxCorrFrac"/>×V×dt。
+		///      只有超过 <see cref="PositionTeleportDistanceM"/> 的真正瞬移才允许直接重定位。
 		///
 		/// 结构不变量:单帧位移 ∈ [1−IntegMaxCorrFrac, 1+IntegMaxCorrFrac]×V×dt
-		/// ⇒ 结构上不可能停顿、不可能后退、不可能出现 2~3× 速度尖峰。
+		/// ⇒ 正常运动、非瞬移时不因网络残差产生后退或速度尖峰(低速修正另有 0.1mm 下限)。
 		/// (2026-09-24 实测旧管线:幽灵逐帧速度 max/avg = 2.3~2.7×,与发包率 20~120Hz 无关、
 		///  与帧时长无关,而同帧时长下本机船为 1.00× → 抖动源就是旧的位置构造本身。)
 		///
@@ -240,15 +242,17 @@ namespace Assets.Scripts.Net.Sync
 		internal static Vector3d IntegrateGhostPosition(RemoteCraft rc, Vector3d packetVel, float dt)
 		{
 			if (dt <= 0f) return rc.IntegHas ? rc.IntegPos : rc.IntegAnchorPos;
+			Vector3d velSrc = GetPositionVelocity(rc, packetVel);
+			rc.IntegLastCorrM = 0f;
 			if (!rc.IntegHas)
 			{
 				rc.IntegPos = rc.IntegAnchorValid ? rc.IntegAnchorPos : Vector3d.zero;
-				rc.IntegVel = packetVel;
+				rc.IntegVel = velSrc;
 				rc.IntegHas = true;
+				return rc.IntegPos;
 			}
 			// ① 速度 EMA(包速度低通)。P2b:优先用"位置流推导速度"(与锚点同源)——实测上报速度与
 			// 位置推进速率不自洽会让积分器与锚点持续拉开(残差 2~7m、回收打满),改用同源速度后残差趋零。
-			Vector3d velSrc = rc.HasPosDerivedVel ? rc.PosDerivedVel : packetVel;
 			// P2b 诊断:两种速度源之差(m/s)。若该值远大于 0(尤其接近行星自转线速度 158.85 m/s 量级),
 			// 即坐实"包内上报速度与位置推进不自洽"(历史问题 #10:游戏侧速度缺自转项)。
 			if (rc.HasPosDerivedVel) rc.IntegVelSrcDiffMs = (float)(rc.PosDerivedVel - packetVel).magnitude;
@@ -260,24 +264,25 @@ namespace Assets.Scripts.Net.Sync
 				rc.IntegVel = rc.IntegVel * (1.0 - rc.RemotePausedRamp);
 				return rc.IntegPos;
 			}
-			// ② 积分:严格 V×dt(× mRate 换算发送端时间基,慢放兼容)
-			float mRate = rc.SenderMotionRate > 0.01f ? rc.SenderMotionRate : 1f;
-			rc.IntegPos = rc.IntegPos + rc.IntegVel * (double)(dt * mRate);
+			// 短暂断包继续预测,长静默保持当前位置,避免无限外推。恢复收包后继续有界追踪。
+			if (rc.RealAgeSec >= MaxPositionPredictionSec) return rc.IntegPos;
+			if (rc.IntegAnchorValid && (rc.IntegAnchorPos - rc.IntegPos).magnitude > PositionTeleportDistanceM)
+			{
+				rc.IntegPos = rc.IntegAnchorPos;
+				rc.IntegVel = velSrc;
+				rc.IntegLastErrM = 0f;
+				if (rc.IntegHardResync < 1000000) rc.IntegHardResync++;
+				return rc.IntegPos;
+			}
+			// ② 速度源已包含运动倍率,只积分一次;再乘 mRate 会使慢放被重复缩放、正常飞行也持续漂离锚点。
+			rc.IntegPos = rc.IntegPos + rc.IntegVel * (double)dt;
 			// ③ 有界误差回收
 			if (rc.IntegAnchorValid)
 			{
 				Vector3d e = rc.IntegAnchorPos - rc.IntegPos;
 				double em = e.magnitude;
 				double vMag = rc.IntegVel.magnitude;
-				double maxErr = Math.Max(vMag * IntegMaxErrSec, 0.05);
-				if (em > maxErr)
-				{
-					// 硬账:只保留 maxErr,其余直接吞掉(避免瞬移把可见位置拽走)
-					rc.IntegPos = rc.IntegPos + e * (1.0 - maxErr / em);
-					e = rc.IntegAnchorPos - rc.IntegPos;
-					em = e.magnitude;
-					if (rc.IntegHardResync < 1000000) rc.IntegHardResync++;
-				}
+				// 2026-10-27:删除旧 "V×80ms 硬账" 位置跳写。残差再大也不能绕过下面的步长限制。
 				double corr = 1.0 - Math.Exp(-dt / IntegErrTauSec);
 				Vector3d step = e * corr;
 				double stepM = step.magnitude;
@@ -293,6 +298,65 @@ namespace Assets.Scripts.Net.Sync
 				rc.IntegLastCorrM = (float)stepM;
 			}
 			return rc.IntegPos;
+		}
+
+		/// <summary>位置流差分已含慢放倍率;只有退回包内物理速度时才换算一次。</summary>
+		internal static Vector3d GetPositionVelocity(RemoteCraft rc, Vector3d packetVel)
+		{
+			return rc.HasPosDerivedVel ? rc.PosDerivedVel : packetVel * (double)rc.SenderMotionRate;
+		}
+
+		/// <summary>
+		/// 以连续发送端时间推进锚点。逐包的 arrival − packetTime − latency 只用于缓慢校准时间偏移,
+		/// 不直接驱动位置;否则收包抖动会经误差回收调制渲染速度(双端 pre-cull 实测已确认)。
+		/// </summary>
+		internal static void UpdatePositionAnchor(RemoteCraft rc, Vector3d packetPos, Vector3d packetVel, float latencySec, float age)
+		{
+			if (double.IsNaN(rc.NewestPacketTime) || double.IsInfinity(rc.NewestPacketTime))
+			{
+				rc.IntegClockHas = false;
+				rc.IntegClockNeedsReset = true;
+				rc.IntegAnchorPos = packetPos;
+				rc.IntegAnchorValid = true;
+				return;
+			}
+			bool resetting = rc.RemotePausedRamp > 0f || age >= MaxPositionPredictionSec;
+			if (resetting) rc.IntegClockNeedsReset = true;
+			bool newSample = !rc.IntegClockHas || rc.NewestPacketTime != rc.IntegClockPacketTime ||
+				rc.NewestArrivalTime != rc.IntegClockArrivalTime || (!resetting && rc.IntegClockNeedsReset);
+			if (newSample)
+			{
+				double observedOffset = (double)rc.NewestArrivalTime - rc.NewestPacketTime - latencySec;
+				float elapsed = rc.NewestArrivalTime - rc.IntegClockArrivalTime;
+				bool rebase = !rc.IntegClockHas || rc.IntegClockNeedsReset || elapsed >= MaxPositionPredictionSec ||
+					rc.NewestPacketTime < rc.IntegClockPacketTime;
+				if ((!resetting || !rc.IntegClockHas) && rebase)
+				{
+					rc.IntegClockOffsetSec = observedOffset;
+					rc.IntegClockHas = true;
+					if (rc.IntegClockResets < 1000000) rc.IntegClockResets++;
+				}
+				else if (!resetting && elapsed > 0f)
+				{
+					double gain = 1.0 - Math.Exp(-elapsed / IntegClockTauSec);
+					double step = (observedOffset - rc.IntegClockOffsetSec) * gain;
+					// 突发包会同时放大样本偏差和 elapsed;限制时间校准速率,避免把网络排队误当钟漂。
+					double maxStep = elapsed * IntegClockMaxSlewRate;
+					step = Math.Max(-maxStep, Math.Min(step, maxStep));
+					rc.IntegClockOffsetSec += step;
+					float stepMs = (float)(Math.Abs(step) * 1000.0);
+					if (stepMs > rc.IntegClockStepMaxMs) rc.IntegClockStepMaxMs = stepMs;
+				}
+				rc.IntegClockPacketTime = rc.NewestPacketTime;
+				rc.IntegClockArrivalTime = rc.NewestArrivalTime;
+				rc.IntegClockNeedsReset = resetting;
+			}
+			double now = (double)rc.NewestArrivalTime + age;
+			double leadSec = now - rc.IntegClockOffsetSec - rc.NewestPacketTime;
+			// 早到的新包可能略超前于估计时间轴;允许有限回推,避免钳到 0 重新制造包台阶。
+			leadSec = Math.Max(-MaxPositionPredictionSec, Math.Min(leadSec, MaxPositionPredictionSec));
+			rc.IntegAnchorPos = packetPos + GetPositionVelocity(rc, packetVel) * leadSec;
+			rc.IntegAnchorValid = true;
 		}
 
 		/// <summary>把 target 的 body 位姿快照进平滑数组(首帧 / body 数量变化时调用)。</summary>

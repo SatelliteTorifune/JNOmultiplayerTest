@@ -52,6 +52,7 @@ namespace Assets.Scripts.Net.Sync
 		public float JitterEmaMs;        // 包间到达间隔抖动 EMA（ms）
 		public float LatencyMs = -1f;    // 到该发送端的单向网络延迟估计(RTT/2,房主按 peer.PingMs,客户端按 ClientPingMs);-1=未测得
 		public float NewestArrivalTime;  // 最新包到达时刻(Time.unscaledTime,连续外推用)
+		public double NewestPacketTime; // 与最新位姿对应的发送端世界时间,与到达时刻成对保存
 		public double LastPosErrorM;     // 最近渲染位置(插值/外推) vs 最新包位置 的距离（米）
 		public float LastSmoothingLogTime; // 平滑诊断周期日志计时
 		public float LastSlowmoLogTime;    // 慢放诊断周期日志计时(接收端/发送端慢放时 0.5s 输出)
@@ -129,12 +130,17 @@ namespace Assets.Scripts.Net.Sync
 
 		// --- P2(2026-09-24)位置积分器状态(自由运行:与包到达无关) ---
 		public Vector3d IntegPos;               // 积分位置(地表坐标,与 RemoteDataPack.Position 同系)
-		public Vector3d IntegVel;               // 积分速度(EMA 后的包速度,同系)
+		public Vector3d IntegVel;               // 积分速度(已含运动倍率,EMA 后,地表坐标)
 		public bool IntegHas;                   // 是否已初始化
-		public Vector3d IntegAnchorPos;         // 锚点 = 包位置 + 速度×(单向延迟 + EMA 包龄)
+		public Vector3d IntegAnchorPos;         // 锚点 = 包位置 + 同源速度×(连续发送端时间 − 包时间)
 		public bool IntegAnchorValid;
-		public float IntegAgeEmaSec;            // 平滑后的真实包龄(秒)
-		public int IntegHardResync;             // 窗口内"硬账"触发帧数(锚点残差 > V×IntegMaxErrSec)
+		public bool IntegClockHas, IntegClockNeedsReset;
+		public double IntegClockOffsetSec, IntegClockPacketTime;
+		public float IntegClockArrivalTime;
+		public float IntegClockStepMaxMs;       // 窗口内时间偏移估计的最大单次修正量,不含重置
+		public int IntegClockResets;            // 初始/暂停恢复/长静默/发送端时间回退时的时钟重置次数
+		public float IntegAgeEmaSec;            // 平滑后的真实包龄(秒),仅供诊断,不再驱动锚点
+		public int IntegHardResync;             // 窗口内真正瞬移次数(锚点残差 > PositionTeleportDistanceM)
 		public int IntegClampFrames;            // 窗口内误差回收被上限截断的帧数
 		public float IntegLastErrM;             // 最近一帧锚点残差(m)
 		public float IntegLastCorrM;            // 最近一帧实际回收量(m)
@@ -142,7 +148,7 @@ namespace Assets.Scripts.Net.Sync
 		// 实测(P2 上线后):积分器锚点残差长期 2~7m(≈26~80ms 行程)、corr 打满回收上限、hard 触发,
 		// 而 pkΔ/gapEMA 与自称速度之比 P90 达 1.49 ⇒ 上报速度与位置推进速率不自洽(历史问题 #10 同类)。
 		// 用 (本包位置 − 上包位置)/内容间隔 作为积分速度,积分器与锚点由同一数据源驱动 ⇒ 残差趋零、不再饱和。
-		public Vector3d PosDerivedVel;          // 位置流推导速度(地表坐标,与 Position 同系)
+		public Vector3d PosDerivedVel;          // 位置流推导速度(地表坐标,已包含位置流实际运动倍率)
 		public bool HasPosDerivedVel;
 		public float IntegVelSrcDiffMs;         // P2b 诊断:位置流推导速度 与 包内上报速度 之差(m/s)
 		public long FrozenFrames;              // 完全冻结态(ramp=1)的帧数(诊断)
@@ -310,7 +316,7 @@ namespace Assets.Scripts.Net.Sync
 		public struct StateSample
 		{
 			public float ArrivalTime;  // 到达端 Time.unscaledTime（单调）
-			public double PacketTime;  // 发送端 FlightState.Time（诊断用）
+			public double PacketTime;  // 发送端与位姿对齐的世界时间;旧端为原始 FlightState.Time
 			public Mod.RemoteDataPack Data;
 		}
 
@@ -330,6 +336,7 @@ namespace Assets.Scripts.Net.Sync
 			else BufferHead = (BufferHead + 1) % BufferCapacity;
 			HasState = true;
 			NewestArrivalTime = arrivalTime;
+			NewestPacketTime = packetTime;
 
 			// 包间到达间隔与抖动 EMA（诊断：网络注入的抖动应如实反映到这里）
 			if (_lastPushTime >= 0f)

@@ -14,7 +14,7 @@ namespace Assets.Scripts.Net.Sync
 	///   3) 曾有"关诊断"操作把开关做成 const,导致分支被常量折叠(CS0162)且运行时无法切换。
 	///
 	/// 现在所有同步/幽灵诊断行都经 <see cref="Log"/> 输出,并由 <see cref="Enabled"/> 统一门控
-	/// (运行时开关见控制台命令 `MpDiag`)。<see cref="ProbeEnabled"/> 单独控制渲染前探针
+	/// (运行时开关见联机面板)。<see cref="ProbeEnabled"/> 单独控制渲染前探针
 	/// (RemoteCraftPoseProbe,每帧采样 + 每秒两行,是最重的诊断,可在需要极限性能时单独关闭)。
 	///
 	/// ⚠️ 开关必须用可变 static(禁止 const):const 会被编译器常量折叠 → 运行时关不掉 + CS0162 警告。
@@ -25,7 +25,7 @@ namespace Assets.Scripts.Net.Sync
 		internal static bool Enabled = true;
 
 		/// <summary>渲染前可见位姿探针开关(<see cref="RemoteCraftPoseProbe"/>)。默认跟随 <see cref="Enabled"/> 之外独立控制。</summary>
-		internal static bool ProbeEnabled = false;
+		internal static bool ProbeEnabled = true;
 
 		/// <summary>诊断日志唯一出口:所有同步管线诊断行都必须经此输出(便于一键静默与集中改写)。</summary>
 		internal static void Log(string line)

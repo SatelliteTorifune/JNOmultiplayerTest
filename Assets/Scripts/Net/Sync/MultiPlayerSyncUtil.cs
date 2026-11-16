@@ -27,7 +27,7 @@ namespace Assets.Scripts.Net.Sync
 		/// <summary>
 		/// 位置积分器总开关。开启后接收端位置不再"每帧向包推导目标收敛",而是:
 		/// ① 速度向包速度做 EMA;② 位置严格按速度积分(Δpos ≡ V×dt,与包到达/帧时长无关);
-		/// ③ 锚点(包位置 + 速度×(单向延迟 + EMA 包龄))只用于**有界误差回收**。
+		/// ③ 锚点(包位置 + 同源速度×(连续发送端时间 − 包时间))只用于**有界误差回收**。
 		/// 依据(2026-09-24 双端实测):幽灵逐帧速度 max/avg = 2.3~2.7×(与发包率 20~120Hz 基本无关、
 		/// 与帧时长无关),同帧时长下本机船为 1.00× → 抖动源在 mod 自身的位置构造,不在游戏/渲染/网络节拍。
 		/// 验收指标(探针内建):gSpeed max/avg → ≤1.3×;并排窗口 relCoMMax → ≈|Δv|×dt。
@@ -39,12 +39,31 @@ namespace Assets.Scripts.Net.Sync
 		public const float IntegVelTauSec = 0.15f;
 		/// <summary>误差回收时间常数(秒):锚点残差按此收敛;越小越紧跟、越大越平滑。</summary>
 		public const float IntegErrTauSec = 0.30f;
-		/// <summary>包龄 EMA 时间常数(秒):锚点用的包龄必须平滑(禁止用逐包重置的瞬时 age,否则锯齿重新注入位置)。</summary>
+		/// <summary>包龄 EMA 时间常数(秒),仅保留作诊断对照,不驱动位置锚点。</summary>
 		public const float IntegAgeEmaTauSec = 0.5f;
+		/// <summary>发送端世界时间与本机真实时间的偏移估计时间常数(秒),隔离逐包到达抖动。</summary>
+		public const float IntegClockTauSec = 2f;
+		/// <summary>时间偏移校准速率上限(秒/秒):迟到包不能瞬间改变渲染时间,最大缓慢校准 0.5%。</summary>
+		public const float IntegClockMaxSlewRate = 0.005f;
 		/// <summary>单帧误差回收上限(×V×dt):0.25 ⇒ 单帧位移落在 [0.75,1.25]×V×dt,结构上不可能后退/停顿。</summary>
 		public const float IntegMaxCorrFrac = 0.25f;
-		/// <summary>锚点残差的"硬账"上限(秒×V):超出部分直接吞掉(视为瞬移/丢包积欠),不参与回收。</summary>
-		public const float IntegMaxErrSec = 0.08f;
+		/// <summary>位置预测最长静默时间(秒);超过后保持位置,等待新状态。</summary>
+		public const float MaxPositionPredictionSec = 1f;
+		/// <summary>真正瞬移的距离阈值(m);普通网络残差始终走有界修正。</summary>
+		public const float PositionTeleportDistanceM = 100f;
+
+		/// <summary>
+		/// 插值后的位姿位于上一物理步到当前步之间,其时间为世界物理时间 + 渲染余量 - 一个物理步。
+		/// 直接用 FlightState.Time 标记插值位姿,会把物理步量化重新注入位置差分速度。
+		/// None/kinematic/warp 仍由调用方选择原世界时间;这里只做同一时间域的相位换算。
+		/// </summary>
+		internal static double GetPoseSampleTime(double worldTime, double renderTime, double fixedTime,
+			float fixedDeltaTime, bool interpolated)
+		{
+			if (!interpolated || fixedDeltaTime <= 0f) return worldTime;
+			double phase = System.Math.Max(0.0, System.Math.Min(renderTime - fixedTime, fixedDeltaTime));
+			return worldTime + phase - fixedDeltaTime;
+		}
 
 		// --- 2 阶外推(acceleration-smoothing-2026-09-14):发送端采样 EMA/钳制 + 接收端开关 ---
 		/// <summary>发送端加速度 EMA 系数(每包 20Hz;Acceleration 是刚体速度差分测量,一帧滞后+噪声,必须平滑)。</summary>

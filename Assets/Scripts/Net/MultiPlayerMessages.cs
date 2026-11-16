@@ -35,7 +35,7 @@ namespace Assets.Scripts.Net
 	/// <summary>
 	/// 消息封装与序列化。所有消息均为二进制紧凑格式：
 	/// [msgType:1][payload...]
-	/// 状态包：NodeId(int) + FlightState.Time(double) + recdata
+	/// 状态包：PlayerId(int) + NodeId(int) + 位姿采样世界时间(double) + recdata
 	/// </summary>
 	public static class MultiPlayerMessages
 	{
@@ -215,7 +215,8 @@ namespace Assets.Scripts.Net
 		// ---------------- State（核心状态包） ----------------
 
 		/// <summary>
-		/// 状态包格式：PlayerId(int) + NodeId(int) + FlightState.Time(double) + recdata。
+		/// 状态包格式：PlayerId(int) + NodeId(int) + 位姿采样世界时间(double) + recdata。
+		/// 2026-10-28 起插值位姿的时间含渲染相位修正;旧端直接使用 FlightState.Time,字节布局相同。
 		/// PlayerId 由房主分配，全局唯一，用于寻址；NodeId 为发送方本机飞船节点号（各机之间可重复）。
 		/// </summary>
 		public static byte[] EncodeState(int playerId, int nodeId, double time, Mod.RemoteDataPack data)

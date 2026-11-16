@@ -129,8 +129,17 @@ namespace Assets.Scripts
                 Locale.GetString("MultiPlayer.MultiPlayerUI.Players"),
                 GetPlayerCountText, null, null, null));
 
-            inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.HostLobbyButton"), (b) => OnSteamHostLobbyClick()));
-            inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.JoinLobbyButton"), (b) => OnSteamJoinLobbyClick()));
+            if (ModApi.Device.IsMobileBuild)
+            {
+                // Android: Steam is unavailable, expose the TCP transport directly in the main group.
+                inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.TcpHostLobbyButton"), (b) => OnTcpHostLobbyClick()));
+                inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.TcpJoinLobbyButton"), (b) => OnTcpJoinLobbyClick()));
+            }
+            else
+            {
+                inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.HostLobbyButton"), (b) => OnSteamHostLobbyClick()));
+                inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.JoinLobbyButton"), (b) => OnSteamJoinLobbyClick()));
+            }
             inspectorModel.Add(new TextButtonModel(Locale.GetString("MultiPlayer.MultiPlayerUI.DisconnectButton"), (b) => OnDisconnectClick()));
 
             // --- Steam 房间列表（大厅浏览器：替代手动输入房主 SteamId，"开房可见、点列表加入"）---
@@ -170,7 +179,7 @@ namespace Assets.Scripts
             // 调试分组仅 Debug 模式显示（TCP 联机；用于本机/虚拟机联机调试）。
             Func<bool> debugOnly = () =>
             {
-                try { return ModSettings.Instance != null && ModSettings.Instance.DebugMode.Value; }
+                try { return ModApi.Device.IsMobileBuild || (ModSettings.Instance != null && ModSettings.Instance.DebugMode.Value); }
                 catch { return false; }
             };
 

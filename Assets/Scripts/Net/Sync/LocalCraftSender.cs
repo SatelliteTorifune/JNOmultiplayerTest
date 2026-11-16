@@ -462,7 +462,16 @@ namespace Assets.Scripts.Net.Sync
 			
 			// 周期性本机朝向/位置诊断日志已移除（原为 if(false) 禁用块；
 			// 其内曾被加入过早 return，导致 ProcessOutgoing 每帧提前返回、状态包完全停发）
-			double time = FlightSceneScript.Instance.FlightState.Time;
+			FlightSceneScript sendScene = FlightSceneScript.Instance;
+			double worldTime = sendScene.FlightState.Time;
+			IReadOnlyList<BodyData> sampleBodies = sendScene.CraftNode.CraftScript.Data.Assembly.Bodies;
+			Rigidbody sampleBody = sampleBodies != null && sampleBodies.Count > 0 ? sampleBodies[0]?.BodyScript?.RigidBody : null;
+			bool interpolatedPose = sampleBody != null && !sampleBody.isKinematic &&
+				sampleBody.interpolation == RigidbodyInterpolation.Interpolate && !sendScene.TimeManager.CurrentMode.WarpMode;
+			// FlightState.Time 来自 TimeManager 累计物理步,Position 则从已插值的 FramePosition 采样。
+			// 二者必须先对齐,否则 ≥80ms 位置差分仍会出现速度拍频;协议布局与世界时间域均不变。
+			double time = GetPoseSampleTime(worldTime, Time.timeAsDouble, Time.fixedTimeAsDouble,
+				Time.fixedDeltaTime, interpolatedPose);
 			byte[] packet = MultiPlayerMessages.EncodeState(_multiPlayer.PlayerId, _multiPlayer.LocalNodeId, time, data);
 			// 抽搐诊断(发送端):每 1s 输出本机采样数据抖动。若静止时 body0RelΔ 持续>0.01m,
 			// 说明发送端数据本身在抖(comRot/body 微动),接收端平滑只能衰减无法消除。
@@ -601,6 +610,7 @@ namespace Assets.Scripts.Net.Sync
 				MultiPlayerDiag.Log("MultiPlayer sendDiag P" + _multiPlayer.PlayerId +
 					": vel=" + data.Velocity.magnitude.ToString("F3") + "m/s" +
 					" paused=" + (data.Paused ? 1 : 0) +
+					" poseClockOffset=" + ((time - worldTime) * 1000.0).ToString("F2") + "ms" +
 					" accRaw=" + _accelRawDiag.magnitude.ToString("F2") + "m/s²" +
 					" acc=" + data.Acceleration.magnitude.ToString("F2") + "m/s²" +
 					" wRaw=" + _angVelRawDiag.magnitude.ToString("F2") + "rad/s" +
