@@ -18,6 +18,8 @@ MonoBehaviour:
   - Content/XML UI
   AutomaticallyRemoveEntries: 1
   entries:
+  - path: MultiPlayer/Sprites/ChatIcon
+    resource: {fileID: 21300000, guid: dcf14732480a4194eb7341f67e084917, type: 3}
   - path: MultiPlayer/Sprites/UIIcon
     resource: {fileID: 21300000, guid: 030fdaffc93ddcf4698140ab2bde8c65, type: 3}
   - path: MultiPlayer/UIResourceDatabase

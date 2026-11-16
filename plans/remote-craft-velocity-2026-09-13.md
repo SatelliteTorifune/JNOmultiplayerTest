@@ -1,9 +1,9 @@
 # 远程飞船游戏侧速度缺失（缺自转项）根因分析
 
-> 状态：📋 **分析完成，修复未做**（根因已定位并核实，待拍板后实施）
-> 日期：2026-09-13
+> 状态：✅ **已落地（2026-09-26，构建 0 错误 0 警告），待双端 Steam 实测**
+> 日期：2026-09-13（分析）；2026-09-26（实施）
 > 主题：联机生成的远程飞船（幽灵）"只有位置信息而不带速度"——游戏侧读速度 ≈ 0 / 缺行星自转项，导致相对速度等功能出错
-> 关键文件：`Assets/Scripts/Net/MpNetworkManager.cs`（mod 接收端）、游戏反编译 `CraftNode.cs` / `CraftScript.cs` / `CraftFlightData.cs` / `PlanetNode.cs` / `ReferenceFrame.cs` / `FlightGameLoop.cs`
+> 关键文件：`Assets/Scripts/Net/Sync/GhostPoseWriter.cs`（mod 接收端）、游戏反编译 `CraftNode.cs` / `CraftScript.cs` / `CraftFlightData.cs` / `PlanetNode.cs` / `ReferenceFrame.cs` / `FlightGameLoop.cs`
 
 ---
 
@@ -71,7 +71,7 @@ else if (this.InContactWithPlanet)
 ### 4. `CraftFlightData` 在游戏阶段快照 + mod 反射刷新不覆盖速度字段
 
 - `CraftFlightData.Update`（`CraftFlightData.cs:560-596`）每帧在游戏阶段跑：`Velocity = craftNode.Velocity`（当时的缺自转项值）、`SurfaceVelocityFrame = FrameVelocity + FrameSurfaceVelocity`（表面锁定帧 `FrameSurfaceVelocity = 0`，见 `ReferenceFrame.cs:277`，故 ≈ 注入的缺自转项相对速度）。
-- mod 的"FlightData 立即刷新"（`ApplyRemoteState` ⑤，`MpNetworkManager.cs:2530-2552`）只用反射刷新了 `PositionNormalized` 和 `CraftForward`（为修 Pitch/BankAngle），**没有刷新 `Velocity / VelocityMagnitude / SurfaceVelocity* / VerticalSurfaceVelocity / LateralSurfaceVelocity / Acceleration*`**。
+- mod 的"FlightData 立即刷新"（`ApplyRemoteState` ⑤，原 `MpNetworkManager.cs:2530-2552`）最初只用反射刷新了 `PositionNormalized` 和 `CraftForward`（为修 Pitch/BankAngle），**没有刷新 `Velocity / VelocityMagnitude / SurfaceVelocity* / VerticalSurfaceVelocity / LateralSurfaceVelocity / Acceleration*`**（2026-09-26 已补速度字段，见 §五 实施记录方向 2）。
 
 → `FlightData` 速度字段停留在游戏阶段快照的缺自转项值上，直到下一帧被再次覆盖。
 
@@ -87,18 +87,27 @@ else if (this.InContactWithPlanet)
 | `CraftScript.FrameVelocity` 惰性推导自 `RigidBody.velocity` | `Craft/CraftScript.cs:410-441` |
 | `CraftScript.FlightUpdate` → `UpdateFlightData`（游戏 Update 阶段） | `CraftScript.cs:959-961, 2250-2252` |
 | 游戏 Update 阶段先于 mod（`OnUpdate` 内 `ProcessNodeTree(FlightUpdate)` 在 `_scripts.Update` 组之前） | `GameLoop/FlightGameLoop.cs:372-406` |
-| mod 写 `GroundedSurfaceVelocity = data.Velocity`（漏自转项） | `Assets/Scripts/Net/MpNetworkManager.cs:2606` |
-| mod `ApplyRemoteState` 补自转项写 `SetStateVectors`（但时序在后） | `MpNetworkManager.cs:2441-2447` |
-| mod FlightData 刷新只覆盖 `PositionNormalized`/`CraftForward` | `MpNetworkManager.cs:2530-2552` |
-| `InjectGhostMotion` 注入缺自转项速度、仅变化时写 | `Assets/Scripts/Net/EngineVisualSync.cs:499-549` |
+| mod 写 `GroundedSurfaceVelocity`（原漏自转项；**2026-09-26 已补** `+ CalculateSurfaceVelocity(pos)`） | `Assets/Scripts/Net/Sync/GhostPoseWriter.cs`（`ApplyRemoteGroundedSurface`；原 `MpNetworkManager.cs:2606`） |
+| mod `ApplyRemoteState` 补自转项写 `SetStateVectors`（与方向 1 后游戏换算一致） | `Sync/GhostPoseWriter.cs`（`ApplyRemoteState`；原 `MpNetworkManager.cs:2441-2447`） |
+| mod FlightData 刷新（原只覆盖 `PositionNormalized`/`CraftForward`；**2026-09-26 已补速度字段**） | `Sync/GhostPoseWriter.cs`（`ApplyRemoteState` ⑤；原 `MpNetworkManager.cs:2530-2552`） |
+| `InjectGhostMotion` 注入缺自转项速度、仅变化时写（方向 3 未做，见 §五） | `Assets/Scripts/Net/CraftVisual/EngineVisualSync.cs`（原 `Net/EngineVisualSync.cs:499-549`） |
 
-## 五、修复方向（待拍板，未实施）
+## 五、修复方向（✅ 已实施，2026-09-26）
 
-1. **最小修复（推荐）**：`ApplyRemoteGroundedSurface` 改写
+1. **最小修复（推荐，✅ 已做）**：`ApplyRemoteGroundedSurface` 改写
    `GroundedSurfaceVelocity = data.Velocity + planet.CalculateSurfaceVelocity(data.Position)`
    与游戏自身约定一致 → 游戏每帧换算出的 `Orbit.Velocity` 天然正确，帧内振荡消失（`craft.SurfaceVelocity` 属性语义会随之变为"地表系惯性速度"，与游戏原生行为一致，需一并核对消费方）。
-2. **补 FlightData 缺口**：`ApplyRemoteState` ⑤ 增加速度字段反射刷新（`Velocity / VelocityMagnitude / SurfaceVelocity / SurfaceVelocityFrame / SurfaceVelocityMagnitude / VerticalSurfaceVelocity / LateralSurfaceVelocity`），或复用 `CraftFlightData.Update` 的等价计算。
-3. **可选**：`InjectGhostMotion` 注入时补自转项 + 写后清 `_frameVelocity` 缓存（`rb.velocity` 写入后 `_frameVelocity = null` 的时机已由游戏 FlightLateUpdate 每帧清），覆盖 HUD 地表速度/导航球读数。
+2. **补 FlightData 缺口（✅ 已做）**：`ApplyRemoteState` ⑤ 增加速度字段反射刷新（`Velocity / VelocityMagnitude / SurfaceVelocity / SurfaceVelocityFrame / SurfaceVelocityMagnitude / VerticalSurfaceVelocity / LateralSurfaceVelocity`），或复用 `CraftFlightData.Update` 的等价计算。
+3. **可选（⏳ 未做）**：`InjectGhostMotion` 注入时补自转项 + 写后清 `_frameVelocity` 缓存（`rb.velocity` 写入后 `_frameVelocity = null` 的时机已由游戏 FlightLateUpdate 每帧清），覆盖 HUD 地表速度/导航球读数。
+
+### 实施记录（2026-09-26，方向 1 + 2 落地；方向 3 未做）
+
+- **方向 1（核心）**：`GhostPoseWriter.ApplyRemoteGroundedSurface`（`Assets/Scripts/Net/Sync/GhostPoseWriter.cs`，2026-09-22 重构后位置；原 `MpNetworkManager.cs:2606`）改写为
+  `GroundedSurfaceVelocity = data.Velocity + planet.CalculateSurfaceVelocity(data.Position)`。
+  游戏每帧表面锁定分支换算出的 `Orbit.Velocity = SurfaceVectorToPlanetVector(GSV)` 与 `ApplyRemoteState` 的 `SetStateVectors` 公式**完全一致** → 帧内振荡消失；`craft.Velocity` / `FlightData.Velocity / VelocityMagnitude` 在游戏阶段即正确（游戏 `UpdateCraft` 先于 `CraftFlightData.Update`，无需再等 mod 阶段补写）。
+  已核对消费方：`CraftNode.SurfaceVelocity` 的读者（`AudioExpressionContext` / `CraftExpressionContext` / 关卡/合约要求）只作用于**玩家自己的船**，不读幽灵，语义切换无影响。
+- **方向 2（FlightData 速度字段）**：`ApplyRemoteState` ⑤ 块新增反射刷新 `Velocity / VelocityMagnitude / SurfaceVelocityFrame / SurfaceVelocity / SurfaceVelocityMagnitude / VerticalSurfaceVelocity / LateralSurfaceVelocity`，公式复刻游戏 `CraftFlightData.Update`（`SurfaceVelocityFrame = frame.PlanetToFrameVelocity(V) + frame.FrameSurfaceVelocity`；`SurfaceVelocity = frame.FrameToPlanetVector(SurfaceVelocityFrame)`；`Vertical = Dot(Position.normalized, SurfaceVelocity)`；`Lateral = √max(0, |SurfaceVelocity|² − Vertical²)`），输入用本帧正确值 → HUD 地表速度 / 导航球 / Vizzy 读数精确，不再依赖 kinematic 刚体推导的 `FrameVelocity`。
+- **方向 3（未做）**：`InjectGhostMotion` 注入的 `rb.velocity` 走 `PlanetToFrameVelocity(SurfaceVectorToPlanetVector(data.Velocity))`，比正确帧相对速度少 `PlanetToFrameVelocity(CalculateSurfaceVelocity(pos))`（≈ 幽灵位置与接收端帧中心的自转速度差：同处帧中心为 0，越远越大，至多 ~2×158.85 m/s）。该路径只影响烟雾粒子速度与 `FrameVelocity` 推导（HUD/导航球读数已由方向 2 覆盖；`SmokeTrailScript` 的发射率读数 `FlightData.SurfaceVelocityFrame.magnitude` 也随之修正）。**未改**：烟雾视觉此前已验证，避免无实测依据的改动；如实测远程船相距较远时烟雾拖尾速度异常，再按方向 3 补 `+ CalculateSurfaceVelocity(pos)` 并核对 `_frameVelocity` 缓存。
 
 ## 六、相关历史（不要重复调研）
 
@@ -106,7 +115,7 @@ else if (this.InContactWithPlanet)
 - 本次是**接收端**同一自转项的镜像问题（写回 `GroundedSurfaceVelocity` 时不加自转项），此前未记录。
 - 旁注："幽灵 `FrameVelocity` 可能陈旧" 已在 `archive/engine-fx-sync-2026-08-18.md:312` 提到，但未定位到根因。
 
-## 七、验证思路（实施后复测）
+## 七、验证思路（2026-09-26 已实施，待双端 Steam 复测）
 
 - 静止远程船：`craft.Velocity.magnitude` 应 ≈ 行星自转线速度（测试行星 158.85 m/s）而非 0；`FlightData.VelocityMagnitude` 同理。
 - 运动远程船：`craft.Velocity` = 相对速度 + 自转项，帧内不再振荡（游戏阶段/mod 阶段一致）。

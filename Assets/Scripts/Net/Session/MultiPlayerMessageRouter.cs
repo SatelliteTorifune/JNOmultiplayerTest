@@ -71,6 +71,9 @@ namespace Assets.Scripts.Net.Session
 				case MultiPlayerMessageType.TickRate:
 					_multiPlayer.Router.OnTickRate(packet);
 					break;
+				case MultiPlayerMessageType.Chat:
+					_multiPlayer.Router.OnChat(peer, packet);
+					break;
 			}
 		}
 
@@ -219,6 +222,30 @@ namespace Assets.Scripts.Net.Session
 			if (_multiPlayer.IsServer)
 			{
 				_multiPlayer.Transport.Broadcast(packet);
+			}
+		}
+
+		/// <summary>
+		/// 聊天消息(2026-09-24,plans/text-chat-2026-09-24.md §四 M0):客户端 -> 房主 -> 全员。
+		/// 房主:丢弃未登记连接(peer.PlayerId &lt; 0),以连接身份重写 playerId(自报 id 不信任,SP2 同款防冒充),
+		/// 过 Policy.AllowRelay(默认放行;未来 BadWord/限速)后广播 + 本地入列(Broadcast 不回自身)。
+		/// 客户端:星型拓扑下只认房主连接(peer.IsServer)的广播,入列 senderId(房主已重写为真实身份)。
+		/// </summary>
+		internal void OnChat(MultiPlayerPeer peer, byte[] packet)
+		{
+			int senderId; string text;
+			if (!MultiPlayerMessages.TryDecodeChat(packet, out senderId, out text)) return;
+			if (_multiPlayer.IsServer)
+			{
+				if (peer.PlayerId < 0) return;
+				if (!_multiPlayer.Chat.Policy.AllowRelay(peer.PlayerId, text)) return;
+				_multiPlayer.Transport.Broadcast(MultiPlayerMessages.EncodeChat(peer.PlayerId, text));
+				_multiPlayer.Chat.Add(peer.PlayerId, text);
+			}
+			else
+			{
+				if (!peer.IsServer) return;
+				_multiPlayer.Chat.Add(senderId, text);
 			}
 		}
 

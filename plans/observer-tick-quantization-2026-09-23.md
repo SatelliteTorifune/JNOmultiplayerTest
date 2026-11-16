@@ -2,7 +2,7 @@
 
 > 状态:🔧 **活跃 · 阶段性收尾(2026-09-24)** —— P0 / P2 / P2b 已实现并通过**双机 A/B 客观验证**(构建 0/0);**待 Steam 真实环境实测确认观感**(用户下一步执行)
 > 日期:2026-09-23(创建);2026-09-24(阶段性收尾)
-> 关联:[`archive/smoothing-reset-2026-09-23.md`](archive/smoothing-reset-2026-09-23.md)(⛔ 前一轮"归零重建 / SP2 全量对齐",其结论「台阶由游戏自身渲染管线固定节拍驱动、mod 侧已达极限」**方向对了一半、归因错了一层**,见 §3.4);[`archive/acceleration-smoothing-2026-09-14.md`](archive/acceleration-smoothing-2026-09-14.md)(前三轮平滑调整史);[`archive/latency-smoothing-2026-08-22.md`](archive/latency-smoothing-2026-08-22.md) §9(接收端现行实现事实);[`proposals/remote-craft-velocity-2026-09-13.md`](proposals/remote-craft-velocity-2026-09-13.md)(游戏侧速度缺自转项,与本主题 §3.2 同族但不同因)
+> 关联:[`archive/smoothing-reset-2026-09-23.md`](archive/smoothing-reset-2026-09-23.md)(⛔ 前一轮"归零重建 / SP2 全量对齐",其结论「台阶由游戏自身渲染管线固定节拍驱动、mod 侧已达极限」**方向对了一半、归因错了一层**,见 §3.4);[`archive/acceleration-smoothing-2026-09-14.md`](archive/acceleration-smoothing-2026-09-14.md)(前三轮平滑调整史);[`archive/latency-smoothing-2026-08-22.md`](archive/latency-smoothing-2026-08-22.md) §9(接收端现行实现事实);[`remote-craft-velocity-2026-09-13.md`](remote-craft-velocity-2026-09-13.md)(游戏侧速度缺自转项,与本主题 §3.2 同族但不同因)
 > 主题:两架 craft 并排飞行时"对方船位置前后抖动"的**真根因(两层)与修复**:①观察参照系——本机船/相机只在物理固定步推进(`CraftBuilder.cs:223` 刚体插值 `None`),而幽灵每渲染帧写入;②mod 自身位置构造——"锚点外推 + 指数平滑 + maxStep"产生 0.5×~2.6× 的逐帧速度调制
 
 ---
@@ -193,7 +193,7 @@ VM 端(v≈94m/s,渲染 137fps,`fixedDt=10ms` → 每物理步位移 **94cm**):
 |---|---|
 | 主面板 | Host / Join / Disconnect / 踢人 / 玩家列表 / 房间列表(刷新·**跨区刷新**·创建·加入·邀请·离开) |
 | 房主设置 | TickRate 滑条(1~120Hz,房主广播) |
-| **Debug** | TCP 开房/加入、NetSim 状态·统计·总开关·延迟·抖动·丢包·**重复包**·**复位**、**Steam 身份自检** |
+| **Debug** | TCP 开房/加入、**跨区刷新房间列表**、**Steam 身份自检**(~~NetSim 状态·统计·总开关·延迟·抖动·丢包·**重复包**·**复位**~~ **已于 2026-09-26 随 NetSim 整体移除**) |
 | **同步修复开关** | **位置积分器(P2)** / **本机船渲染插值(P0)** / **诊断日志** / **渲染前探针** |
 
 三个修复开关均为**本机侧局部开关(不随网络同步)**;切换即写日志行(`MpPosIntegrator (UI) -> ON/OFF` 等)⇒ A/B 相位在日志里自证。

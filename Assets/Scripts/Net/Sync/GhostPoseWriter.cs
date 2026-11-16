@@ -294,14 +294,35 @@ namespace Assets.Scripts.Net.Sync
 						_flightPositionNormalizedProp?.SetValue(rfd, rc.Node.Position.normalized);
 						Vector3d expCraftFwd = frame.FrameToPlanetVector(rc.Node.CraftScript.CenterOfMass.forward).normalized;
 						_flightCraftForwardProp?.SetValue(rfd, expCraftFwd);
+						// 速度字段刷新(已知问题 #10 方向 2):游戏 CraftFlightData.Update 在游戏阶段快照速度,
+						// 但幽灵的 FrameVelocity 从 kinematic 刚体推导(≈0/陈旧),SurfaceVelocity* 随之不精确。
+						// 此处按游戏同款公式(CraftFlightData.Update:578-591)用本帧正确输入重刷:
+						//   Velocity/VelocityMagnitude 直接取 rc.Node.Velocity(方向 1 修正后=惯性速度);
+						//   SurfaceVelocityFrame = PlanetToFrameVelocity(V) + FrameSurfaceVelocity(游戏原式);
+						//   SurfaceVelocity/Vertical/Lateral 由 SurfaceVelocityFrame 推出。
+						Vector3d ghostVel = rc.Node.Velocity;
+						_flightVelocityProp?.SetValue(rfd, ghostVel);
+						_flightVelocityMagnitudeProp?.SetValue(rfd, ghostVel.magnitude);
+						Vector3 surfaceVelFrame = frame.PlanetToFrameVelocity(ghostVel) + frame.FrameSurfaceVelocity;
+						Vector3d surfaceVel = frame.FrameToPlanetVector(surfaceVelFrame);
+						_flightSurfaceVelocityFrameProp?.SetValue(rfd, surfaceVelFrame);
+						_flightSurfaceVelocityProp?.SetValue(rfd, surfaceVel);
+						_flightSurfaceVelocityMagnitudeProp?.SetValue(rfd, (double)surfaceVelFrame.magnitude);
+						double vertical = Vector3d.Dot(rc.Node.Position.normalized, surfaceVel);
+						_flightVerticalSurfaceVelocityProp?.SetValue(rfd, vertical);
+						double lateral = Math.Sqrt(Math.Max(0.0, surfaceVel.sqrMagnitude - vertical * vertical));
+						_flightLateralSurfaceVelocityProp?.SetValue(rfd, lateral);
 						// 诊断:确认反射属性是否取到、写后值(仅首次输出)
 						if (!_flightDiagLogged)
 						{
 							_flightDiagLogged = true;
 							Mod.Log("MultiPlayer FlightData 刷新诊断: posNormProp=" + (_flightPositionNormalizedProp != null) +
 								" fwdProp=" + (_flightCraftForwardProp != null) +
+								" velProp=" + (_flightVelocityProp != null) +
+								" srfProps=" + (_flightSurfaceVelocityFrameProp != null && _flightSurfaceVelocityProp != null) +
 								" | 写后CraftForward=(" + rfd.CraftForward.x.ToString("F3") + "," + rfd.CraftForward.y.ToString("F3") + "," + rfd.CraftForward.z.ToString("F3") + ")" +
-								" 期望=(" + expCraftFwd.x.ToString("F3") + "," + expCraftFwd.y.ToString("F3") + "," + expCraftFwd.z.ToString("F3") + ")");
+								" 期望=(" + expCraftFwd.x.ToString("F3") + "," + expCraftFwd.y.ToString("F3") + "," + expCraftFwd.z.ToString("F3") + ")" +
+								" | 写后Velocity=" + ghostVel.magnitude.ToString("F1") + "m/s SurfaceVelFrame=" + surfaceVelFrame.magnitude.ToString("F1") + "m/s");
 						}
 					}
 				}
@@ -342,6 +363,23 @@ namespace Assets.Scripts.Net.Sync
 			typeof(CraftFlightData).GetProperty("PositionNormalized", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 		private static readonly PropertyInfo _flightCraftForwardProp =
 			typeof(CraftFlightData).GetProperty("CraftForward", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		// 速度字段(已知问题 #10 方向 2):游戏 FlightData.Update 在游戏阶段快照速度,但幽灵的
+		// FrameVelocity 从 kinematic 刚体推导(≈0/陈旧),SurfaceVelocity* 随之不精确;这里用正确输入
+		// 按游戏同款公式(CraftFlightData.Update)刷新,使 HUD 地表速度/导航球/Vizzy 读数精确。
+		private static readonly PropertyInfo _flightVelocityProp =
+			typeof(CraftFlightData).GetProperty("Velocity", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		private static readonly PropertyInfo _flightVelocityMagnitudeProp =
+			typeof(CraftFlightData).GetProperty("VelocityMagnitude", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		private static readonly PropertyInfo _flightSurfaceVelocityFrameProp =
+			typeof(CraftFlightData).GetProperty("SurfaceVelocityFrame", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		private static readonly PropertyInfo _flightSurfaceVelocityProp =
+			typeof(CraftFlightData).GetProperty("SurfaceVelocity", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		private static readonly PropertyInfo _flightSurfaceVelocityMagnitudeProp =
+			typeof(CraftFlightData).GetProperty("SurfaceVelocityMagnitude", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		private static readonly PropertyInfo _flightVerticalSurfaceVelocityProp =
+			typeof(CraftFlightData).GetProperty("VerticalSurfaceVelocity", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+		private static readonly PropertyInfo _flightLateralSurfaceVelocityProp =
+			typeof(CraftFlightData).GetProperty("LateralSurfaceVelocity", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 		private static bool _flightDiagLogged; // FlightData 反射刷新诊断(仅首次输出)
 
 		/// <summary>
@@ -360,7 +398,19 @@ namespace Assets.Scripts.Net.Sync
 				// 否则 CraftNode.Heading(行星字段) 会存帧空间值，导致游戏导航/相机/地图等逻辑朝向错误。
 				Quaterniond planetHeading = data.Heading;
 				if (_groundedSurfacePositionProp != null) _groundedSurfacePositionProp.SetValue(rc.Node, (Vector3d?)data.Position);
-				if (_groundedSurfaceVelocityProp != null) _groundedSurfaceVelocityProp.SetValue(rc.Node, (Vector3d?)data.Velocity);
+				if (_groundedSurfaceVelocityProp != null)
+				{
+					// 游戏约定:GroundedSurfaceVelocity 是"地表系惯性速度"(CraftNode.UpdateSurfaceParameters 写
+					// CalculateSurfaceVelocity = 地表自转线速度),CraftNode.UpdateCraft 表面锁定分支每帧把它
+					// SurfaceVectorToPlanetVector 纯旋转回行星空间当惯性速度用(不减自转项)。
+					// 只写 data.Velocity(地表相对速度)会让游戏侧 craft.Velocity 缺行星自转项(测试行星 ≈158.85 m/s)
+					// → 静止远程船游戏侧读速度≈0、相对速度计算错误(已知问题 #10)。
+					// 补回 CalculateSurfaceVelocity(data.Position) 后,游戏换算的
+					// Orbit.Velocity = SurfaceVectorToPlanetVector(GSV) 与 ApplyRemoteState 的
+					// SetStateVectors 公式(下方 planetVel)完全一致,帧内不再双写打架。
+					Vector3d groundedVel = data.Velocity + planet.CalculateSurfaceVelocity(data.Position);
+					_groundedSurfaceVelocityProp.SetValue(rc.Node, (Vector3d?)groundedVel);
+				}
 				if (_groundedSurfaceRotationProp != null) _groundedSurfaceRotationProp.SetValue(rc.Node, (Quaterniond?)(planet.RotationInverse * planetHeading));
 			}
 			catch (Exception e)

@@ -2,7 +2,7 @@ English | [中文](README.md)
 
 # MultiPlayer — Juno: New Origins Multiplayer Mod
 
-A Unity mod that adds multiplayer to [Juno: New Origins (JNO)](https://store.steampowered.com/app/870200/): several players enter the same scene, each flies their own craft, and everyone **sees each other's craft in real time**. Loaded via the official ModTools, with FishNet over Steam P2P for networking (public internet, zero port forwarding).
+A Unity mod that adds multiplayer to [Juno: New Origins (JNO)](https://store.steampowered.com/app/870200/): several players enter the same scene, each flies their own craft, and everyone **sees each other's craft in real time**. Loaded via the official ModTools, with a self-built network layer: Steam P2P by default (Steam Networking Sockets, zero port forwarding on the public internet), plus a TCP channel for LAN / VM debugging.
 
 > **Current version 1.51 · prototype stage**: currently "one craft per player, synced to each other as ghost craft"; full multiplayer (multiple craft / fuel / collisions) is still under development. Development and decision records live in [`plans/README.md`](plans/README.md).
 
@@ -62,26 +62,6 @@ Once the mod loads, a **MultiPlayer panel** appears in the game UI (the MP butto
 
 > TCP requires the host to open the corresponding firewall port; the Steam path needs no port settings at all.
 
-### Option 3: Developer console commands (DevConsole)
-
-Type these in the in-game DevConsole:
-
-| Command | Args | Purpose |
-|---|---|---|
-| `SteamLobbyCreate` | room name | Create a public Steam room (recommended) |
-| `SteamLobbyList` | — | List rooms |
-| `SteamLobbyListWorld` | — | List rooms (cross-region) |
-| `SteamLobbyJoin` | lobby id | Join by lobby id |
-| `SteamLobbyLeave` | — | Leave / close the room |
-| `SteamHostLobby` | port | Legacy: host a Steam room by port |
-| `SteamJoinLobby` | host SteamId | Legacy: join by the host's SteamId |
-| `TcpHostLobby` | port | TCP host (debugging) |
-| `TcpJoinLobby` | address port | TCP join (debugging) |
-| `StopLobby` | — | Stop the session |
-| `SetTickRate` | Hz (default 20) | Set the state send rate |
-
-Network simulation for debugging (`NetSimOn/Off/Reset`, `NetSimDelay/Jitter/Loss/Duplicate`): injects deliberate latency / jitter / loss / duplicates locally to reproduce or self-test network behavior — not needed for normal play.
-
 ---
 
 ## Before you play
@@ -95,7 +75,7 @@ Network simulation for debugging (`NetSimOn/Off/Reset`, `NetSimDelay/Jitter/Loss
 
 ## FAQ
 
-- **The other player's craft sometimes "stutters / jumps"**: extrapolation and smoothing under high latency, expected; you can reproduce it with `NetSimDelay/Jitter`. The stop–surge stutter is being actively improved.
+- **The other player's craft sometimes "stutters / jumps"**: extrapolation and smoothing under high latency, expected. The stop–surge stutter is being actively improved.
 - **Hosting / joining does nothing**: make sure both sides are online on Steam and the game is connected to Steam (Steam path), or that the port is reachable (TCP path).
 - **The other player's Vizzy input dialogs etc. leak over here**: Vizzy is isolated in multiplayer; if it still reproduces, send the author the `VizzyIsolation` lines from `Player.log`.
 
@@ -106,7 +86,7 @@ Network simulation for debugging (`NetSimOn/Off/Reset`, `NetSimDelay/Jitter/Loss
 This repository is the mod's full source. Analysis, architecture, decisions and task lists are maintained in [`plans/README.md`](plans/README.md) (internal docs, Git-managed; values involving private local paths live only locally and never enter the repo).
 
 - Build: `dotnet build MultiPlayer.csproj` (0 errors / 0 warnings)
-- Dependencies: official ModTools, FishNet.Runtime / GameKit.Dependencies (see the `.csproj` files)
+- Dependencies: official ModTools, FishNet.Runtime / GameKit.Dependencies (see the `.csproj` files; **FishNet is only referenced by the leftover spike `FishNetSpike.cs` — the network layer does not use it**)  
 
 ## License
 

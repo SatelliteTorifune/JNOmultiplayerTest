@@ -331,7 +331,7 @@ namespace Assets.Scripts.Net.Sync
 			HasState = true;
 			NewestArrivalTime = arrivalTime;
 
-			// 包间到达间隔与抖动 EMA（诊断：NetSim 注入的抖动应如实反映到这里）
+			// 包间到达间隔与抖动 EMA（诊断：网络注入的抖动应如实反映到这里）
 			if (_lastPushTime >= 0f)
 			{
 				float gapMs = (arrivalTime - _lastPushTime) * 1000f;
@@ -339,7 +339,7 @@ namespace Assets.Scripts.Net.Sync
 				float dev = Mathf.Abs(gapMs - GapEmaMs);
 				JitterEmaMs = JitterEmaMs <= 0f ? dev : JitterEmaMs * 0.9f + dev * 0.1f;
 				// 突发窗口统计 + 事件日志(2026-09-14,smoothing-comparison §四):>250ms 到达间隔
-				// = 突发静默(真实 Steam relay 特征,NetSim 均匀延迟下不会出现)。
+				// = 突发静默(真实 Steam relay 特征)。
 				// 用于区分"网络突发"(接收端 gap 大)与"发送端突发"(对端 sendGap 大)。
 				if (gapMs > WinMaxGapMs) WinMaxGapMs = gapMs;
 				if (gapMs > 250f)

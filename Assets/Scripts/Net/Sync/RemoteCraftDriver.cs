@@ -239,7 +239,7 @@ namespace Assets.Scripts.Net.Sync
 
 					// 诊断：周期性记录平滑/网络状态（每 3 秒）：
 					// 缓冲余量、实测包间间隔与抖动 EMA、欠载命中率、插值比例、渲染位置滞后。
-					// 配合 NetSim 延迟模拟：抖动 EMA 应≈NetSim 抖动量；欠载%>0 即说明发生了"冻结-跳变"。
+					// 抖动 EMA 反映实测包间抖动；欠载%>0 即说明发生了"冻结-跳变"。
 					if (Time.unscaledTime - rc.LastSmoothingLogTime > 3f)
 					{
 						// 接收端帧率(窗口内 TotalFrames 增量/窗口时长;F5 前发送循环每帧最多一包,帧率直接

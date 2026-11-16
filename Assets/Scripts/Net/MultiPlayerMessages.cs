@@ -29,6 +29,7 @@ namespace Assets.Scripts.Net
 		CraftXmlResponse = 13, // 房主 -> 客户端：返回指定玩家的飞船 XML（大包，走可靠通道）
 		TickRate = 14,         // 房主 -> 所有：当前状态包发送频率（Hz），客户端据此调整发包节奏与插值
 		Kick = 15,             // 房主 -> 指定客户端：你被房主踢出（随后断开连接）
+		Chat = 16,             // 文字聊天：客户端 -> 房主 -> 全员广播；[playerId:int][text:string]，房主转发时以连接身份重写 playerId（SP2 同款防冒充）
 	}
 
 	/// <summary>
@@ -466,6 +467,38 @@ namespace Assets.Scripts.Net
 				{
 					if (r.ReadByte() != (byte)MultiPlayerMessageType.TickRate) return false;
 					hz = r.ReadInt32();
+					return true;
+				}
+			}
+			catch { return false; }
+		}
+
+		// ---------------- Chat（文字聊天,2026-09-24;plans/text-chat-2026-09-24.md §四 M0） ----------------
+		// payload:[playerId:int][text:string(7-bit 长度前缀 UTF-8)]。
+		// 发送方填自己的 PlayerId(仅占位),房主转发时一律重写为该连接对应的 PlayerId(自报 id 不信任,SP2 同款防冒充);
+		// playerId = -1(ChatSession.SystemPlayerId)为系统消息(join/leave 本地生成,不经网络)。
+		// 发送端(ChatSession.Send)与入列端(ChatSession.Add)均做 Trim + 500 字截断。
+
+		public static byte[] EncodeChat(int playerId, string message)
+		{
+			return Pack(MultiPlayerMessageType.Chat, w =>
+			{
+				w.Write(playerId);
+				w.Write(message ?? string.Empty);
+			});
+		}
+
+		public static bool TryDecodeChat(byte[] buffer, out int playerId, out string message)
+		{
+			playerId = -1; message = null;
+			try
+			{
+				using (MemoryStream ms = new MemoryStream(buffer))
+				using (BinaryReader r = new BinaryReader(ms))
+				{
+					if (r.ReadByte() != (byte)MultiPlayerMessageType.Chat) return false;
+					playerId = r.ReadInt32();
+					message = r.ReadString();
 					return true;
 				}
 			}

@@ -2,7 +2,7 @@
 
 # MultiPlayer — JNO 联机模组
 
-给 [Juno: New Origins](https://store.steampowered.com/app/870200/) 加联机的 Unity 模组:多名玩家进入同一个场景,各自操作自己的飞船,并**实时看到对方的飞船**。基于官方 ModTools 载入,网络层用 FishNet 走 Steam P2P(公网零端口转发)。
+给 [Juno: New Origins](https://store.steampowered.com/app/870200/) 加联机的 Unity 模组:多名玩家进入同一个场景,各自操作自己的飞船,并**实时看到对方的飞船**。基于官方 ModTools 载入,网络层为自研实现:默认走 Steam P2P(Steam Networking Sockets,公网零端口转发),另带 TCP 通道供局域网 / 虚拟机调试。
 
 > **当前版本 1.51 · 原型阶段**:目前是「每名玩家一艘船、互相同步成<幽灵船>」的形态,完整联机(多船 / 燃料 / 碰撞)仍在开发。开发与决策记录见 [`plans/README.md`](plans/README.md)。
 
@@ -63,26 +63,6 @@
 
 > TCP 需要房主放行对应防火墙端口;Steam 路径无需任何端口设置。
 
-### 方式三:开发控制台命令(DevConsole)
-
-游戏内 DevConsole 里可直接输入:
-
-| 命令 | 参数 | 作用 |
-|---|---|---|
-| `SteamLobbyCreate` | 房间名 | 创建公开 Steam 房间(推荐) |
-| `SteamLobbyList` | — | 列出房间 |
-| `SteamLobbyListWorld` | — | 列出房间(跨区) |
-| `SteamLobbyJoin` | 大厅 id | 按大厅 id 加入 |
-| `SteamLobbyLeave` | — | 离开 / 关闭房间 |
-| `SteamHostLobby` | 端口 | 旧式:按端口开 Steam 房 |
-| `SteamJoinLobby` | 房主 SteamId | 旧式:按房主 SteamId 加入 |
-| `TcpHostLobby` | 端口 | TCP 开房(调试) |
-| `TcpJoinLobby` | 地址 端口 | TCP 加入(调试) |
-| `StopLobby` | — | 停止联机 |
-| `SetTickRate` | Hz(默认 20) | 设置状态发送频率 |
-
-调试用网络模拟(`NetSimOn/Off/Reset`、`NetSimDelay/Jitter/Loss/Duplicate`):在本地人为注入延迟/抖动/丢包/重复包,用于复现或自测网络表现,正常游玩无需使用。
-
 ---
 
 ## 联机前须知
@@ -96,7 +76,7 @@
 
 ## 常见问题
 
-- **看到别人的船偶尔“卡一下 / 跳一下”**:高延迟下的外推与平滑,属预期;可用 `NetSimDelay/Jitter` 本地复现。停→冲顿挫问题正在持续优化中。
+- **看到别人的船偶尔“卡一下 / 跳一下”**:高延迟下的外推与平滑,属预期。停→冲顿挫问题正在持续优化中。
 - **开房 / 加入无反应**:确认双方 Steam 均在线、游戏已连上 Steam(Steam 路径),或 TCP 路径下端口可达。
 - **对方的 Vizzy 输入框等串到本地**:联机中 Vizzy 已被隔离;若仍复现,请把 `Player.log` 里的 `VizzyIsolation` 日志反馈给作者。
 
@@ -107,7 +87,7 @@
 本仓库是模组的完整源码。分析、架构、决策与任务清单集中维护在 [`plans/README.md`](plans/README.md)(内部文档,经 Git 管理;涉及本机私密路径的值只在本地、不进仓库)。
 
 - 构建:`dotnet build MultiPlayer.csproj`(0 错误 / 0 警告)
-- 依赖:官方 ModTools、FishNet.Runtime / GameKit.Dependencies(见各 `.csproj`)
+- 依赖:官方 ModTools、FishNet.Runtime / GameKit.Dependencies(见各 `.csproj`;**FishNet 仅被遗留 spike `FishNetSpike.cs` 引用,网络层并未使用**)  
 
 ## 许可
 
